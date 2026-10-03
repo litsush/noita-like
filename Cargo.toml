@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = ["crates/sim", "crates/net", "crates/game"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+sbct_sim = { path = "crates/sim" }
+sbct_net = { path = "crates/net" }
+bevy = "0.19"
+bevy_egui = "0.42"
+steamworks = "0.13.1"
+serde = { version = "1", features = ["derive"] }
+bincode = "1.3"
+
+# Bevy is painfully slow in debug without optimizing dependencies.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# The simulation is the hot loop; keep it fast in debug builds too.
+[profile.dev.package.sbct_sim]
+opt-level = 3

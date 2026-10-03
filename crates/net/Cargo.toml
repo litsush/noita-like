@@ -1,0 +1,10 @@
+[package]
+name = "sbct_net"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sbct_sim.workspace = true
+serde.workspace = true
+bincode.workspace = true
+steamworks.workspace = true
