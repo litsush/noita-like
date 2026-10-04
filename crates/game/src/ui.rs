@@ -236,9 +236,13 @@ pub fn ui_sounds_and_fade(
     mut fade: Local<f32>,
     time: Res<Time<Real>>,
     save: Res<crate::run::save::SaveData>,
+    window: Single<&Window, With<bevy::window::PrimaryWindow>>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
-    let scale = save.settings.ui_scale.clamp(0.5, 3.0);
+    // The HUD needs about 1000×620 logical points; small windows scale the
+    // UI down rather than letting panels overlap.
+    let fit = (window.width() / 1000.0).min(window.height() / 620.0);
+    let scale = save.settings.ui_scale.min(fit).clamp(0.5, 3.0);
     if (ctx.zoom_factor() - scale).abs() > 0.001 {
         ctx.set_zoom_factor(scale);
     }
