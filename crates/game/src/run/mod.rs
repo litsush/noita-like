@@ -18,6 +18,7 @@ pub mod lighting;
 pub mod physics;
 pub mod player;
 pub mod save;
+pub mod smart_dig;
 pub mod tracking;
 
 use std::collections::{HashMap, VecDeque};
@@ -282,6 +283,10 @@ pub fn grant(save: &mut SaveData, run: &mut Run, id: AchievementId, sfx: &mut Me
     }
 }
 
+/// System set marking the end of run setup (for things that need the run).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RunSetupDone;
+
 /// World generation in progress.
 #[derive(Resource)]
 pub struct PendingRun {
@@ -500,7 +505,9 @@ impl Plugin for RunPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(save::load())
             .init_resource::<hud::Paused>()
+            .init_resource::<hud::PauseMenu>()
             .init_resource::<input::PlayerInput>()
+            .add_systems(Startup, smart_dig::configure_gizmos)
             .add_systems(Update, finish_loading.run_if(in_state(AppState::Loading)))
             .add_systems(EguiLoading, hud::loading_ui.run_if(in_state(AppState::Loading)))
             .add_systems(
@@ -514,7 +521,8 @@ impl Plugin for RunPlugin {
                     entities::spawn_entities,
                     creatures::spawn_creatures,
                 )
-                    .chain(),
+                    .chain()
+                    .before(RunSetupDone),
             )
             .add_systems(
                 OnExit(AppState::Run),
@@ -562,6 +570,7 @@ impl Plugin for RunPlugin {
                     entities::animate_props,
                     creatures::animate_creatures,
                     player::follow_camera,
+                    smart_dig::highlight_targets,
                     crate::render::upload_dirty_chunks,
                     crate::render::draw_sim_particles,
                     background::update_backgrounds,

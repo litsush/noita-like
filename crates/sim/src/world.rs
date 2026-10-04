@@ -307,8 +307,14 @@ impl World {
     /// likely to break per call; liquids, gases and indestructible cells are
     /// skipped. Returns what was removed.
     pub fn dig(&mut self, cx: i32, cy: i32, radius: i32, power: u8) -> Vec<(i32, i32, Material)> {
+        let cells: Vec<(i32, i32)> = disc(cx, cy, radius).collect();
+        self.dig_cells(&cells, power)
+    }
+
+    /// Like [`World::dig`], for an explicit list of cells.
+    pub fn dig_cells(&mut self, cells: &[(i32, i32)], power: u8) -> Vec<(i32, i32, Material)> {
         let mut out = Vec::new();
-        for (x, y) in disc(cx, cy, radius) {
+        for &(x, y) in cells {
             let m = self.material(x, y);
             if !matches!(m.kind(), Kind::Solid | Kind::Powder) {
                 continue;

@@ -8,6 +8,7 @@ use super::entities::{Bomb, Projectile, ProjectileKind, Sun};
 use super::input::PlayerInput;
 use super::items::{Active, ItemId};
 use super::physics::{Body, SolidFn, default_solid, to_world};
+use super::smart_dig;
 use super::{Phase, Run, RunSetup};
 use crate::assets::{GameAssets, player_anim};
 use crate::audio::{Listener, Sfx};
@@ -296,6 +297,8 @@ pub fn player_move(
             p.body.vel.y *= 1.0 - 4.0 * dt;
             if up {
                 p.body.vel.y = p.body.vel.y.min(-60.0);
+            } else if down {
+                p.body.vel.y = p.body.vel.y.max(55.0);
             }
         } else if boots && submersion > 0.2 {
             p.body.vel.y = (p.body.vel.y + GRAVITY * 1.2 * dt).min(90.0);
@@ -454,8 +457,24 @@ pub fn player_dig(
     let Some(world) = session.world.as_mut() else {
         return;
     };
-    let Some(cursor) = input.aim else { return };
-    let target = aim(&player, cursor);
+    let power = if run.has(ItemId::GlassCannonPick) {
+        235
+    } else {
+        BASE_PICK_POWER
+    };
+    // Smart dig clears what blocks the body; cursor dig carves a disc at the aim.
+    let (target, cells) = if let Some(dir) = input.dig_dir {
+        let cells = smart_dig::targets(world, &player.body, dir);
+        let Some(&(x, y)) = cells.first() else { return };
+        (Vec2::new(x as f32 + 0.5, y as f32 + 0.5), cells)
+    } else {
+        let Some(cursor) = input.aim else { return };
+        let t = aim(&player, cursor);
+        (
+            t,
+            sbct_sim::world::disc(t.x.floor() as i32, t.y.floor() as i32, DIG_RADIUS).collect(),
+        )
+    };
     let dir = (target - player.body.center()).normalize_or_zero();
     player.dig_anim = Some((dir, 0.25));
     if dir.x.abs() > 0.2 {
@@ -467,13 +486,7 @@ pub fn player_dig(
         return;
     }
     player.dig_timer = DIG_INTERVAL;
-    let power = if run.has(ItemId::GlassCannonPick) {
-        235
-    } else {
-        BASE_PICK_POWER
-    };
-    let (tx, ty) = (target.x.floor() as i32, target.y.floor() as i32);
-    let dug = world.dig(tx, ty, DIG_RADIUS, power);
+    let dug = world.dig_cells(&cells, power);
     let Some(&(_, _, first)) = dug.first() else { return };
     run.influence(target);
 
@@ -755,16 +768,20 @@ pub fn follow_camera(
     player: Res<RunPlayer>,
     session: Res<Session>,
     shake: Res<Shake>,
-    mut camera: Single<(&mut Transform, &Projection), With<WorldCamera>>,
+    mut camera: Single<(&mut Transform, &mut Projection), With<WorldCamera>>,
     window: Single<&Window, With<PrimaryWindow>>,
     mut smoothed: Local<Option<Vec2>>,
 ) {
     let Some(world) = &session.world else { return };
-    let (ref mut tf, projection) = *camera;
-    let scale = match projection {
-        Projection::Orthographic(o) => o.scale,
-        _ => 1.0,
-    };
+    let (ref mut tf, ref mut projection) = *camera;
+    // Whole-number zoom (crisp pixels) that's never narrower than the world.
+    let pixels = (window.width() / world.width() as f32)
+        .ceil()
+        .max(crate::render::PIXEL_SCALE);
+    if let Projection::Orthographic(o) = &mut **projection {
+        o.scale = 1.0 / pixels;
+    }
+    let scale = 1.0 / pixels;
     let dt = time.delta_secs().min(0.1);
     let look = Vec2::new(
         (player.body.vel.x * 0.25).clamp(-40.0, 40.0),

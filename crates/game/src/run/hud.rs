@@ -8,19 +8,48 @@ use sbct_sim::descent::{DESCENT_HEIGHT, Layer};
 use super::entities::Prompt;
 use super::items::{Active, icon};
 use super::player::RunPlayer;
-use super::save::{SaveData, store};
+use super::save::{DigMode, SaveData};
 use super::{Phase, Run, random_seed, start_run};
 use crate::AppState;
 use crate::audio::Sfx;
+use crate::controls::Action;
 use crate::render::{UiHasPointer, WorldCamera};
 use crate::ui::{self, ACCENT, BORDER, DANGER, GOOD, TEXT_DIM, UiIcons};
 
 #[derive(Resource, Default)]
 pub struct Paused(pub bool);
 
-pub fn toggle_pause(keys: Res<ButtonInput<KeyCode>>, mut paused: ResMut<Paused>, run: Res<Run>) {
-    if keys.just_pressed(KeyCode::Escape) && run.phase == Phase::Playing {
-        paused.0 = !paused.0;
+const TOAST_SIZE: egui::Vec2 = egui::vec2(320.0, 88.0);
+const TOAST_LIFE: f32 = 5.0;
+
+/// Pause-menu sub-state: the settings page and its tab.
+#[derive(Resource, Default)]
+pub struct PauseMenu {
+    pub settings_open: bool,
+    pub tab: crate::settings::SettingsTab,
+}
+
+pub fn toggle_pause(
+    keys: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    mut paused: ResMut<Paused>,
+    mut menu: ResMut<PauseMenu>,
+    run: Res<Run>,
+    save: Res<SaveData>,
+    rebind: Res<crate::controls::Rebind>,
+) {
+    if rebind.blocking() || run.phase != Phase::Playing {
+        return;
+    }
+    if save
+        .bindings
+        .just_pressed(crate::controls::Action::Pause, &keys, &mouse)
+    {
+        if menu.settings_open {
+            menu.settings_open = false;
+        } else {
+            paused.0 = !paused.0;
+        }
     }
 }
 
@@ -43,34 +72,6 @@ pub fn loading_ui(mut contexts: EguiContexts, time: Res<Time<Real>>) -> Result {
     Ok(())
 }
 
-/// Volume and shake settings; shared with the main menu.
-pub fn settings_controls(ui: &mut egui::Ui, save: &mut SaveData) {
-    let s = &mut save.settings;
-    let mut changed = false;
-    egui::Grid::new("settings")
-        .num_columns(2)
-        .spacing([16.0, 12.0])
-        .show(ui, |ui| {
-            for (label, value) in [
-                ("Master", &mut s.master_volume),
-                ("Music", &mut s.music_volume),
-                ("Effects", &mut s.sfx_volume),
-            ] {
-                ui.label(label);
-                changed |= ui
-                    .add(egui::Slider::new(value, 0.0..=1.0).show_value(false))
-                    .changed();
-                ui.end_row();
-            }
-            ui.label("Screen shake");
-            changed |= ui.checkbox(&mut s.screen_shake, "").changed();
-            ui.end_row();
-        });
-    if changed {
-        store(save);
-    }
-}
-
 pub fn run_hud(
     mut contexts: EguiContexts,
     mut commands: Commands,
@@ -85,6 +86,8 @@ pub fn run_hud(
     real: Res<Time<Real>>,
     mut sfx: MessageWriter<Sfx>,
     mut shake: ResMut<crate::fx::Shake>,
+    mut pause_menu: ResMut<PauseMenu>,
+    mut rebind: ResMut<crate::controls::Rebind>,
 ) -> Result {
     let Some(icons) = icons else { return Ok(()) };
     let icons = *icons;
@@ -150,19 +153,13 @@ pub fn run_hud(
                         ui.colored_label(DANGER, "ON FIRE - find water!");
                     });
                 }
-            });
-        });
-
-    // ---- bottom left: supplies ---------------------------------------------
-    egui::Area::new("supplies".into())
-        .anchor(egui::Align2::LEFT_BOTTOM, [12.0, -12.0])
-        .show(ctx, |ui| {
-            ui::panel_frame().show(ui, |ui| {
+                ui.separator();
+                let b = &save.bindings;
                 ui.horizontal(|ui| {
                     for (index, count, key) in [
-                        (icon::ROPE, run.ropes, "R"),
-                        (icon::TORCH, run.torches, "T"),
-                        (icon::ORE, run.ore, ""),
+                        (icon::ROPE, run.ropes, b.hint(Action::Rope)),
+                        (icon::TORCH, run.torches, b.hint(Action::Torch)),
+                        (icon::ORE, run.ore, String::new()),
                     ] {
                         ui::icon(ui, &icons, index, 24.0);
                         ui.label(egui::RichText::new(format!("{count}")).size(16.0));
@@ -171,6 +168,26 @@ pub fn run_hud(
                         }
                         ui.add_space(6.0);
                     }
+                });
+                ui.horizontal(|ui| {
+                    let smart = save.settings.dig_mode == DigMode::Smart;
+                    ui::icon(
+                        ui,
+                        &icons,
+                        if smart { icon::COMPASS } else { icon::PICKAXE },
+                        16.0,
+                    );
+                    ui.label(
+                        egui::RichText::new(if smart { "Smart dig" } else { "Cursor dig" }).color(if smart {
+                            ACCENT
+                        } else {
+                            ui::TEXT
+                        }),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!("{} to switch", b.hint(Action::ToggleDigMode)))
+                            .color(TEXT_DIM),
+                    );
                 });
             });
         });
@@ -235,17 +252,26 @@ pub fn run_hud(
                     });
                     if run.actives().len() > 1 {
                         ui.label(
-                            egui::RichText::new("Q/E or wheel: switch   Right mouse: use").color(TEXT_DIM),
+                            egui::RichText::new(format!(
+                                "{}/{} or wheel: switch   {}: use",
+                                save.bindings.hint(Action::PrevItem),
+                                save.bindings.hint(Action::NextItem),
+                                save.bindings.hint(Action::UseItem)
+                            ))
+                            .color(TEXT_DIM),
                         );
                     } else if !run.actives().is_empty() {
-                        ui.label(egui::RichText::new("Right mouse: use").color(TEXT_DIM));
+                        ui.label(
+                            egui::RichText::new(format!("{}: use", save.bindings.hint(Action::UseItem)))
+                                .color(TEXT_DIM),
+                        );
                     }
                 });
             });
     }
 
     // ---- right: depth gauge -------------------------------------------------
-    egui::Area::new("depth".into())
+    let depth_bottom = egui::Area::new("depth".into())
         .anchor(egui::Align2::RIGHT_TOP, [-12.0, 12.0])
         .show(ctx, |ui| {
             ui::panel_frame().show(ui, |ui| {
@@ -308,7 +334,10 @@ pub fn run_hud(
                     ui.label(egui::RichText::new(format!("Seed {}", run.seed)).color(TEXT_DIM));
                 });
             });
-        });
+        })
+        .response
+        .rect
+        .bottom();
 
     // ---- prompt near the thing you can use --------------------------------
     if let Some((text, at)) = &prompt.0
@@ -379,30 +408,66 @@ pub fn run_hud(
     }
 
     // ---- achievement toasts ---------------------------------------------------
-    egui::Area::new("toasts".into())
-        .anchor(egui::Align2::RIGHT_BOTTOM, [-12.0, -12.0])
-        .interactable(false)
-        .show(ctx, |ui| {
-            for toast in run.toasts.iter() {
-                let def = toast.achievement.def();
+    // Fixed-size cards stacked down the right edge under the depth panel, so
+    // they never cover the vitals, items, prompts or the item popup.
+    let mut y = depth_bottom + 12.0;
+    let bottom_limit = ctx.viewport_rect().bottom() - 150.0;
+    let mut shown = 0;
+    for (i, toast) in run.toasts.iter().enumerate() {
+        // Out of room: the rest wait their turn.
+        if i > 0 && y + TOAST_SIZE.y > bottom_limit {
+            break;
+        }
+        shown += 1;
+        let def = toast.achievement.def();
+        let t = toast.time;
+        let slide = if t < 0.3 {
+            (1.0 - t / 0.3).powi(2) * (TOAST_SIZE.x + 24.0)
+        } else {
+            0.0
+        };
+        let alpha = if t > TOAST_LIFE - 0.6 {
+            ((TOAST_LIFE - t) / 0.6).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        egui::Area::new(egui::Id::new(("toast", i)))
+            .anchor(egui::Align2::RIGHT_TOP, [-12.0 + slide, y])
+            .interactable(false)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                ui.multiply_opacity(alpha);
                 ui::panel_frame()
                     .stroke(egui::Stroke::new(2.0, ACCENT))
                     .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui::icon(ui, &icons, toast.achievement.icon(), 32.0);
+                        let inner = TOAST_SIZE - egui::vec2(20.0, 20.0);
+                        ui.set_min_size(inner);
+                        ui.set_max_size(inner);
+                        ui.horizontal_top(|ui| {
+                            ui::icon(ui, &icons, toast.achievement.icon(), 40.0);
                             ui.vertical(|ui| {
-                                ui.label(egui::RichText::new("Achievement unlocked").color(TEXT_DIM));
+                                ui.set_max_width(inner.x - 52.0);
                                 ui.label(egui::RichText::new(def.name).color(ACCENT));
-                                ui.label(format!("Unlocked: {}", toast.achievement.reward_name()));
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(format!(
+                                            "Unlocked {}",
+                                            toast.achievement.reward_name()
+                                        ))
+                                        .color(TEXT_DIM),
+                                    )
+                                    .wrap(),
+                                );
                             });
                         });
                     });
-            }
-        });
-    for t in run.toasts.iter_mut() {
+            });
+        y += TOAST_SIZE.y + 8.0;
+    }
+    for t in run.toasts.iter_mut().take(shown) {
         t.time += dt;
     }
-    while run.toasts.front().is_some_and(|t| t.time > 5.0) {
+    while run.toasts.front().is_some_and(|t| t.time > TOAST_LIFE) {
         run.toasts.pop_front();
     }
 
@@ -438,12 +503,23 @@ pub fn run_hud(
                     ui.vertical_centered(|ui| {
                         ui.label(egui::RichText::new("Paused").size(32.0).color(ACCENT));
                         ui.add_space(8.0);
+                        if pause_menu.settings_open {
+                            ui.set_max_width(560.0);
+                            ui.set_max_height(ctx.viewport_rect().height() * 0.8);
+                            let tab = &mut pause_menu.tab;
+                            crate::settings::settings_ui(ui, &mut save, &mut rebind, tab);
+                            ui.add_space(8.0);
+                            if ui::menu_button(ui, "Back").clicked() {
+                                pause_menu.settings_open = false;
+                            }
+                            return;
+                        }
                         if ui::menu_button(ui, "Resume").clicked() {
                             paused.0 = false;
-                            sfx.write(Sfx::ui("ui_click"));
                         }
-                        ui.add_space(8.0);
-                        settings_controls(ui, &mut save);
+                        if ui::menu_button(ui, "Settings").clicked() {
+                            pause_menu.settings_open = true;
+                        }
                         ui.add_space(8.0);
                         if ui::menu_button(ui, "Abandon run").clicked() {
                             paused.0 = false;

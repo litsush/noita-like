@@ -1,5 +1,6 @@
 mod assets;
 mod audio;
+mod controls;
 mod dev;
 mod fx;
 mod hud;
@@ -8,6 +9,7 @@ mod player;
 mod render;
 mod run;
 mod session;
+mod settings;
 mod steam;
 mod ui;
 
@@ -35,7 +37,7 @@ fn main() {
                 .set(WindowPlugin {
                     primary_window: Some(Window {
                         title: "Descent to the Core".into(),
-                        resolution: (1280, 800).into(),
+                        resolution: dev::window_size().unwrap_or((1280, 800)).into(),
                         ..default()
                     }),
                     ..default()
@@ -68,6 +70,8 @@ fn main() {
         .insert_resource(Time::<Fixed>::from_hz(60.0))
         .init_resource::<render::UiHasPointer>()
         .init_resource::<render::ParticlePool>()
+        .init_resource::<controls::Rebind>()
+        .add_systems(PreUpdate, controls::capture_binding)
         .init_resource::<hud::EscMenuOpen>()
         .add_systems(Startup, (render::spawn_camera, menu::setup_menu))
         // Session lifecycle, in any state.

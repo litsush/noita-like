@@ -11,6 +11,15 @@ use serde::{Deserialize, Serialize};
 use super::achievements::{AchievementId, Loadout};
 use super::items::ItemId;
 
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum DigMode {
+    /// Dig where the cursor points.
+    #[default]
+    Cursor,
+    /// Dig whatever blocks you in the direction you move or aim.
+    Smart,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct Settings {
@@ -18,6 +27,9 @@ pub struct Settings {
     pub music_volume: f32,
     pub sfx_volume: f32,
     pub screen_shake: bool,
+    pub dig_mode: DigMode,
+    /// UI zoom (egui zoom factor).
+    pub ui_scale: f32,
 }
 
 impl Default for Settings {
@@ -27,6 +39,8 @@ impl Default for Settings {
             music_volume: 0.6,
             sfx_volume: 0.8,
             screen_shake: true,
+            dig_mode: DigMode::Cursor,
+            ui_scale: 1.0,
         }
     }
 }
@@ -49,6 +63,7 @@ pub struct SaveData {
     pub stats: Stats,
     pub settings: Settings,
     pub loadout: Loadout,
+    pub bindings: crate::controls::Bindings,
 }
 
 impl SaveData {

@@ -53,6 +53,7 @@ pub struct MenuState {
     pub run_seed: String,
     pub unlocks_tab: usize,
     pub confirm_reset: bool,
+    pub settings_tab: crate::settings::SettingsTab,
     /// Mirrors the saved loadout choice for starting runs.
     pub loadout: Loadout,
 }
@@ -83,6 +84,7 @@ impl MenuState {
             run_seed: String::new(),
             unlocks_tab: 0,
             confirm_reset: false,
+            settings_tab: Default::default(),
             loadout: Loadout::Standard,
         }
     }
@@ -153,6 +155,10 @@ fn action_from_args(menu: &mut MenuState) -> Option<Action> {
             Screen::Unlocks
         }
         Some("settings") => Screen::Settings,
+        Some("controls") => {
+            menu.settings_tab = crate::settings::SettingsTab::Controls;
+            Screen::Settings
+        }
         Some("multiplayer") => Screen::Multiplayer,
         _ => Screen::Main,
     };
@@ -224,6 +230,7 @@ pub fn menu_ui(
     mut save: ResMut<SaveData>,
     icons: Option<Res<UiIcons>>,
     time: Res<Time<Real>>,
+    mut rebind: ResMut<crate::controls::Rebind>,
 ) -> Result {
     let Some(icons) = icons else { return Ok(()) };
     let ctx = contexts.ctx_mut()?;
@@ -278,7 +285,7 @@ pub fn menu_ui(
                     Screen::Main => main_screen(ui, &mut menu, &mut action),
                     Screen::NewRun => new_run_screen(ui, &mut menu, &mut save, &icons, &mut action),
                     Screen::Unlocks => unlocks_screen(ui, &mut menu, &save, &icons),
-                    Screen::Settings => settings_screen(ui, &mut menu, &mut save),
+                    Screen::Settings => settings_screen(ui, &mut menu, &mut save, &mut rebind),
                     Screen::Multiplayer => {
                         let line = match (&steam, &status.error) {
                             (Some(s), _) => format!("Steam: signed in as {}", s.my_name()),
@@ -541,27 +548,41 @@ fn unlocks_screen(ui: &mut egui::Ui, menu: &mut MenuState, save: &SaveData, icon
     }
 }
 
-fn settings_screen(ui: &mut egui::Ui, menu: &mut MenuState, save: &mut SaveData) {
+fn settings_screen(
+    ui: &mut egui::Ui,
+    menu: &mut MenuState,
+    save: &mut SaveData,
+    rebind: &mut crate::controls::Rebind,
+) {
+    let height = ui.available_height() - 80.0;
     ui::panel_frame().show(ui, |ui| {
-        ui.set_width(420.0);
-        crate::run::hud::settings_controls(ui, save);
+        ui.set_width(560.0);
+        ui.set_max_height(height);
+        let tab = &mut menu.settings_tab;
+        crate::settings::settings_ui(ui, save, rebind, tab);
+        if menu.settings_tab != crate::settings::SettingsTab::General {
+            return;
+        }
         ui.add_space(10.0);
         ui.separator();
-        ui.label(
-            egui::RichText::new(format!(
-                "Save file: {}",
-                crate::run::save::save_dir().join("save.json").display()
-            ))
-            .size(16.0)
-            .color(ui::TEXT_DIM),
+        let path = crate::run::save::save_dir().join("save.json");
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(format!("Save file: {}", path.display()))
+                    .size(16.0)
+                    .color(ui::TEXT_DIM),
+            )
+            .wrap(),
         );
         if menu.confirm_reset {
             ui.horizontal(|ui| {
                 ui.colored_label(ui::DANGER, "Erase all unlocks and stats?");
                 if ui.button("Erase").clicked() {
                     let settings = save.settings.clone();
+                    let bindings = save.bindings.clone();
                     *save = SaveData {
                         settings,
+                        bindings,
                         ..Default::default()
                     };
                     crate::run::save::store(save);

@@ -4,9 +4,11 @@
 //! * `--screenshot <dir>` saves a screenshot every few seconds.
 //! * `--quit-after <secs>` exits after that many seconds.
 //! * `--give <all|ItemName>` starts runs with items (e.g. `--give SparkRod`).
+//! * `--window <WxH>` sets the window size; `--ui-scale <x>` the UI scale.
+//! * `--test-toasts` shows a few achievement toasts at the start of a run.
 //! * `--fps` logs frame rate once a second.
 //! * `--layer <0-5>` starts runs in a deeper layer (5 = beside the core).
-//! * `--menu-screen <new-run|unlocks|items|settings|multiplayer>` opens a menu page.
+//! * `--menu-screen <new-run|unlocks|items|settings|controls|multiplayer>` opens a menu page.
 //!
 //! Set `SBCT_SAVE_DIR` when testing so bot achievements don't touch your save.
 
@@ -31,6 +33,13 @@ pub struct GiveItems(pub Vec<crate::run::items::ItemId>);
 /// Start runs in this layer instead of on the surface.
 #[derive(Resource)]
 pub struct StartLayer(pub usize);
+
+/// Window size from `--window 1920x1080`, if given.
+pub fn window_size() -> Option<(u32, u32)> {
+    let v = arg_value("--window")?;
+    let (w, h) = v.split_once('x')?;
+    Some((w.parse().ok()?, h.parse().ok()?))
+}
 
 fn arg_value(flag: &str) -> Option<String> {
     let args: Vec<String> = std::env::args().collect();
@@ -65,6 +74,17 @@ impl Plugin for DevPlugin {
                 .collect();
             app.insert_resource(GiveItems(items));
         }
+        if let Some(scale) = arg_value("--ui-scale").and_then(|s| s.parse::<f32>().ok()) {
+            app.add_systems(Startup, move |mut save: ResMut<crate::run::save::SaveData>| {
+                save.settings.ui_scale = scale
+            });
+        }
+        if std::env::args().any(|a| a == "--test-toasts") {
+            app.add_systems(
+                OnEnter(crate::AppState::Run),
+                test_toasts.after(crate::run::RunSetupDone),
+            );
+        }
         if std::env::args().any(|a| a == "--fps") {
             app.add_plugins((
                 bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(),
@@ -96,5 +116,15 @@ fn take_screenshots(mut commands: Commands, time: Res<Time<Real>>, mut shots: Re
 fn quit_after(time: Res<Time<Real>>, limit: Res<QuitAfter>, mut exit: MessageWriter<AppExit>) {
     if time.elapsed_secs() > limit.0 {
         exit.write(AppExit::Success);
+    }
+}
+
+fn test_toasts(mut run: ResMut<crate::run::Run>) {
+    use crate::run::achievements::AchievementId::*;
+    for a in [ObsidianBridge, Untouched, Demolitionist] {
+        run.toasts.push_back(crate::run::Toast {
+            achievement: a,
+            time: 0.0,
+        });
     }
 }

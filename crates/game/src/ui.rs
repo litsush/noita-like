@@ -191,8 +191,13 @@ pub fn ui_sounds_and_fade(
     state: Res<State<crate::AppState>>,
     mut fade: Local<f32>,
     time: Res<Time<Real>>,
+    save: Res<crate::run::save::SaveData>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
+    let scale = save.settings.ui_scale.clamp(0.5, 3.0);
+    if (ctx.zoom_factor() - scale).abs() > 0.001 {
+        ctx.set_zoom_factor(scale);
+    }
     let (hovered, clicked) = ctx.data_mut(|d| {
         (
             d.remove_temp::<Option<egui::Id>>(egui::Id::new("ui_hovered"))

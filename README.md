@@ -24,12 +24,15 @@ Pick **New Run** from the menu, choose a loadout, and optionally enter a seed (l
 | Jump; climb walls briefly; climb ropes | W / Space (hold against a wall to climb; wall-jump off walls) |
 | Dash | Shift |
 | Dig (speed depends on hardness) | Left mouse, aimed with the cursor |
+| Toggle smart dig (dig whatever blocks you in the direction you move or aim; holding down digs straight down; the next cells are outlined) | Tab |
 | Use selected active item | Right mouse |
 | Switch active item | Q / E or mouse wheel |
 | Throw rope upward (climb back up) | R |
 | Throw a torch (lights the dark, ignites flammables) | T |
 | Interact (chests, altars, shrines, the core) | F |
 | Pause, settings, abandon run | Esc |
+
+Every control can be rebound under **Settings → Controls**, from the main menu or the pause menu. Each action has two slots. If a key is already in use, you can swap the two actions or keep the key on both. Bindings are saved with your progress.
 
 ### Surviving
 
@@ -112,7 +115,9 @@ cargo run -p sbct_sim --release --example descent_map -- <seed> <out-dir>   # re
 | `--screenshot <dir>` | Save a screenshot every 4 seconds |
 | `--quit-after <secs>` | Exit after that long |
 | `--fps` | Log the frame rate |
-| `--menu-screen <new-run\|unlocks\|items\|settings\|multiplayer>` | Open a menu page |
+| `--menu-screen <new-run\|unlocks\|items\|settings\|controls\|multiplayer>` | Open a menu page |
+| `--window <WxH>`, `--ui-scale <x>` | Window size and UI scale |
+| `--test-toasts` | Show a few achievement toasts at the start of a run |
 
 Set `SBCT_SAVE_DIR=/some/tmp/dir` while testing so the bot's achievements don't go into your real save. For example:
 
