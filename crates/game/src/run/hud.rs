@@ -71,7 +71,7 @@ pub fn loading_ui(mut contexts: EguiContexts, time: Res<Time<Real>>) -> Result {
                     .color(ACCENT),
             );
             ui.add_space(8.0);
-            ui.label(egui::RichText::new("Layering crust, mantle and core").color(TEXT_DIM));
+            ui.label(egui::RichText::new("Shaping the world below").color(TEXT_DIM));
         });
     });
     Ok(())
@@ -329,7 +329,7 @@ pub fn run_hud(
                 let depth = player.body.pos.y.max(0.0);
                 let to_core = (run.core.y - depth).max(0.0);
                 ui.label(format!("Depth {} m", depth as i32 / 4));
-                ui.label(egui::RichText::new(format!("Core in {} m", to_core as i32 / 4)).color(TEXT_DIM));
+                ui.label(egui::RichText::new(format!("Heart in {} m", to_core as i32 / 4)).color(TEXT_DIM));
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(230.0, 180.0), egui::Sense::hover());
                 let p = ui.painter();
                 let colors = [

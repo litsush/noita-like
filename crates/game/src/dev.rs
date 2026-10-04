@@ -8,7 +8,7 @@
 //! * `--window <WxH>` sets the window size; `--ui-scale <x>` the UI scale.
 //! * `--test-toasts` shows a few achievement toasts at the start of a run.
 //! * `--fps` logs frame rate once a second.
-//! * `--layer <0-5>` starts runs in a deeper layer (5 = beside the core).
+//! * `--layer <0-5>` starts runs in a deeper layer (5 = beside the heart).
 //! * `--menu-screen <new-run|unlocks|items|settings|controls|multiplayer>` opens a menu page.
 //!
 //! Set `SBCT_SAVE_DIR` when testing so bot achievements don't touch your save.
