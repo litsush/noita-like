@@ -92,6 +92,7 @@ pub enum Connecting {
 }
 
 enum Action {
+    NewRun,
     Singleplayer,
     HostSteam,
     HostLan,
@@ -127,7 +128,10 @@ fn action_from_args(menu: &mut MenuState) -> Option<Action> {
     if let Some(seed) = value("--seed") {
         menu.seed = seed;
     }
-    if args.iter().any(|a| a == "--singleplayer") {
+    if args.iter().any(|a| a == "--run") {
+        menu.seed = value("--run").unwrap_or_default();
+        Some(Action::NewRun)
+    } else if args.iter().any(|a| a == "--singleplayer") {
         Some(Action::Singleplayer)
     } else if args.iter().any(|a| a == "--host-lan") {
         if let Some(port) = value("--host-lan") {
@@ -266,6 +270,9 @@ fn main_screen(ui: &mut egui::Ui, menu: &mut MenuState, action: &mut Option<Acti
         );
     });
     ui.add_space(16.0);
+    if big_button(ui, "New Run") {
+        *action = Some(Action::NewRun);
+    }
     if big_button(ui, "Host Game") {
         menu.screen = Screen::Host;
     }
@@ -439,6 +446,10 @@ fn run_action(
             .unwrap_or_else(|_| sbct_sim::rng::hash2(0, menu.seed.len() as i32, 0))
     };
     match action {
+        Action::NewRun => {
+            let seed = menu.seed.trim().parse().unwrap_or_else(|_| crate::run::random_seed());
+            crate::run::start_run(commands, seed, Default::default());
+        }
         Action::Quit => {
             exit.write(AppExit::Success);
         }

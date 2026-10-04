@@ -89,6 +89,24 @@ impl Session {
         }
     }
 
+    /// A local-only session around an existing world (the roguelike).
+    pub fn offline(world: World, spawn: Vec2, local_name: String) -> Session {
+        Session {
+            role: Role::Offline,
+            transport: None,
+            local_id: OFFLINE_ID,
+            local_name,
+            lobby: None,
+            chunks_received: world.chunks_x() * world.chunks_y(),
+            world: Some(world),
+            players: HashMap::new(),
+            spawn,
+            backdrop: false,
+            since_heard: 0.0,
+            send_timer: 0.0,
+        }
+    }
+
     /// Connects to a host over an established transport and says hello.
     pub fn client(
         mut transport: Box<dyn Transport>,
@@ -430,6 +448,13 @@ pub fn step_world(mut session: ResMut<Session>) {
         && let Some(world) = &mut session.world
     {
         world.step();
+    }
+}
+
+/// Sandbox worlds don't react to sim events yet; keep them from piling up.
+pub fn drain_events(mut session: ResMut<Session>) {
+    if let Some(world) = &mut session.world {
+        world.take_events();
     }
 }
 

@@ -263,6 +263,36 @@ impl World {
         }
     }
 
+    /// Shakes settled gravel loose within `radius` (it will start to fall).
+    pub fn disturb(&mut self, cx: i32, cy: i32, radius: i32) {
+        for (x, y) in disc(cx, cy, radius) {
+            if let Some(c) = self.get(x, y)
+                && c.mat == Material::Gravel
+                && c.life == GRAVEL_SETTLED
+            {
+                let i = self.idx(x, y);
+                self.cells[i].life = 4 + self.rng.next_u8() % 30;
+                self.touch(x, y);
+                self.events.push(SimEvent::CollapseStarted { x, y });
+            }
+        }
+    }
+
+    /// Charges a conductive cell (and anything conductive next to it).
+    pub fn electrify(&mut self, x: i32, y: i32, charge: u8) {
+        for (cx, cy) in disc(x, y, 1) {
+            if let Some(c) = self.get(cx, cy)
+                && c.mat.props().conductive
+                && c.life < charge
+            {
+                let i = self.idx(cx, cy);
+                self.cells[i].life = charge;
+                self.touch(cx, cy);
+                self.events.push(SimEvent::Electrified { x: cx, y: cy });
+            }
+        }
+    }
+
     /// Total heat of materials within `radius` (negative near ice).
     pub fn heat_near(&self, cx: i32, cy: i32, radius: i32) -> i32 {
         disc(cx, cy, radius).map(|(x, y)| self.get(x, y).map_or(0, |c| c.mat.props().heat as i32)).sum()
