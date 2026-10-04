@@ -112,4 +112,21 @@ Each milestone ends with a runnable game and a commit.
 
 ## Progress log
 
-- M0: plan written. The art and audio generators are being built in parallel.
+- **M0:** plan written. Art and audio generators built in parallel by helper agents.
+- **M1:** expanded the material table to 31 materials with property-driven rules. Added acid, electricity, frost, explosions, gravel cave-ins, fungus growth, heat cracking and melting, ballistic particles, random ticks and sim events. 23 unit tests.
+- **M2:** `descent.rs` layered world generation with set pieces, altars, shrines, chests, creatures and the core chamber. Tests cover determinism, content and that the core is reachable. Added the `descent_map` example for visual checks.
+- **M3:** the run loop: player verbs, hazards, entities, creatures, items, achievements, save file, HUD and summary. An autoplay bot and screenshot flags allow unattended play-testing.
+  - Play-testing found that the dig hole was narrower than the player (the player stood on pillars). Fixed by widening the dig and narrowing the collision box.
+  - Achievements were firing from natural world activity. They now only count events near recent player actions.
+- **M5:** half-resolution light map with sweep propagation, per-layer parallax backgrounds, a sky mask, rendering of in-flight particles, ambient effects (embers, smoke, fizz, sparks, splashes).
+- **M6:** audio plugin with positional falloff, per-sound rate limits and volumes, layer ambience, menu music and volume settings.
+- **M7:** full menu flow: new run with loadout and seed, unlocks screen, settings, multiplayer and sandbox. Pixel theme, hover and click sounds, fade transitions.
+  - Performance went from 21 to 60 FPS in debug builds. Changes: simulating only chunks near the player, letting settled gas sleep, shading only visible chunks, and compiling the game crate at opt-level 2 in dev.
+- **M8:** balancing. Changes: burial now displaces powder instead of killing; heat tuning; achievement thresholds; cause of death is the largest hit; clippy clean.
+
+## Known gaps
+
+- **Run length unmeasured:** the 10–20 minute target for a skilled player couldn't be checked. The bot is a test tool, not a skilled player.
+- **Run state isn't synced for multiplayer yet:** see the README's multiplayer section.
+- **No mid-run save:** "Continue" means retrying a seed from the summary or the New Run screen.
+- **Single-threaded simulation:** the active region keeps it fast. Checkerboard multithreading is the next performance step.
