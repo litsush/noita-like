@@ -1,0 +1,271 @@
+================================================================================
+PROMPT: Build the "Descent to the Core" roguelike prototype
+================================================================================
+
+You are working in the `noita-like` repository (https://github.com/litsush/noita-like),
+a Rust workspace for a Noita-style falling-sand game called SBCT. Your job is to build
+a polished, playable roguelike prototype on top of it.
+
+Work entirely on a new branch called `roguelike-prototype`, created from `main`.
+Commit in small, logical steps with clear messages and push the branch to `origin`
+when you're done. Do not merge into `main` or open a PR unless asked.
+
+--------------------------------------------------------------------------------
+1. WHAT ALREADY EXISTS (read this code before writing anything)
+--------------------------------------------------------------------------------
+
+- `crates/sim`: engine-independent cell simulation with no Bevy dependency. It has
+  materials (`material.rs`: Empty, Stone, Dirt, Grass, Wood, Sand, Ash, Water, Oil,
+  Lava, Fire, Smoke, Steam, with kinds Solid/Powder/Liquid/Gas/Fire and properties
+  like density, flammability and dispersion), a chunked world with sleeping 64x64
+  chunks (`world.rs`), world generation (`worldgen.rs`) and a seeded RNG (`rng.rs`).
+- `crates/net`: wire protocol, a `Transport` trait, Steam and TCP transports.
+- `crates/game`: the Bevy 0.19 client with bevy_egui 0.42. It has a menu, session
+  (host-authoritative multiplayer), rendering, player movement, digging and
+  placing, and a HUD.
+- README.md describes how to run it (`cargo run`, `cargo run -- --singleplayer`,
+  `--seed <n>`, LAN flags).
+
+Respect the existing architecture. Simulation logic belongs in `sim` (keep it
+Bevy-free and headless-testable). Presentation, input, audio and UI belong in `game`.
+Keep the existing multiplayer and menu code compiling and working. The roguelike
+mode can be singleplayer-first, but don't break the host-authoritative model:
+design new sim state so it could be synchronized later, and leave a short note
+in the README on what multiplayer support would still need.
+
+--------------------------------------------------------------------------------
+2. THE GAME
+--------------------------------------------------------------------------------
+
+Working title: "Descent to the Core".
+
+A Spelunky-style roguelike where you dig down through a procedurally generated,
+fully simulated planet to reach its core. Reaching the core wins the run.
+
+- One long run per attempt with permadeath. Death ends the run and returns you to a
+  run summary screen, then the main menu or a new run.
+- Every run uses a fresh random seed (shown on screen and in the summary so runs can
+  be replayed with `--seed`).
+- Isaac-style meta progression: completing achievements permanently unlocks new
+  upgrades, which then enter the item pool for future runs. Unlocks persist between
+  sessions in a save file (e.g. JSON in the platform's data dir or next to the
+  executable; keep it simple and robust to a missing or corrupt file).
+
+DESIGN PRINCIPLE (the most important rule): everything is built around the pixel
+physics. Upgrades change how the player interacts with materials, not numbers.
+"Your pickaxe turns stone into sand" is good. "+10% damage" is bad. Emergent
+combinations of materials should create the memorable moments: a breached water
+pocket flooding a tunnel, lava meeting water and producing steam that opens a path,
+fire racing along fungus and burning your rope, a cave-in you trigger on purpose.
+
+--------------------------------------------------------------------------------
+3. WORLD: LAYERS TO THE CORE
+--------------------------------------------------------------------------------
+
+The world is a tall vertical shaft (wide enough to explore sideways, much taller
+than it is wide). Generation uses layered noise plus placement rules, not pure
+randomness, and must be deterministic from the seed. Depth is progress, and danger
+rises naturally with it.
+
+  Layer 1 - Crust: dirt, stone, roots/wood, water pockets, sand, the occasional
+            oil seam. Almost safe; teaches digging, falling sand and water.
+  Layer 2 - Upper Mantle: hotter stone, magma veins, steam vents, unstable gravel,
+            gas pockets. Heat becomes a threat.
+  Layer 3 - Deep Mantle: crystal growths, glowing fungus, pressure fractures,
+            acid pools, explosive gas chambers. Alien and dangerous.
+  Layer 4 - Outer Core: liquid metal, extreme heat, conductive materials, sparks.
+  The Core: a final hand-built-feeling chamber containing the goal. Reaching and
+            touching it wins the run with a satisfying ending sequence.
+
+Add set pieces stamped into generation (each layer gets a few): a flooded ruin, a
+gas-filled chamber, an abandoned mine with explosive crates, a magma chamber with a
+fragile bridge, a crystal cavern. There must always be at least one possible route
+down, but it should never be obvious, and each layer should offer routes with
+different risks. Show a clear on-screen transition when the player enters a new
+layer (name banner, music/ambience shift, palette shift in lighting and background).
+
+--------------------------------------------------------------------------------
+4. MATERIALS AND INTERACTIONS
+--------------------------------------------------------------------------------
+
+Extend the material table to about 20 materials. Add new properties to `Props`
+where needed instead of special-casing behaviour, for example:
+  hardness (dig speed), temperature/heat emission, conductivity, corrosiveness,
+  explosiveness, light emission, and "spreads/grows".
+
+Suggested new materials: Gravel, Crystal, Fungus (flammable, slowly spreads,
+glows), Acid, Gas (flammable/explosive), Obsidian, Ice, Liquid Metal, Explosive
+(crate or powder), Rope (placed by player, flammable), Ore/gem (valuable),
+Bedrock-like Core Shell.
+
+Required interactions (implement them generally, driven by properties):
+  - water + lava -> steam + obsidian/stone
+  - fire ignites flammables (wood, oil, fungus, gas, rope); gas explodes
+  - acid dissolves most solids (not obsidian/crystal) and is consumed
+  - heat melts ice into water, cools near water, cracks some stone
+  - electricity/sparks travel through conductive materials (water, metal)
+  - unsupported gravel/sand collapses; heavy materials sink through lighter liquids
+  - explosions destroy terrain in a radius, throw particles, and damage entities
+
+Keep the simulation fast. The existing sleeping-chunk system must still work, and
+debug builds should stay playable. Add unit tests in `sim` for the key
+interactions.
+
+--------------------------------------------------------------------------------
+5. PLAYER, HEALTH AND HAZARDS
+--------------------------------------------------------------------------------
+
+Base verbs only (upgrades add the rest):
+  - Move, jump, climb walls briefly, and a short dash.
+  - Dig with a pickaxe; dig speed depends on material hardness.
+  - Throw or place a limited supply of rope (for climbing back up) and torches/flares
+    (light, and they ignite flammables).
+  - Interact (pick up items, open chests, touch the core).
+
+Health and hazards: hearts or an HP bar. Damage from fire, lava, heat, acid,
+explosions, crushing by falling material, drowning (breath meter while submerged),
+and toxic gas. Heat should be a visible meter that rises near hot materials in the
+deeper layers. Brief invulnerability frames and clear hit feedback (flash, knockback,
+screen shake, sound).
+
+A few simple creatures are welcome but optional and secondary to environmental
+danger, e.g. a cave crawler in layer 1, a fire-immune magma slug in layer 2, and
+glowing spore drifters in layer 3. If you add them, they must interact with the
+simulation too (burn, drown, get crushed, get dissolved).
+
+Lighting: the deeper caves are dark. Implement a lighting pass where the player's
+lamp, torches, lava, fire, fungus and crystals emit light. Darkness should be a
+real mechanic.
+
+--------------------------------------------------------------------------------
+6. UPGRADES (RUN ITEMS) AND META UNLOCKS
+--------------------------------------------------------------------------------
+
+Run items are found in chests, on altars, or bought at rare shrines using ore/gems
+collected during the run. Implement at least 15 items. At least 6 must be
+unlocked from the start; the rest unlock through achievements. Each item needs a
+name, icon sprite, short description and flavour line. Examples to start from:
+
+  Tool upgrades
+    - Crumbling Pick: dug stone turns into sand/gravel instead of vanishing
+    - Magma Pick: dug stone becomes lava (dangerous, powerful)
+    - Water Canister: spray water to cool, extinguish, or conduct electricity
+    - Acid Flask: throw to dissolve terrain and enemies
+    - Blast Charges: placeable explosives
+  Body upgrades
+    - Salamander Skin: immune to fire and lava, but water hurts you
+    - Gill Mask: breathe underwater and in gas
+    - Heavy Boots: walk on liquid metal, but sink fast in sand and water
+    - Thermal Suit: stores heat taken and releases it as a burst
+  World-shaping
+    - Frost Seed: placed seed that grows ice outward
+    - Fungal Spores: plant fungus that spreads, glows, and burns
+    - Pocket Sun: tiny heat source that cooks lava into obsidian
+  Risk/reward
+    - Beacon Heart: your light reveals far more but attracts creatures
+    - Volatile Core: every explosion you cause leaves behind ore
+    - Glass Cannon Pick: dig nearly instantly but take double damage
+
+Achievements unlock items and teach the physics. Implement at least 12, for example:
+  - "Flood Survivor": flood a chamber you're in and survive -> unlocks Gill Mask
+  - "Pyromaniac": ignite a gas pocket -> unlocks Blast Charges
+  - "Alchemist": dissolve 500 cells with acid -> unlocks Acid Flask upgrade
+  - "Obsidian Bridge": turn lava into obsidian with water -> unlocks Pocket Sun
+  - "Untouched": reach layer 2 without taking damage -> unlocks a starting item
+  - "Core Breaker": win a run -> unlocks a new starting loadout
+Show a toast with icon and sound when an achievement is earned mid-run, and an
+Unlocks/Achievements screen in the main menu showing locked (silhouette + hint)
+and unlocked entries.
+
+--------------------------------------------------------------------------------
+7. ART: SPRITES, ANIMATION AND FX
+--------------------------------------------------------------------------------
+
+There are no art assets yet, and you must create complete ones. Use a cohesive
+pixel-art style that fits the falling-sand cells (roughly 1 cell = 1 pixel, scaled
+up crisply with nearest-neighbour filtering).
+
+Generate the assets yourself. Either:
+  (a) write a small asset-generation script or Rust build step that draws
+      the sprite sheets programmatically and writes PNGs to `assets/`, then commit
+      the generated PNGs, or
+  (b) build sprite sheets at runtime from code-defined pixel grids/palettes.
+Prefer (a) so the art is inspectable. Whichever you choose, the result must look
+intentional and polished, not like placeholder rectangles.
+
+Required:
+  - Player sprite sheet: idle, run, jump, fall, climb, dig (directional), hurt,
+    death; at least 4-6 frames per looping animation.
+  - Item icons for every upgrade, plus chest, altar, shrine, rope, torch, ore/gem,
+    and the core itself (animated, pulsing, glowing).
+  - Creature sprites with animations, if creatures are included.
+  - Per-material cell shading: colour variance, plus subtle animation for liquids
+    (shimmer), lava (glow/flicker), fungus/crystal (glow) and fire (flicker).
+  - Parallax background per layer that shifts colour/mood with depth.
+  - Particles: dig debris coloured by the material dug, splashes, sparks, embers,
+    smoke puffs, explosion flash and shockwave, steam bursts, pickup sparkle.
+  - Juice: screen shake, hit-stop on big impacts, smooth camera with look-ahead,
+    death slow-motion.
+
+--------------------------------------------------------------------------------
+8. AUDIO: SFX AND MUSIC
+--------------------------------------------------------------------------------
+
+There are no audio assets yet. Generate them procedurally (e.g. a small synth
+script in the style of sfxr/jsfxr that writes WAV/OGG files to `assets/audio/`),
+and commit the generated files. Required:
+  - Footsteps per surface type, jump, land, dash, dig per material family (soft dirt,
+    hard stone, crystal ping), place rope/torch, pickup, item get fanfare, chest open.
+  - Hazards: fire crackle loop, sizzle (water on lava), splash, acid hiss, explosion,
+    rumble before a collapse, hurt, death.
+  - UI: hover, click, achievement unlock, layer-entered sting, victory theme.
+  - Ambient loop per layer that gets more ominous with depth (drones, drips, distant
+    rumbles). Simple generative music is a bonus.
+Positional/volume falloff for world sounds and rate-limiting so hundreds of cell
+events don't spam audio. Add master/music/SFX volume sliders in settings.
+
+--------------------------------------------------------------------------------
+9. UI
+--------------------------------------------------------------------------------
+
+Polished, consistent, readable UI (bevy_egui is already available; a custom
+pixel-art theme with a pixel font is strongly preferred over default egui styling).
+  - Main menu: New Run, Continue/Seeded Run (enter seed), Unlocks & Achievements,
+    Settings, Quit. Keep the existing multiplayer entries reachable.
+  - In-run HUD: health, heat meter, breath meter (when relevant), rope/torch counts,
+    ore count, equipped items with icons, depth meter showing the current layer and
+    distance to the core, current seed.
+  - Item pickup popup with name, description and flavour text.
+  - Pause menu with resume, settings, abandon run.
+  - Death screen and victory screen with a run summary: depth reached, time, cause of
+    death, items collected, achievements earned this run, seed.
+  - Smooth transitions and fades between screens.
+
+--------------------------------------------------------------------------------
+10. QUALITY BAR AND PROCESS
+--------------------------------------------------------------------------------
+
+- Before coding, read the existing crates and write a short plan in
+  `docs/roguelike-plan.md` (architecture, new modules, milestones). Update it as you go.
+- Build in milestones, keeping the game runnable at every commit:
+    1. Materials and interactions in `sim`, with tests
+    2. Layered worldgen down to the core, with set pieces
+    3. Player verbs, health and hazards, win and death
+    4. Items, achievements, persistence
+    5. Art, animation, particles and lighting
+    6. Audio
+    7. UI polish and the full menu flow
+    8. Balancing pass and bug fixing
+- `cargo build`, `cargo test` and `cargo clippy` must pass with no warnings. Run
+  `cargo fmt` (a rustfmt.toml exists).
+- Actually play the game to check it: run it, take screenshots if you can, and fix
+  what looks or feels wrong. A run from the surface to the core should take roughly
+  10-20 minutes for a skilled player.
+- Keep performance smooth (target 60 FPS) on a mid-range PC.
+- Update README.md with how to play the roguelike mode, its controls, and the asset
+  generation scripts.
+- When the prototype is finished, push the `roguelike-prototype` branch to origin
+  (`git push -u origin roguelike-prototype`) so everyone on the team can check it out
+  and test it. Make sure the pushed branch builds and runs from a clean clone with
+  `cargo run` and that all generated assets are committed. Then write a summary of
+  what was built, how to test it, what is rough or missing, and what you'd do next.
