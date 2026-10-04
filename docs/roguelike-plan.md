@@ -358,3 +358,25 @@ The wizard selection screen (first school, starting choice, seed) replaces New R
 7. UI rework.
 8. Audio rework (agent).
 9. Balancing and bug fixing.
+
+## Part B progress log
+
+- **Part A:** smart dig (Tab) with highlighted target cells, a rebindable Controls page reachable from the main and pause menus, and a fixed-size achievement toast with slide-in and fade-out.
+- **B2:** rope removed everywhere, including the material, input, HUD, art, sounds and loadouts. The pick became the dig spell beam, torches became light orbs (charges that recover), and ore veins became shard veins with collectable aether shards.
+- **B3:** eight schools, 37 scrolls, mana, cooldowns, wizard selection, the attunement altar (any altar attunes a wizard who has only one school), out-of-school scrolls shattering into shards, and save migration (achievements stored by name, old names mapped forward). Tests cover the school and fusion tables, attunement, shattering and migration.
+- **B4:** all 28 fusions are implemented on top of the simulation. Tests check that every fusion and active scroll changes the world or harms something.
+- **B5:** layers renamed and re-themed. Added new set pieces (attunement chamber, drowned halls, mushroom grove, ritual circles), fallen apprentices with 30 journal pages, mimics, hollowed apprentices, blind wyrms, spore puppets, cinder wraiths, lightseekers, and the Hollow Stalker. The Stalker can't be killed: it won't cross liquid, loses you at distance, and can be buried or frozen. Dread effects: vignette, whispers, silences, flickering orbs and the Stalker's camera wobble.
+- **B6:** all art regenerated: a layered wizard sprite tinted by both schools, spell effects per school, the icon sheet, props, creatures, the Stalker, the heart, backgrounds, an ornate title font and grimoire UI ornaments.
+- **B7:** grimoire UI covering the main menu, wizard selection, unlocks with schools, scrolls and fusions, settings, HUD, attunement modal, journal parchment, pause menu and summaries showing schools and fusion. Fixed a first-frame panic caused by naming the title font before egui had installed it. The UI scales down in small windows so panels never overlap.
+- **B8:** all audio regenerated: per-school cast and impact sounds, the dig beam by material, creature voices, the Stalker, whispers, stings, choral layer ambiences and new menu, victory and death themes. Volumes and rate limits retuned, and a test checks that every sound named in code exists.
+- **B9:** autoplay runs with several school pairs and with single-school starts, plus dev starts in every layer. No panics and no permanent stuck states.
+  - An open journal page blocked all interaction until clicked away. Interact now closes it.
+  - The bot learned to drain flooded shafts and take an attunement offer.
+  - The wetter crust makes the bot slow: about 130–220 m in 4 minutes.
+
+## Part B known gaps
+
+- **Run length unmeasured with skilled play.** Same caveat as Part A.
+- **Bot weaknesses.** It doesn't seek water when burning or explore for altars, so it rarely attunes on its own (use `--schools`).
+- **Balance.** Damage and costs were tuned against the bot and short manual checks. Fusion strength relative to single-school scrolls deserves a pass with real players.
+- **Art details.** In a few wizard frames the cloak or staff outline touches the frame edge.
