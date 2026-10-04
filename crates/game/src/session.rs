@@ -50,6 +50,8 @@ pub struct Session {
     pub world: Option<World>,
     pub players: HashMap<PeerId, RemotePlayer>,
     pub spawn: Vec2,
+    /// Draw the dark "underground" backdrop below the original surface.
+    pub backdrop: bool,
     /// Client only: chunks received during the initial download.
     pub chunks_received: usize,
     since_heard: f32,
@@ -81,6 +83,7 @@ impl Session {
             world: Some(world),
             players: HashMap::new(),
             spawn: Vec2::new(sx as f32, sy as f32),
+            backdrop: true,
             since_heard: 0.0,
             send_timer: 0.0,
         }
@@ -107,6 +110,7 @@ impl Session {
             world: None,
             players: HashMap::new(),
             spawn: Vec2::ZERO,
+            backdrop: true,
             chunks_received: 0,
             since_heard: 0.0,
             send_timer: 0.0,

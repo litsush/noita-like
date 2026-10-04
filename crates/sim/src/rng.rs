@@ -23,6 +23,12 @@ impl Rng {
         (self.next_u64() >> 56) as u8
     }
 
+    /// Uniform in [0, 1).
+    #[inline]
+    pub fn next_f32(&mut self) -> f32 {
+        (self.next_u64() >> 40) as f32 / (1u64 << 24) as f32
+    }
+
     #[inline]
     pub fn chance(&mut self, out_of_255: u8) -> bool {
         self.next_u8() < out_of_255

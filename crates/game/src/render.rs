@@ -1,18 +1,23 @@
-//! Draws the cell world as a single nearest-filtered texture, re-uploading
-//! only the chunks that changed.
+//! Draws the cell world as a grid of nearest-filtered texture tiles,
+//! re-shading only chunks that changed (plus visible animated chunks every
+//! few frames for liquid shimmer and glow) and re-uploading only their tiles.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::image::ImageSampler;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
-use sbct_sim::Material;
+use sbct_sim::{CHUNK_SIZE, Material};
 use sbct_sim::rng::hash2;
 
 use crate::session::Session;
 
 /// Screen pixels per cell.
 pub const PIXEL_SCALE: f32 = 3.0;
+/// Side of a world texture tile in cells (a multiple of the chunk size).
+const TILE: usize = 256;
+/// Visible animated chunks are re-shaded every this many frames.
+const ANIMATE_EVERY: u32 = 4;
 
 #[derive(Component)]
 pub struct WorldCamera;
@@ -22,7 +27,11 @@ pub struct WorldCamera;
 pub struct InGameEntity;
 
 #[derive(Resource)]
-pub struct WorldTexture(pub Handle<Image>);
+pub struct WorldTiles {
+    tiles_x: usize,
+    handles: Vec<Handle<Image>>,
+    frame: u32,
+}
 
 /// Whether egui is under the mouse, so clicks on UI don't dig.
 #[derive(Resource, Default)]
@@ -41,23 +50,39 @@ pub fn spawn_camera(mut commands: Commands) {
 
 pub fn spawn_world_view(mut commands: Commands, session: Res<Session>, mut images: ResMut<Assets<Image>>) {
     let Some(world) = &session.world else { return };
-    let (w, h) = (world.width() as u32, world.height() as u32);
-    let mut image = Image::new_fill(
-        Extent3d {
-            width: w,
-            height: h,
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        &[0, 0, 0, 0],
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
-    );
-    image.sampler = ImageSampler::nearest();
-    let handle = images.add(image);
+    let (tiles_x, tiles_y) = (world.width().div_ceil(TILE), world.height().div_ceil(TILE));
+    let mut handles = Vec::with_capacity(tiles_x * tiles_y);
+    for ty in 0..tiles_y {
+        for tx in 0..tiles_x {
+            let mut image = Image::new_fill(
+                Extent3d { width: TILE as u32, height: TILE as u32, depth_or_array_layers: 1 },
+                TextureDimension::D2,
+                &[0, 0, 0, 0],
+                TextureFormat::Rgba8UnormSrgb,
+                RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+            );
+            image.sampler = ImageSampler::nearest();
+            let handle = images.add(image);
+            let t = TILE as f32;
+            commands.spawn((
+                InGameEntity,
+                Sprite { image: handle.clone(), custom_size: Some(Vec2::splat(t)), ..default() },
+                Transform::from_xyz(tx as f32 * t + t / 2.0, -(ty as f32 * t + t / 2.0), 0.0),
+            ));
+            handles.push(handle);
+        }
+    }
+    commands.insert_resource(WorldTiles { tiles_x, handles, frame: 0 });
 
-    // Dark backdrop behind everything below the original surface, so dug-out
-    // areas and caves read as underground rather than sky.
+    if session.backdrop {
+        spawn_surface_backdrop(&mut commands, world, &mut images);
+    }
+}
+
+/// Dark backdrop behind everything below the original surface, so dug-out
+/// areas and caves read as underground rather than sky (sandbox worlds).
+fn spawn_surface_backdrop(commands: &mut Commands, world: &sbct_sim::World, images: &mut Assets<Image>) {
+    let (w, h) = (world.width() as u32, world.height() as u32);
     let mut backdrop = vec![0u8; (w * h * 4) as usize];
     for x in 0..w as i32 {
         let surface = (0..h as i32)
@@ -96,34 +121,49 @@ pub fn spawn_world_view(mut commands: Commands, session: Res<Session>, mut image
         },
         Transform::from_xyz(wf / 2.0, -hf / 2.0, -1.0),
     ));
-    commands.spawn((
-        InGameEntity,
-        Sprite {
-            image: handle.clone(),
-            custom_size: Some(Vec2::new(wf, hf)),
-            ..default()
-        },
-        Transform::from_xyz(wf / 2.0, -hf / 2.0, 0.0),
-    ));
-    commands.insert_resource(WorldTexture(handle));
 }
 
 pub fn upload_dirty_chunks(
     mut session: ResMut<Session>,
-    texture: Res<WorldTexture>,
+    mut tiles: ResMut<WorldTiles>,
     mut images: ResMut<Assets<Image>>,
+    camera: Single<(&Transform, &Projection), With<WorldCamera>>,
+    window: Single<&Window, With<bevy::window::PrimaryWindow>>,
 ) {
     let Some(world) = &mut session.world else { return };
-    let dirty = world.take_render_dirty();
-    if dirty.is_empty() {
-        return;
+    tiles.frame = tiles.frame.wrapping_add(1);
+    let frame = tiles.frame;
+    let mut dirty = world.take_render_dirty();
+
+    if frame.is_multiple_of(ANIMATE_EVERY) {
+        let (tf, projection) = *camera;
+        let scale = match projection {
+            Projection::Orthographic(o) => o.scale,
+            _ => 1.0,
+        };
+        let half = Vec2::new(window.width(), window.height()) * scale / 2.0 + 8.0;
+        let cs = CHUNK_SIZE as f32;
+        let (cx0, cx1) = ((tf.translation.x - half.x) / cs, (tf.translation.x + half.x) / cs);
+        let (cy0, cy1) = ((-tf.translation.y - half.y) / cs, (-tf.translation.y + half.y) / cs);
+        let clamp = |v: f32, n: usize| (v.max(0.0) as usize).min(n - 1);
+        for cy in clamp(cy0, world.chunks_y())..=clamp(cy1, world.chunks_y()) {
+            for cx in clamp(cx0, world.chunks_x())..=clamp(cx1, world.chunks_x()) {
+                if world.chunk_animates(cx, cy) {
+                    dirty.push((cx, cy));
+                }
+            }
+        }
+        dirty.sort_unstable();
+        dirty.dedup();
     }
-    let Some(mut image) = images.get_mut(&texture.0) else {
-        return;
-    };
-    let Some(data) = image.data.as_mut() else { return };
+
+    let per_tile = TILE / CHUNK_SIZE;
     for (cx, cy) in dirty {
-        world.write_chunk_rgba(cx, cy, data);
+        let (tx, ty) = (cx / per_tile, cy / per_tile);
+        let Some(handle) = tiles.handles.get(ty * tiles.tiles_x + tx) else { continue };
+        let Some(mut image) = images.get_mut(handle) else { continue };
+        let Some(data) = image.data.as_mut() else { continue };
+        world.write_chunk_rgba(cx, cy, data, TILE, (tx * TILE, ty * TILE), frame);
     }
 }
 
@@ -131,5 +171,5 @@ pub fn cleanup_world_view(mut commands: Commands, entities: Query<Entity, With<I
     for e in &entities {
         commands.entity(e).despawn();
     }
-    commands.remove_resource::<WorldTexture>();
+    commands.remove_resource::<WorldTiles>();
 }
