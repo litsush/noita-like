@@ -4,12 +4,12 @@ use crate::material::Material;
 use crate::rng::{Rng, hash2};
 use crate::world::World;
 
-fn lattice(seed: u64, x: i32, y: i32) -> f32 {
+pub(crate) fn lattice(seed: u64, x: i32, y: i32) -> f32 {
     (hash2(seed, x, y) >> 40) as f32 / (1u64 << 24) as f32
 }
 
 /// Smooth value noise in [0, 1].
-fn value_noise(seed: u64, x: f32, y: f32) -> f32 {
+pub(crate) fn value_noise(seed: u64, x: f32, y: f32) -> f32 {
     let (x0, y0) = (x.floor() as i32, y.floor() as i32);
     let (fx, fy) = (x - x0 as f32, y - y0 as f32);
     let (sx, sy) = (fx * fx * (3.0 - 2.0 * fx), fy * fy * (3.0 - 2.0 * fy));
@@ -23,7 +23,7 @@ fn value_noise(seed: u64, x: f32, y: f32) -> f32 {
 }
 
 /// Fractal noise in roughly [0, 1].
-fn fbm(seed: u64, x: f32, y: f32, octaves: u32) -> f32 {
+pub(crate) fn fbm(seed: u64, x: f32, y: f32, octaves: u32) -> f32 {
     let (mut sum, mut amp, mut freq, mut norm) = (0.0, 1.0, 1.0, 0.0);
     for o in 0..octaves {
         sum += value_noise(seed.wrapping_add(o as u64 * 7919), x * freq, y * freq) * amp;

@@ -2,6 +2,7 @@
 //! so it can run headless (tests, dedicated server) as well as in the client.
 
 pub mod color;
+pub mod descent;
 pub mod material;
 pub mod rng;
 pub mod world;

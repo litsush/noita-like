@@ -163,7 +163,7 @@ static PROPS: [Props; Material::COUNT] = [
         heat: 4,
         conductive: true,
         light: [160, 90, 40],
-        ..liquid("Metal", [214, 196, 176], 24, 200, 1)
+        ..liquid("Metal", [244, 178, 96], 24, 200, 1)
     },
     Props { flammability: 200, explosive: 9, ..solid("Explosive", [180, 46, 38], 20, 18) },
     Props { flammability: 90, climbable: true, ..solid("Rope", [176, 142, 92], 18, 1) },
