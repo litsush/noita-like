@@ -48,6 +48,11 @@ pub struct Autoplay {
     last_pos: Vec2,
     wiggle: f32,
     timer: f32,
+    /// Seconds spent in liquid; a flooded shaft sends the bot sideways.
+    flooded: f32,
+    /// While positive, tunnel sideways (in this direction) to drain the shaft.
+    drain: f32,
+    drain_dir: f32,
 }
 
 pub fn read_input(
@@ -147,7 +152,7 @@ pub fn bot_input(
     mut bot: ResMut<Autoplay>,
     mut input: ResMut<PlayerInput>,
     player: Res<RunPlayer>,
-    run: Res<Run>,
+    mut run: ResMut<Run>,
     session: Res<Session>,
     props: Query<&Prop>,
     time: Res<Time>,
@@ -158,6 +163,11 @@ pub fn bot_input(
     let c = p.center();
     let mut i = PlayerInput::default();
     bot.timer += dt;
+
+    // Take the first scroll the attunement altar offers.
+    if run.attunement.is_some() && run.attune_pick.is_none() && bot.timer.fract() < dt {
+        run.attune_pick = Some(0);
+    }
 
     if run.phase != Phase::Playing {
         *input = i;
@@ -181,27 +191,42 @@ pub fn bot_input(
     let dx = target_x - p.pos.x;
     let want = if dx.abs() > 30.0 { dx.signum() } else { 0.0 };
     let wiggle_dir = if (bot.timer * 0.7).sin() > 0.0 { 1.0 } else { -1.0 };
-    let dir = if bot.wiggle > 0.0 { wiggle_dir } else { want };
-    i.left = dir < 0.0;
-    i.right = dir > 0.0;
-
-    // Danger: liquid at head or burning -> go up and sideways.
+    // Liquid: dive to dig the floor, but if the shaft stays flooded,
+    // tunnel sideways so the water drains away.
     let head = world.material(p.head().x as i32, p.head().y as i32);
     let feet = world.material(p.pos.x as i32, p.pos.y as i32 - 1);
     let in_liquid = head.kind() == sbct_sim::Kind::Liquid || feet.kind() == sbct_sim::Kind::Liquid;
+    bot.flooded = if in_liquid { bot.flooded + dt } else { 0.0 };
+    if bot.flooded > 3.0 && bot.drain <= 0.0 {
+        bot.drain = 2.5;
+        bot.drain_dir = if (bot.timer as i32) % 2 == 0 { 1.0 } else { -1.0 };
+        bot.flooded = 0.0;
+    }
+    bot.drain = (bot.drain - dt).max(0.0);
+    let draining = bot.drain > 0.0;
+    let dir = if draining {
+        bot.drain_dir
+    } else if bot.wiggle > 0.0 {
+        wiggle_dir
+    } else {
+        want
+    };
+    i.left = dir < 0.0;
+    i.right = dir > 0.0;
+
     // Surface for air; otherwise swim down to dig the pool's floor.
     let harmful =
         matches!(head, Material::Lava | Material::Acid) || matches!(feet, Material::Lava | Material::Acid);
-    if player.breath < 60.0 || harmful {
+    if player.breath < if draining { 30.0 } else { 60.0 } || harmful {
         i.up = true;
-    } else if in_liquid {
+    } else if in_liquid && !draining {
         i.down = true;
     }
 
     // Dig: below us mostly, toward the target when far off sideways.
     let below = Vec2::new(p.pos.x + dir * 2.0, p.pos.y + 2.0);
     let side = Vec2::new(c.x + dir * 8.0, c.y);
-    let blocked_side = dir != 0.0 && p.wall != 0;
+    let blocked_side = dir != 0.0 && (p.wall != 0 || draining);
     let hazard_below = (1..14).any(|d| {
         matches!(
             world.material(c.x as i32, c.y as i32 + d),
@@ -234,7 +259,7 @@ pub fn bot_input(
                     | PropKind::Core
             )
     });
-    i.interact = near && (bot.timer * 4.0) as i32 % 2 == 0;
+    i.interact = (near || run.journal.is_some()) && (bot.timer * 4.0) as i32 % 2 == 0;
 
     // Occasionally use whatever active is selected, and light the way.
     i.use_pressed = (bot.timer * 0.5).fract() < dt * 0.5;

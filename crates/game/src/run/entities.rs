@@ -257,6 +257,11 @@ pub fn interact(
     paused: Res<super::hud::Paused>,
 ) {
     prompt.0 = None;
+    // Interact again puts a journal page away.
+    if run.journal.is_some() && input.interact && !paused.0 {
+        run.journal = None;
+        return;
+    }
     if !run.is_playing() || paused.0 || run.attunement.is_some() || run.journal.is_some() {
         return;
     }
