@@ -187,9 +187,15 @@ pub fn bot_input(
 
     // Danger: liquid at head or burning -> go up and sideways.
     let head = world.material(p.head().x as i32, p.head().y as i32);
-    let in_liquid = head.kind() == sbct_sim::Kind::Liquid;
-    if in_liquid || player.breath < 60.0 {
+    let feet = world.material(p.pos.x as i32, p.pos.y as i32 - 1);
+    let in_liquid = head.kind() == sbct_sim::Kind::Liquid || feet.kind() == sbct_sim::Kind::Liquid;
+    // Surface for air; otherwise swim down to dig the pool's floor.
+    let harmful =
+        matches!(head, Material::Lava | Material::Acid) || matches!(feet, Material::Lava | Material::Acid);
+    if player.breath < 60.0 || harmful {
         i.up = true;
+    } else if in_liquid {
+        i.down = true;
     }
 
     // Dig: below us mostly, toward the target when far off sideways.
