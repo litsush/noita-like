@@ -1,438 +1,311 @@
+STATUS: NEW
 ================================================================================
-PROMPT: Build the "Descent to the Core" co-op roguelike prototype
+PROMPT: Wizard rework, smart dig, controls menu and toast fix
 ================================================================================
 
-You are working in the `noita-like` repository (https://github.com/litsush/noita-like),
-a Rust workspace for a Noita-style falling-sand game called SBCT. Your job is to build
-a polished, playable co-op roguelike prototype on top of it.
+Before anything else, read CLAUDE.md. It explains the NEW/OLD status line at the
+top of this file. Do this prompt only because it is marked NEW, and change it to
+OLD when you have finished (see section 9).
 
-THIS IS A MULTIPLAYER-FIRST PROTOTYPE. The game is designed for 1-4 players
-working together, and multiplayer must work fully: every feature in this prompt
-has to function and stay in sync over the network, not just in singleplayer.
-Singleplayer is simply a session with one player.
+You are working in the `noita-like` repository (https://github.com/litsush/noita-like).
+The `roguelike-prototype` branch already holds a working falling-sand roguelike
+called "Descent to the Core": a player digs through a simulated planet with five
+layers to touch its core. Read `README.md` and `docs/roguelike-plan.md` first.
+They describe the architecture, the 31 materials, the 17 items, the 13
+achievements, the save file, the dev flags and the asset generation scripts.
 
-Work entirely on a new branch called `roguelike-prototype`, created from `main`.
-Commit in small, logical steps with clear messages and push the branch to `origin`
-when you're done. Do not merge into `main` or open a PR unless asked.
+BRANCH AND GIT
+  - Keep working on the existing `roguelike-prototype` branch. Do not create a new
+    branch, do not merge into `main` and do not open a PR unless asked.
+  - Commit and push as you go: make a commit after each logical step (at minimum
+    once per milestone in section 8), and `git push origin roguelike-prototype`
+    after each milestone, so the team can pull and test progress at any time.
+  - Every pushed commit must build and run.
 
---------------------------------------------------------------------------------
-1. WHAT ALREADY EXISTS (read this code before writing anything)
---------------------------------------------------------------------------------
+This prompt has two parts. Part A is a set of smaller fixes and features. Part B is
+a large theme and gameplay rework. Do Part A first, since it's quick and doesn't
+depend on the rework, then push it before starting Part B.
 
-- `crates/sim`: engine-independent cell simulation with no Bevy dependency. It has
-  materials (`material.rs`: Empty, Stone, Dirt, Grass, Wood, Sand, Ash, Water, Oil,
-  Lava, Fire, Smoke, Steam, with kinds Solid/Powder/Liquid/Gas/Fire and properties
-  like density, flammability and dispersion), a chunked world with sleeping 64x64
-  chunks (`world.rs`), world generation (`worldgen.rs`) and a seeded RNG (`rng.rs`).
-- `crates/net`: wire protocol (serde/bincode, `protocol.rs` with `ClientMsg`,
-  `HostMsg`, `PROTOCOL_VERSION`), a `Transport` trait, a Steam transport (lobbies
-  plus relayed P2P) and a TCP transport for LAN/dev.
-- `crates/game`: the Bevy 0.19 client with bevy_egui 0.42. It has a menu, the session
-  (`session.rs`: Offline/Host/Client roles), rendering, player movement, digging
-  and placing, and a HUD.
-- The current network model: the host is authoritative and simulates at 60 Hz. At
-  20 Hz it sends changed chunks (run-length encoded, reliable) and player positions
-  (unreliable). Clients don't simulate cells; they own their own movement and apply
-  their own edits optimistically, and host chunk updates overwrite them. Joining
-  clients download the full world.
-- README.md describes how to run it, including local multiplayer testing:
-    cargo run -- --host-lan --name Alice
-    cargo run -- --join-lan 127.0.0.1 --name Bob
-
-Respect the existing architecture. Simulation logic belongs in `sim` (keep it
-Bevy-free and headless-testable). Wire formats and transports belong in `net`.
-Presentation, input, audio and UI belong in `game`. Keep the host-authoritative
-model and extend it; don't replace it with something else unless you document a
-strong reason in the plan. Bump `PROTOCOL_VERSION` whenever the protocol changes.
+================================================================================
+PART A: CONTROLS AND UI FIXES
+================================================================================
 
 --------------------------------------------------------------------------------
-2. THE GAME
+1. SMART DIG MODE (TAB TOGGLE)
 --------------------------------------------------------------------------------
 
-Working title: "Descent to the Core".
+Today digging always targets the cursor (`crates/game/src/run/input.rs` and
+`run/player.rs`). Holding dig while moving often snags the player on single-pixel
+bits of terrain.
 
-A Spelunky-style co-op roguelike where a team of 1-4 players digs down through a
-procedurally generated, fully simulated planet to reach its core. Reaching the core
-wins the run for the whole team.
-
-- One long run per attempt with permadeath. A dead player becomes a spectator (see
-  section 6) and can be revived by teammates. The run ends in defeat only when every
-  player is dead, then shows a team run summary and returns everyone to the lobby.
-- Every run uses a fresh random seed chosen by the host (shown on screen and in the
-  summary so runs can be replayed with `--seed`).
-- Isaac-style meta progression: completing achievements permanently unlocks new
-  upgrades, which then enter the item pool for future runs. Unlocks are saved per
-  player locally (e.g. JSON in the platform's data dir; robust to a missing or
-  corrupt file). In a multiplayer run, the item pool is the UNION of every
-  connected player's unlocks, so playing with friends who have unlocked more is a
-  reward in itself. Achievements are earned and saved per player, including by
-  clients.
-
-DESIGN PRINCIPLE (the most important rule): everything is built around the pixel
-physics. Upgrades change how players interact with materials, not numbers.
-"Your pickaxe turns stone into sand" is good. "+10% damage" is bad. Emergent
-combinations of materials should create the memorable moments, and in co-op those
-moments should involve the team: one player breaches a water pocket and floods a
-teammate's tunnel, someone's torch ignites the fungus that the rope everyone is
-climbing is anchored to, one player cools lava with water so another can cross.
+Add a second dig mode and toggle between them with Tab:
+  - Cursor dig (the current behaviour): dig where the cursor points.
+  - Smart dig (like Terraria's smart cursor): dig the nearest cells that block the
+    player. With dig held, it picks the cells closest to the player's body in the
+    direction the player is moving or aiming (the movement keys take priority; with
+    no movement keys held, use the direction toward the cursor). It clears whatever
+    would stop the player's collision box from moving that way, including small
+    lips and single pixels at foot and head height. Holding dig plus a direction
+    should let the player tunnel smoothly in that direction without getting caught.
+    Holding down should dig straight down beneath the player.
+  - In smart dig mode, highlight the cells that will be dug next with a clear,
+    readable outline or tint that works against every material and in darkness.
+  - Show the current mode on the HUD (a small icon plus label), play a short sound
+    when it changes, and remember the choice in the save file.
+  - Dig speed, hardness rules, undiggable materials and item effects on digging
+    (e.g. what Crumbling Pick does today) must work the same in both modes.
+  - Update the autoplay bot so it still works, and use smart dig in it if that helps.
 
 --------------------------------------------------------------------------------
-3. MULTIPLAYER (FIRST-CLASS, REQUIRED)
+2. CONTROLS MENU
 --------------------------------------------------------------------------------
 
-Session and lobby
-  - Hosting creates a pre-run lobby (Steam or LAN, through the existing transports)
-    that shows each player's name, colour, ready state and ping. The host picks or
-    rolls the seed and starts the run when everyone is ready. Up to 4 players.
-  - Each player gets a distinct colour tint for their sprite, nameplate, cursor,
-    rope and pings.
-  - Players can join the lobby between runs. Joining a run in progress is allowed
-    (the new player spawns as a spectator and can be revived), and a player who
-    disconnects can rejoin the same run and get their character back.
-  - If the host leaves, end the run cleanly for everyone with a clear message.
-  - The existing `--host-lan` / `--join-lan` / `--name` / `--seed` flags must keep
-    working so the team can test without Steam.
-
-Synchronization: everything the game adds must be correct for every player:
-  - All new materials and interactions (they live in the host's sim, so they ride
-    the existing chunk updates; make sure chunk traffic holds up when lots of
-    chunks change at once, e.g. after explosions or floods).
-  - Player state: position, animation state, facing, health, heat, breath, held
-    item, inventory, alive/dead/spectating.
-  - Entities: items, chests, altars, shrines, ore pickups, thrown objects (acid
-    flasks, charges, flares), creatures and the core. Give entities stable network
-    IDs and replicate spawn, update and despawn from the host.
-  - Run state: current seed, elapsed time, team ore, each player's deepest layer,
-    run outcome.
-  - Events: achievements, item pickups, layer transitions, damage, deaths,
-    revives, explosions and other moments that drive sound, particles and screen
-    shake must be replicated as lightweight events so every client sees and hears
-    them (they don't need to be bit-exact, just timely).
-
-Authority and responsiveness
-  - The host validates every client action that changes the world or the run
-    (digging, placing, using items, buying at shrines, picking up items, reviving).
-    Reject impossible actions (out of range, item not owned, not enough ore).
-  - Item pickups must be resolved by the host so two players can never take the
-    same item.
-  - Clients should still feel responsive: keep local movement owned by the client,
-    and play local cosmetic feedback (dig particles, sounds, animations) immediately,
-    letting the host correct the world.
-  - Interpolate remote players and entities smoothly between network updates.
-  - Keep bandwidth reasonable: send deltas where possible, prefer unreliable
-    delivery for frequent state and reliable delivery for events that must arrive.
-
-Co-op mechanics that use the simulation
-  - Revives: a dead player drops a "soul ember" that teammates can carry to a revive
-    shrine (or the player's body, your call) to bring them back with partial health.
-    Embers are physical objects that can fall into lava or get washed away.
-  - Spectators can follow any living teammate and can place a ping to help.
-  - Pings: any player can ping a location (with a short sound and an on-screen
-    marker that shows off-screen direction for teammates).
-  - Friendly fire from the environment is on by default: explosions, fire, acid and
-    floods hurt everyone. Direct damage between players is off. The host can
-    toggle environmental friendly fire in the lobby.
-  - Rope is shared: anyone can climb anyone's rope.
-  - Off-screen teammates get edge-of-screen indicators with their colour and health.
-
-Camera: each player has their own camera following their character (this is
-networked, not split-screen).
+Add a Controls page to Settings. Settings must be reachable from both the main
+menu and the in-run pause menu (the pause menu doesn't have Settings today; add it
+there, opening the same settings UI).
+  - List every action with its current binding, grouped (Movement, Magic/Digging,
+    Interface).
+  - Make bindings rebindable: click an action, press a key or mouse button to bind
+    it, Esc cancels. Warn about conflicts and offer to swap. Include a "Reset to
+    defaults" button.
+  - Save bindings in the save file and route all in-run input through them
+    (`read_input` currently hard-codes keys). Old saves without bindings must load
+    with the defaults.
+  - Include the new smart dig toggle (Tab) and every control added in Part B.
 
 --------------------------------------------------------------------------------
-4. BALANCING FOR 1-4 PLAYERS
+3. ACHIEVEMENT TOAST
 --------------------------------------------------------------------------------
 
-The game must feel good solo and with 2, 3 and 4 players. Put all scaling values
-in one clearly named table or config (e.g. a `PartyScaling` struct indexed by
-player count) so they're easy to tune, and document the reasoning in the plan.
-Starting points to tune from:
+The achievement toast (`crates/game/src/run/hud.rs`, the "achievement toasts"
+block) renders as a very long, skinny shape in a bad position. Fix it:
+  - Give it a fixed, sensible size (a compact rectangle roughly 3-4 times wider
+    than it is tall, e.g. about 320x88 at the default UI scale) with the icon on the
+    left and the text wrapping inside it.
+  - Position it so it never overlaps other HUD elements or the item popup, with a
+    margin from the screen edge. Stack multiple toasts neatly with a gap.
+  - Add a short slide-in and fade-out.
+  - Check it at several window sizes and UI scales, including long achievement and
+    reward names, and take a screenshot to confirm.
+  - Restyle it to the new theme as part of Part B.
 
-  - Loot: items in chests/altars are per-player choices where it makes sense (e.g.
-    an altar offers N+1 items for N players and each player takes one), so nobody is
-    left without upgrades. Ore and rope/torch pickups scale up with player count, but
-    less than linearly.
-  - Starting supplies: each player gets their own rope and torches.
-  - Shrine prices scale with party size since ore is pooled for the team.
-  - Creatures: more spawns and slightly more health with more players, but not so
-    many that the screen becomes noise.
-  - World: the shaft gets wider with more players so the team has room to split up
-    and take different routes, while total depth stays the same so run length stays
-    around 10-20 minutes.
-  - Hazards: environmental hazards should not scale up. More players already means
-    more accidental floods and fires.
-  - Solo players can't be revived, so give a single player one extra life (a
-    "spare ember") to compensate.
+Push Part A before starting Part B.
 
-Playtest every player count (see section 11) and adjust the table until each
-feels fair. Record the final values and what you changed in the plan.
+================================================================================
+PART B: THE WIZARD REWORK (WIZARD FANTASY HORROR CAVE GAME)
+================================================================================
 
 --------------------------------------------------------------------------------
-5. WORLD: LAYERS TO THE CORE
+4. THE NEW PREMISE
 --------------------------------------------------------------------------------
 
-The world is a tall vertical shaft (wide enough to explore sideways, much taller
-than it is wide). Generation uses layered noise plus placement rules, not pure
-randomness, and must be deterministic from the seed and player count. The host
-generates it and clients receive it through the existing world download. Depth is
-progress, and danger rises naturally with it.
+The game becomes a wizard fantasy horror cave game. You play an apprentice
+elemental wizard who must descend to the core of the earth to complete their
+wizard training. Along the way they collect spell scrolls that grant elemental
+magic. Many apprentices went down before them, and most never came back.
 
-  Layer 1 - Crust: dirt, stone, roots/wood, water pockets, sand, the occasional
-            oil seam. Almost safe; teaches digging, falling sand and water.
-  Layer 2 - Upper Mantle: hotter stone, magma veins, steam vents, unstable gravel,
-            gas pockets. Heat becomes a threat.
-  Layer 3 - Deep Mantle: crystal growths, glowing fungus, pressure fractures,
-            acid pools, explosive gas chambers. Alien and dangerous.
-  Layer 4 - Outer Core: liquid metal, extreme heat, conductive materials, sparks.
-  The Core: a final hand-built-feeling chamber containing the goal. Any living
-            player touching it wins the run for the whole team, with a satisfying
-            ending sequence everyone sees together. Dead players count as winners.
+The tone is mystical dark fantasy with horror: dread, isolation, darkness, things
+moving just outside your light, and the remains and journals of apprentices who
+failed. Aim for unsettling and atmospheric rather than gory.
 
-Add set pieces stamped into generation (each layer gets a few): a flooded ruin, a
-gas-filled chamber, an abandoned mine with explosive crates, a magma chamber with a
-fragile bridge, a crystal cavern, and some designed for co-op (e.g. a sealed door
-with two pressure plates, a lava channel one player must cool while another
-crosses). Co-op set pieces must remain solvable solo. There must always be at
-least one possible route down, but it should never be obvious, and each layer
-should offer routes with different risks. Show a clear on-screen transition when a
-player enters a new layer (name banner, ambience shift, palette shift in lighting
-and background), and notify the team when the first player reaches a new layer.
+Rename the game if a better title fits the new theme, and update the menu, window
+title and README to match. Keep the code's existing structure and module names
+unless renaming clearly helps.
+
+What stays the same: the falling-sand simulation, the layered descent, permadeath,
+random seeds, achievements unlocking new content for later runs, and the most
+important design rule. Every upgrade must change how the player interacts with
+materials rather than adjusting numbers.
+
+Design all new run state so it could be synced for multiplayer later (plain data,
+host-authoritative-friendly), as the existing code already does, and update the
+README's multiplayer section to match.
 
 --------------------------------------------------------------------------------
-6. MATERIALS AND INTERACTIONS
+5. CORE CHANGES
 --------------------------------------------------------------------------------
 
-Extend the material table to about 20 materials. Add new properties to `Props`
-where needed instead of special-casing behaviour, for example:
-  hardness (dig speed), temperature/heat emission, conductivity, corrosiveness,
-  explosiveness, light emission, and "spreads/grows".
+The wizard's staff replaces every tool:
+  - Dig spell: digging is now a spell cast from the staff, aimed and held as
+    before (both dig modes from section 1). Give it a visible beam or bolt effect
+    and casting sounds. Its speed still depends on material hardness. The old pick
+    items become dig-spell variants in the new schools (e.g. Crumbling Pick turns
+    into a terramancy scroll).
+  - Light orb spell replaces torches: cast a floating ball of light that sticks
+    where it lands or drifts slowly, lights the area and fades over time. Limit it
+    with charges or a cooldown instead of a torch count. Decide whether it ignites
+    flammables (a pyromancy upgrade could add that).
+  - Rope is removed from the game completely: the material, the input, the HUD
+    counter, the art, the sound, the loadouts and any achievement that depends on
+    it. The player still needs to be able to climb out of holes, so make sure
+    the base movement (wall climb, wall jump, and digging steps with the dig
+    spell) plus schools like aeromancy or terramancy cover that. Playtest that a
+    player without any upgrades can't get permanently stuck.
+  - Ore is replaced by collectable crystals: glowing crystal shards that drop from
+    crystal veins and from chests. They are the currency for shrines. There is
+    already a Crystal material in the sim; make the collectable currency clearly
+    distinct from it in name and look, or merge the two deliberately.
+  - Loadouts become wizard starting choices (see section 6).
 
-Suggested new materials: Gravel, Crystal, Fungus (flammable, slowly spreads,
-glows), Acid, Gas (flammable/explosive), Obsidian, Ice, Liquid Metal, Explosive
-(crate or powder), Rope (placed by players, flammable), Ore/gem (valuable),
-Bedrock-like Core Shell.
-
-Required interactions (implement them generally, driven by properties):
-  - water + lava -> steam + obsidian/stone
-  - fire ignites flammables (wood, oil, fungus, gas, rope); gas explodes
-  - acid dissolves most solids (not obsidian/crystal) and is consumed
-  - heat melts ice into water, cools near water, cracks some stone
-  - electricity/sparks travel through conductive materials (water, metal)
-  - unsupported gravel/sand collapses; heavy materials sink through lighter liquids
-  - explosions destroy terrain in a radius, throw particles, and damage entities
-
-Keep the simulation fast enough for a host running a 4-player world (wider shaft,
-more active chunks). The existing sleeping-chunk system must still work, and debug
-builds should stay playable. Add unit tests in `sim` for the key interactions.
-
---------------------------------------------------------------------------------
-7. PLAYERS, HEALTH AND HAZARDS
---------------------------------------------------------------------------------
-
-Base verbs only (upgrades add the rest):
-  - Move, jump, climb walls briefly, and a short dash.
-  - Dig with a pickaxe; dig speed depends on material hardness.
-  - Throw or place a limited supply of rope (for climbing back up) and torches/flares
-    (light, and they ignite flammables).
-  - Interact (pick up items, open chests, carry a soul ember, touch the core).
-  - Ping.
-
-Health and hazards: hearts or an HP bar. Damage from fire, lava, heat, acid,
-explosions, crushing by falling material, drowning (breath meter while submerged),
-and toxic gas. Heat should be a visible meter that rises near hot materials in the
-deeper layers. Brief invulnerability frames and clear hit feedback (flash, knockback,
-screen shake, sound). Health and damage are decided by the host.
-
-A few simple creatures are welcome but optional and secondary to environmental
-danger, e.g. a cave crawler in layer 1, a fire-immune magma slug in layer 2, and
-glowing spore drifters in layer 3. If you add them, they are simulated by the host,
-replicated to clients, pick targets among all players, and interact with the
-simulation too (burn, drown, get crushed, get dissolved).
-
-Lighting: the deeper caves are dark. Implement a lighting pass where every player's
-lamp, torches, lava, fire, fungus and crystals emit light. Teammates' lamps light
-the cave for everyone. Darkness should be a real mechanic.
+Mana: decide whether spells use a shared mana bar, per-spell charges and
+cooldowns, or both. Pick whatever creates the most interesting decisions and keep
+the HUD readable. Document the choice in the plan.
 
 --------------------------------------------------------------------------------
-8. UPGRADES (RUN ITEMS) AND META UNLOCKS
+6. ELEMENTAL SCHOOLS AND THE TWO-SCHOOL SPECIALIZATION
 --------------------------------------------------------------------------------
 
-Run items are found in chests, on altars, or bought at rare shrines using the
-team's ore. Implement at least 15 items. At least 6 must be unlocked from the start;
-the rest unlock through achievements. Each item needs a name, icon sprite, short
-description and flavour line. Items belong to the player who took them. Include a
-few items that are specifically good in co-op. Examples to start from:
+There is a wide range of elemental schools, but every wizard specializes in
+exactly two of them per run. Every pair of schools must synergize in its own,
+fun way, so the choice of two defines that run's build.
 
-  Tool upgrades
-    - Crumbling Pick: dug stone turns into sand/gravel instead of vanishing
-    - Magma Pick: dug stone becomes lava (dangerous to you and your team, powerful)
-    - Water Canister: spray water to cool, extinguish, or conduct electricity
-    - Acid Flask: throw to dissolve terrain and enemies
-    - Blast Charges: placeable explosives
-  Body upgrades
-    - Salamander Skin: immune to fire and lava, but water hurts you
-    - Gill Mask: breathe underwater and in gas
-    - Heavy Boots: walk on liquid metal, but sink fast in sand and water
-    - Thermal Suit: stores heat taken and releases it as a burst
-  World-shaping
-    - Frost Seed: placed seed that grows ice outward
-    - Fungal Spores: plant fungus that spreads, glows, and burns
-    - Pocket Sun: tiny heat source that cooks lava into obsidian
-  Co-op
-    - Ember Lantern: carried soul embers revive teammates anywhere, without a shrine
-    - Anchor Line: your rope can't burn, and teammates climbing it move faster
-    - Shared Lungs: teammates near you share your breath meter
-  Risk/reward
-    - Beacon Heart: your light reveals far more but attracts creatures
-    - Volatile Core: every explosion you cause leaves behind ore
-    - Glass Cannon Pick: dig nearly instantly but take double damage
+Schools (around 8; adjust names and the list as the design needs, but keep each
+tied to materials and interactions in the simulation):
+  - Pyromancy (fire, heat, lava, embers)
+  - Hydromancy (water, steam, currents, flooding)
+  - Terramancy (stone, sand, gravel, shaping and collapsing terrain)
+  - Cryomancy (ice, frost, freezing liquids, cold)
+  - Aeromancy (wind, gas, pushing powders and liquids, levitation)
+  - Fulmancy (lightning, sparks, conduction through water and metal)
+  - Alchemy or Venomancy (acid, poison, corrosion, transmutation)
+  - Mycomancy (fungus, growth, spores, rot)
+  Optional: Lumomancy (light, crystal) or Umbramancy (shadow, darkness), which
+  fit the horror theme well.
 
-Achievements unlock items and teach the physics. Implement at least 12, including
-some co-op ones, for example:
-  - "Flood Survivor": flood a chamber you're in and survive -> unlocks Gill Mask
-  - "Pyromaniac": ignite a gas pocket -> unlocks Blast Charges
-  - "Alchemist": dissolve 500 cells with acid -> unlocks Acid Flask upgrade
-  - "Obsidian Bridge": turn lava into obsidian with water -> unlocks Pocket Sun
-  - "Untouched": reach layer 2 without taking damage -> unlocks a starting item
-  - "Second Chance": revive a teammate -> unlocks Ember Lantern
-  - "Friendly Fire": kill a teammate with the environment -> unlocks a risky item
-  - "Full Expedition": win a run with 4 players -> unlocks a co-op item
-  - "Core Breaker": win a run -> unlocks a new starting loadout
-Show a toast with icon and sound when a player earns an achievement mid-run (and a
-smaller notice to teammates), and an Unlocks/Achievements screen in the main menu
-showing locked (silhouette + hint) and unlocked entries.
+Specialization rules (make the first version work like this, then tune it):
+  - At the start of a run the wizard chooses one school from the unlocked ones
+    (their first attunement).
+  - The second attunement is chosen from the first altar in layer 1, which offers
+    scrolls from a few other schools. Choosing one locks in the pair.
+  - From then on, scrolls come only from the wizard's two schools, plus a small
+    pool of neutral utility scrolls. If a scroll from another school ever appears
+    (e.g. on a fallen apprentice), it can be broken down into crystals instead of
+    learned.
+  - Each pair of schools unlocks a fusion: a named spell or passive that only exists
+    for that pair, appearing once the wizard has learned at least one scroll of
+    each school. For 8 schools that is 28 fusions. Each must feel distinct and
+    should come mostly from the simulation (e.g. Hydromancy + Fulmancy: an
+    electrified flood; Pyromancy + Cryomancy: thermal shock that shatters stone;
+    Terramancy + Aeromancy: sandstorms that bury creatures; Mycomancy + Pyromancy:
+    explosive spore clouds).
+  - Write a table of all schools, their scrolls, and all 28 fusions in the plan
+    before implementing them.
 
---------------------------------------------------------------------------------
-9. ART: SPRITES, ANIMATION AND FX
---------------------------------------------------------------------------------
+Scrolls:
+  - At least 4 scrolls per school (at least 32 in total) plus a few neutral ones.
+    Each has a name, icon, short description and flavour line, and changes how the
+    wizard interacts with materials. Reuse the existing 17 items wherever they fit
+    a school (Water Canister -> hydromancy, Frost Seed -> cryomancy, Spark Rod ->
+    fulmancy, Fungal Spores -> mycomancy, Acid Flask -> alchemy, Magma Pick ->
+    pyromancy, and so on).
+  - Scrolls are found on altars and in chests and bought at shrines with crystals,
+    as items are today.
 
-There are no art assets yet, and you must create complete ones. Use a cohesive
-pixel-art style that fits the falling-sand cells (roughly 1 cell = 1 pixel, scaled
-up crisply with nearest-neighbour filtering).
-
-Generate the assets yourself. Either:
-  (a) write a small asset-generation script or Rust build step that draws
-      the sprite sheets programmatically and writes PNGs to `assets/`, then commit
-      the generated PNGs, or
-  (b) build sprite sheets at runtime from code-defined pixel grids/palettes.
-Prefer (a) so the art is inspectable. Whichever you choose, the result must look
-intentional and polished, not like placeholder rectangles.
-
-Required:
-  - Player sprite sheet: idle, run, jump, fall, climb, dig (directional), hurt,
-    death, carrying an ember, and a ghost/spectator form; at least 4-6 frames per
-    looping animation. Design it to be tinted per player, so four players are
-    easy to tell apart at a glance.
-  - Item icons for every upgrade, plus chest, altar, shrine, revive shrine, soul
-    ember, rope, torch, ore/gem, ping marker and the core itself (animated,
-    pulsing, glowing).
-  - Creature sprites with animations, if creatures are included.
-  - Per-material cell shading: colour variance, plus subtle animation for liquids
-    (shimmer), lava (glow/flicker), fungus/crystal (glow) and fire (flicker).
-  - Parallax background per layer that shifts colour/mood with depth.
-  - Particles: dig debris coloured by the material dug, splashes, sparks, embers,
-    smoke puffs, explosion flash and shockwave, steam bursts, pickup sparkle,
-    revive burst.
-  - Juice: screen shake, hit-stop on big impacts, smooth camera with look-ahead,
-    death slow-motion (local to the player who died).
+Meta progression:
+  - Start with 3-4 schools unlocked. Unlock the others through achievements that
+    teach that school's materials (e.g. survive a flood -> Hydromancy).
+  - Achievements can also unlock individual scrolls and wizard starting choices.
+    Rework the existing 13 achievements to fit, remove the rope-related ones, and
+    add new ones so there are at least 20.
+  - The Unlocks & Achievements screen shows schools, scrolls and fusions
+    (discovered fusions are revealed, undiscovered ones are hidden with a hint).
+  - Old save files must load safely: map old items and achievements to their new
+    equivalents where possible, otherwise drop them, and never crash.
 
 --------------------------------------------------------------------------------
-10. AUDIO: SFX AND MUSIC
+7. WORLD, CREATURES AND HORROR
 --------------------------------------------------------------------------------
 
-There are no audio assets yet. Generate them procedurally (e.g. a small synth
-script in the style of sfxr/jsfxr that writes WAV/OGG files to `assets/audio/`),
-and commit the generated files. Required:
-  - Footsteps per surface type, jump, land, dash, dig per material family (soft dirt,
-    hard stone, crystal ping), place rope/torch, pickup, item get fanfare, chest open.
-  - Hazards: fire crackle loop, sizzle (water on lava), splash, acid hiss, explosion,
-    rumble before a collapse, hurt, death.
-  - Co-op: teammate down, revive, ping, player joined/left.
-  - UI: hover, click, ready-up, achievement unlock, layer-entered sting, victory
-    theme.
-  - Ambient loop per layer that gets more ominous with depth (drones, drips, distant
-    rumbles). Simple generative music is a bonus.
-World sounds are positional relative to the local player's camera, so teammates'
-actions are heard at the right volume and direction. Rate-limit sounds so hundreds
-of cell events don't spam audio. Add master/music/SFX volume sliders in settings.
+The world keeps its layers and set pieces, re-themed to mystical dark fantasy:
+  - Rename layers to fit (e.g. the Whispering Crust, the Drowned Halls, the
+    Fungal Abyss, the Molten Sanctum, the Heart of the World). The core becomes the
+    final trial of the wizard's training. Touching it completes the training and
+    wins the run.
+  - Add environmental storytelling: remains of earlier apprentices with dropped
+    scrolls or crystals, journal fragments (short, readable lines that build the
+    lore and dread), ruined shrines, ritual circles, sealed doors.
+
+Creatures get fantasy horror designs and must keep interacting with the
+simulation (burn, drown, freeze, get crushed, get dissolved). For example:
+  - Hollowed apprentices: failed wizards who still cast twisted spells of a school.
+  - Things that hunt by light: they're drawn to the light orb and your glow, so
+    darkness becomes a real choice.
+  - Mimic chests, blind cave wyrms that burrow through terrain, spore-puppets in
+    the fungal layer, and molten things in the deep.
+  - At least one creature per layer, and one rare, frightening encounter (an
+    unkillable stalker or a lurker that can only be escaped or trapped using the
+    simulation).
+
+Horror atmosphere: darker lighting, flickering light orbs, subtle visual effects
+(vignette, faint distortion near certain creatures), occasional unexplained
+sounds, and moments of silence.
 
 --------------------------------------------------------------------------------
-11. UI
+8. ART, UI AND AUDIO
 --------------------------------------------------------------------------------
 
-Polished, consistent, readable UI (bevy_egui is already available; a custom
-pixel-art theme with a pixel font is strongly preferred over default egui styling).
-  - Main menu: Host Run (Steam/LAN), Join Run (Steam friends, public lobbies, lobby
-    ID, LAN address), Solo Run, Unlocks & Achievements, Settings, Quit. Reuse and
-    restyle the existing Steam/LAN menu flows.
-  - Lobby: player list with names, colours, ready states and pings; seed field
-    (host can roll or type a seed); friendly fire toggle; invite button for Steam;
-    start button for the host.
-  - In-run HUD: your health, heat meter, breath meter (when relevant), rope/torch
-    counts, your equipped items with icons; team ore; depth meter showing the
-    current layer, each teammate's depth, and distance to the core; a compact
-    teammate panel with each teammate's name, colour, health and status (alive,
-    down, carrying ember); current seed.
-  - Nameplates above remote players and edge-of-screen indicators for off-screen
-    teammates, pings and dropped soul embers.
-  - Item pickup popup with name, description and flavour text, and an altar choice
-    UI that shows which items teammates have already taken.
-  - Spectator overlay: whose camera you're following, how to switch, how to ping,
-    and how a revive works.
-  - Pause menu (doesn't pause a multiplayer game) with resume, settings, invite,
-    leave run; the host additionally gets end run.
-  - Connection feedback: joining/downloading progress, a warning on high ping or
-    lost connection, and a clean return to the menu with a reason when
-    disconnected.
-  - Death and victory screens with a team run summary: depth reached, time, each
-    player's cause of death, items collected, achievements earned this run, seed.
-    Then everyone returns to the lobby together.
-  - Smooth transitions and fades between screens.
+All assets are generated by `tools/gen_art.py` and `tools/gen_audio.py`. Update
+those scripts, regenerate, and commit the output. Keep the existing pipeline,
+formats and the README's asset documentation in sync.
+
+Art:
+  - Wizard player sprite: a robed apprentice with a staff and a distinct silhouette.
+    Animations for idle, run, jump, fall, climb, cast (dig spell, aimed in all
+    directions), cast (other spells), hurt and death. Robe/accent colours reflect
+    the two chosen schools.
+  - Spell effects for every school (projectiles, beams, impact bursts, auras) and
+    for fusions, using particles and the lighting system.
+  - Icons for every scroll, school sigils, crystal currency, light orb, shrines,
+    altars, apprentice remains and journal pages.
+  - Creature sprites with animations, re-themed backgrounds per layer, and a new
+    look for the core as a mystical trial.
+
+UI: rework the whole UI to fit the theme (dark grimoire/parchment-and-runes look,
+arcane accents, a pixel font that fits). This covers the main menu, wizard
+selection (first school, starting choice, seed), settings including the new
+Controls page, the HUD (health, heat, breath, mana or charges, light orb,
+crystals, the two school sigils, scrolls with icons, the dig mode indicator, the
+depth meter), scroll pickup popups, the second-attunement choice at the first
+altar, the fixed achievement toast, the pause menu, journal reading, and the death
+and victory summaries (also show the run's two schools and fusion).
+
+Audio: rework music and ambience to match: choral and dark-ambient pads, low
+drones, distant whispers, dissonant strings, ritual percussion for tense moments,
+and a victory theme that sounds like a completed rite. Replace the tool sounds
+with spell sounds (dig spell, light orb, each school's spells and fusions) and add
+creature sounds and horror stingers. Keep the existing positional falloff, rate
+limiting and volume settings.
 
 --------------------------------------------------------------------------------
-12. QUALITY BAR AND PROCESS
+9. PROCESS, QUALITY AND FINISHING
 --------------------------------------------------------------------------------
 
-- Before coding, read the existing crates and write a short plan in
-  `docs/roguelike-plan.md` (architecture, network design for every new kind of
-  state, new modules, party scaling table, milestones). Update it as you go.
-- Build multiplayer into every milestone from the start, not at the end. A
-  milestone isn't done until it works with a host and at least one client. Keep the
-  game runnable at every commit:
-    1. Lobby, ready-up and run start/end flow for 1-4 players over LAN and Steam
-    2. Materials and interactions in `sim`, with tests
-    3. Layered worldgen down to the core, with set pieces, scaled by player count
-    4. Player verbs, health and hazards, death, spectating, revives and winning
-    5. Entities, items, achievements, persistence (all replicated)
-    6. Art, animation, particles and lighting
-    7. Audio
-    8. UI polish and the full menu flow
-    9. Balancing pass for 1, 2, 3 and 4 players, and bug fixing
-- Testing multiplayer:
-    - Add automated tests for the protocol (round-trip serialization of every
-      message) and, where practical, a headless host+client test over the TCP
-      transport that runs a few seconds of a run and checks that client and host
-      agree on world chunks, player state and entities.
-    - Play-test by running one host and three LAN clients on this machine
-      (`--host-lan` / `--join-lan 127.0.0.1` with different `--name`s). Test joining,
-      leaving, rejoining, a client dying and being revived, a full wipe, a win, and
-      the host disconnecting. Check bandwidth and host frame time with four players
-      during heavy sim activity (explosions, floods).
-    - Steam can't be tested with one account; make sure the Steam path uses the same
-      messages and code paths as LAN so LAN testing covers it, and say so in the
-      README.
-- `cargo build`, `cargo test` and `cargo clippy` must pass with no warnings. Run
-  `cargo fmt` (a rustfmt.toml exists).
-- Actually play the game to check it: run it, take screenshots if you can, and fix
-  what looks or feels wrong. A run from the surface to the core should take roughly
-  10-20 minutes for a skilled team of any size.
-- Keep performance smooth (target 60 FPS) on a mid-range PC, including for the host
-  of a 4-player game.
-- Update README.md with how to host, join and play the roguelike mode, its controls,
-  how to test multiplayer locally with four instances, and the asset generation
-  scripts.
-- When the prototype is finished, push the `roguelike-prototype` branch to origin
-  (`git push -u origin roguelike-prototype`) so everyone on the team can check it out
-  and test it together. Make sure the pushed branch builds and runs from a clean clone
-  with `cargo run`, that multiplayer works between separately built copies, and that
-  all generated assets are committed. Then write a summary of what was built, how to
-  test it (solo and multiplayer), what is rough or missing, and what you'd do next.
+- Update `docs/roguelike-plan.md` first with the design for Part B (schools,
+  specialization rules, scroll list, fusion table, mana choice, creature list,
+  layer names) and keep its progress log up to date.
+- Suggested milestones, each committed and pushed when done:
+    1. Part A: smart dig, controls menu, settings in the pause menu, toast fix
+    2. Remove rope; dig spell; light orb; crystals instead of ore
+    3. Schools, specialization, scrolls (porting the existing items) and save
+       migration
+    4. Fusions for every pair
+    5. World re-theme, lore and remains, horror creatures
+    6. Art regeneration (player, spells, icons, creatures, backgrounds)
+    7. UI rework
+    8. Audio rework
+    9. Balancing and bug fixing: play runs with several different school pairs
+       and check each fusion is fun and none is useless or overpowered
+- `cargo build`, `cargo test --workspace` and `cargo clippy --workspace --all-targets`
+  must pass with no warnings. Run `cargo fmt`. Add tests for school and fusion
+  rules, smart dig target selection, key binding save/load and save migration.
+- Play the game to check it, using the dev flags (`--autoplay`, `--give`,
+  `--layer`, `--screenshot`, `--menu-screen`) and update them for scrolls and
+  schools (e.g. `--schools Pyromancy,Cryomancy`). Use `SBCT_SAVE_DIR` so testing
+  doesn't touch the real save.
+- Update README.md: the new premise, controls (including Tab), schools and
+  fusions, and assets.
+- When everything is done and pushed:
+    1. Change the first line of this file from `STATUS: NEW` to `STATUS: OLD`,
+       commit it, and push `roguelike-prototype`.
+    2. Write a summary of what was built, how to test it, what is rough or
+       missing, and what you'd do next.
