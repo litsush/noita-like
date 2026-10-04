@@ -14,6 +14,7 @@ pub mod hud;
 pub mod input;
 pub mod juice;
 pub mod lighting;
+pub mod lore;
 pub mod physics;
 pub mod player;
 pub mod save;
@@ -807,6 +808,8 @@ impl Plugin for RunPlugin {
                         tracking::process_sim_events,
                         hazards::environment,
                         creatures::update_creatures,
+                        creatures::update_enemy_bolts,
+                        creatures::stalker_director,
                         track_depth,
                         update_phase,
                         apply_time_scale,

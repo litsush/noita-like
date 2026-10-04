@@ -39,11 +39,11 @@ impl Layer {
 
     pub fn name(self) -> &'static str {
         [
-            "The Crust",
-            "Upper Mantle",
-            "Deep Mantle",
-            "Outer Core",
-            "The Core",
+            "The Whispering Crust",
+            "The Drowned Halls",
+            "The Fungal Abyss",
+            "The Molten Sanctum",
+            "The Heart of the World",
         ][self.index()]
     }
 
@@ -70,9 +70,19 @@ impl Layer {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CreatureKind {
-    Crawler,
-    MagmaSlug,
+    /// Pale, eyeless cave crawler.
+    Gnawling,
+    /// A failed apprentice that still casts twisted spells.
+    Hollowed,
+    /// Burrows through rock toward the sound of digging.
+    BlindWyrm,
+    /// Fungus-ridden walker that bursts into spores.
+    SporePuppet,
     SporeDrifter,
+    /// Fire-immune spectre that leaves burning trails; water destroys it.
+    CinderWraith,
+    /// Hunts the brightest light nearby.
+    Lightseeker,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,6 +93,8 @@ pub enum SpawnKind {
     /// Items bought with ore.
     Shrine,
     Creature(CreatureKind),
+    /// A fallen apprentice: shards, maybe a scroll, and a journal page.
+    Remains,
     /// The goal.
     Core,
 }
@@ -205,6 +217,7 @@ pub fn generate_descent(seed: u64) -> Descent {
     let core = build_core_chamber(&mut g, &mut rng, &mut spawns);
     scatter_chests(&mut g, &mut rng, &taken, &mut spawns);
     scatter_creatures(&g, &mut rng, &mut spawns);
+    scatter_remains(&g, &mut rng, &taken, &mut spawns);
 
     let sx = w / 2;
     let sy = (0..h)
@@ -435,8 +448,9 @@ fn fill_pockets(g: &mut Grid, seed: u64) {
             let liquid = match layer {
                 Layer::Crust if pool > 0.56 && above_floor <= 14 => Some(Material::Water),
                 Layer::Crust if pool < 0.22 && above_floor <= 6 => Some(Material::Oil),
-                Layer::UpperMantle if pool > 0.6 && above_floor <= 10 => Some(Material::Lava),
-                Layer::UpperMantle if pool < 0.25 && above_floor <= 8 => Some(Material::Water),
+                // The Drowned Halls: flooded caverns, lava only in the rare deep pocket.
+                Layer::UpperMantle if pool > 0.47 && above_floor <= 18 => Some(Material::Water),
+                Layer::UpperMantle if pool < 0.14 && above_floor <= 6 => Some(Material::Lava),
                 Layer::DeepMantle if pool > 0.57 && above_floor <= 12 => Some(Material::Acid),
                 Layer::DeepMantle if pool < 0.22 && above_floor <= 8 => Some(Material::Water),
                 Layer::OuterCore if pool > 0.5 && above_floor <= 12 => Some(Material::Metal),
@@ -491,7 +505,8 @@ fn decorate(g: &mut Grid, seed: u64, rng: &mut Rng, surface: &[i32]) {
                 }
                 Layer::DeepMantle => {
                     let glow = fbm(seed ^ 32, fx / 35.0, fy / 35.0, 2);
-                    if (floor || wall) && glow > 0.55 && rng.chance(120) {
+                    // The Fungal Abyss is carpeted in glowing (flammable) growth.
+                    if (floor || wall) && glow > 0.42 && rng.chance(210) {
                         g.set(x, y, Material::Fungus);
                     } else if wall && glow < 0.4 && rng.chance(28) {
                         grow_crystal(g, rng, x, y);
@@ -617,18 +632,25 @@ fn stamp_set_pieces(
     spawns: &mut Vec<Spawn>,
 ) {
     use Layer::*;
-    let plan: [(Layer, Stamp, i32, i32); 11] = [
+    attunement_chamber(g, rng, taken, spawns);
+    let plan: [(Layer, Stamp, i32, i32); 17] = [
         (Crust, flooded_ruin, 64, 40),
         (Crust, abandoned_mine, 110, 18),
-        (Crust, flooded_ruin, 64, 40),
+        (Crust, ritual_circle, 36, 36),
+        (UpperMantle, drowned_hall, 130, 60),
+        (UpperMantle, drowned_hall, 130, 60),
         (UpperMantle, magma_chamber, 150, 70),
-        (UpperMantle, gas_chamber, 56, 34),
         (UpperMantle, shrine_room, 40, 30),
-        (UpperMantle, abandoned_mine, 110, 18),
+        (UpperMantle, gas_chamber, 56, 34),
         (DeepMantle, crystal_cavern, 110, 60),
+        (DeepMantle, mushroom_grove, 110, 70),
+        (DeepMantle, mushroom_grove, 110, 70),
         (DeepMantle, gas_chamber, 56, 34),
+        (DeepMantle, ritual_circle, 36, 36),
         (OuterCore, foundry, 120, 50),
         (OuterCore, gas_chamber, 56, 34),
+        (OuterCore, ritual_circle, 36, 36),
+        (OuterCore, shrine_room, 40, 30),
     ];
     for (layer, stamp, w, h) in plan {
         if let Some((x, y)) = find_spot(rng, layer, w, h, taken) {
@@ -864,6 +886,136 @@ fn foundry(g: &mut Grid, rng: &mut Rng, x: i32, y: i32, spawns: &mut Vec<Spawn>)
     });
 }
 
+/// A small brick sanctum early in the crust, near the middle of the shaft,
+/// holding the attunement altar most apprentices find first.
+fn attunement_chamber(
+    g: &mut Grid,
+    rng: &mut Rng,
+    taken: &mut Vec<(i32, i32, i32, i32)>,
+    spawns: &mut Vec<Spawn>,
+) {
+    let (w, h) = (54, 30);
+    for _ in 0..200 {
+        let x = g.w / 2 - w / 2 + (rng.next_u8() as i32 % 160) - 80;
+        let y = 170 + (rng.next_u8() as i32 % 80);
+        let pad = 16;
+        let clear = taken.iter().all(|&(tx, ty, tw, th)| {
+            x + w + pad < tx || tx + tw + pad < x || y + h + pad < ty || ty + th + pad < y
+        });
+        if !clear {
+            continue;
+        }
+        taken.push((x, y, w, h));
+        g.fill_rect(x, y, w, h, Material::Brick);
+        g.fill_rect(x + 3, y + 3, w - 6, h - 6, Material::Empty);
+        g.fill_rect(x + 3, y + h - 6, w - 6, 3, Material::Brick);
+        // Crystal candles either side of the altar.
+        for cx in [x + 12, x + w - 13] {
+            g.fill_rect(cx, y + h - 9, 1, 3, Material::Crystal);
+        }
+        // A doorway in the roof so it can be found from above.
+        g.fill_rect(x + w / 2 - 4, y, 8, 3, Material::Empty);
+        spawns.push(Spawn {
+            kind: SpawnKind::Altar,
+            x: x + w / 2,
+            y: y + h - 7,
+        });
+        return;
+    }
+}
+
+/// Vast flooded halls of arches and pillars.
+fn drowned_hall(g: &mut Grid, rng: &mut Rng, x: i32, y: i32, spawns: &mut Vec<Spawn>) {
+    let (w, h) = (130, 60);
+    g.fill_rect(x, y, w, h, Material::Brick);
+    g.fill_rect(x + 4, y + 4, w - 8, h - 8, Material::Empty);
+    let water_top = y + 20 + (rng.next_u8() % 12) as i32;
+    for px in (x + 18..x + w - 10).step_by(22) {
+        g.fill_rect(px, y + 4, 4, h - 8, Material::Brick);
+        // Arched openings between the pillars.
+        g.fill_rect(px, y + 16, 4, 12, Material::Empty);
+    }
+    for yy in water_top..y + h - 4 {
+        for xx in x + 4..x + w - 4 {
+            if g.get(xx, yy) == Material::Empty {
+                g.set(xx, yy, Material::Water);
+            }
+        }
+    }
+    // A shelf above the water where an apprentice drowned waiting.
+    g.fill_rect(x + w - 30, water_top - 1, 24, 2, Material::Brick);
+    spawns.push(Spawn {
+        kind: SpawnKind::Remains,
+        x: x + w - 18,
+        y: water_top - 2,
+    });
+    if rng.coin() {
+        spawns.push(Spawn {
+            kind: SpawnKind::Chest,
+            x: x + 30,
+            y: y + h - 5,
+        });
+    }
+}
+
+/// A cavern of giant mushrooms: glowing, flammable, magnificent.
+fn mushroom_grove(g: &mut Grid, rng: &mut Rng, x: i32, y: i32, spawns: &mut Vec<Spawn>) {
+    let (w, h) = (110, 70);
+    let (cx, cy) = (x + w / 2, y + h / 2);
+    g.fill_ellipse(cx, cy, w / 2, h / 2, |_, _, d| {
+        Some(if d > 0.86 {
+            Material::Basalt
+        } else {
+            Material::Empty
+        })
+    });
+    let floor = cy + h / 2 - 8;
+    g.fill_rect(x + 8, floor + 1, w - 16, 6, Material::Basalt);
+    for i in 0..4 {
+        let mx = x + 18 + i * 24 + (rng.next_u8() % 6) as i32;
+        let height = 18 + (rng.next_u8() % 16) as i32;
+        g.fill_rect(mx - 1, floor - height, 3, height + 1, Material::Wood);
+        let r = 7 + (rng.next_u8() % 5) as i32;
+        g.fill_ellipse(mx, floor - height, r, r / 2 + 1, |_, yy, _| {
+            (yy <= floor - height).then_some(Material::Fungus)
+        });
+    }
+    for xx in x + 10..x + w - 10 {
+        if rng.chance(90) {
+            g.set(xx, floor, Material::Fungus);
+        }
+    }
+    spawns.push(Spawn {
+        kind: SpawnKind::Remains,
+        x: cx + 6,
+        y: floor - 1,
+    });
+}
+
+/// A ring of brick and crystal where an apprentice died mid-ritual.
+fn ritual_circle(g: &mut Grid, _rng: &mut Rng, x: i32, y: i32, spawns: &mut Vec<Spawn>) {
+    let (cx, cy, r) = (x + 18, y + 18, 16);
+    g.fill_ellipse(cx, cy, r, r, |_, _, d| {
+        Some(if d > 0.8 { Material::Brick } else { Material::Empty })
+    });
+    let floor = cy + 6;
+    g.fill_rect(cx - 10, floor + 1, 21, 3, Material::Obsidian);
+    for k in 0..5 {
+        let a = k as f32 / 5.0 * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
+        let (px, py) = (
+            cx + (a.cos() * (r - 4) as f32) as i32,
+            cy + (a.sin() * (r - 4) as f32) as i32,
+        );
+        g.set(px, py, Material::Crystal);
+        g.set(px, py + 1, Material::Crystal);
+    }
+    spawns.push(Spawn {
+        kind: SpawnKind::Remains,
+        x: cx,
+        y: floor,
+    });
+}
+
 /// The final chamber: a core-shell sphere with a single opening on top.
 fn build_core_chamber(g: &mut Grid, rng: &mut Rng, spawns: &mut Vec<Spawn>) -> (i32, i32) {
     let (cx, cy, rx, ry) = (g.w / 2, 3910, 190, 150);
@@ -944,12 +1096,53 @@ fn scatter_chests(g: &mut Grid, rng: &mut Rng, taken: &[(i32, i32, i32, i32)], s
     }
 }
 
+/// Fallen apprentices lie where they gave up, a couple per layer.
+fn scatter_remains(g: &Grid, rng: &mut Rng, taken: &[(i32, i32, i32, i32)], spawns: &mut Vec<Spawn>) {
+    for layer in [
+        Layer::Crust,
+        Layer::UpperMantle,
+        Layer::DeepMantle,
+        Layer::OuterCore,
+    ] {
+        let top = layer.top().max(160);
+        let mut placed = 0;
+        for _ in 0..4000 {
+            if placed >= 2 {
+                break;
+            }
+            let x = 12 + (rng.next_u64() % (g.w as u64 - 24)) as i32;
+            let y = top + (rng.next_u64() % (layer.bottom() - top - 20) as u64) as i32;
+            let inside = taken
+                .iter()
+                .any(|&(tx, ty, tw, th)| x >= tx && x < tx + tw && y >= ty && y < ty + th);
+            if !inside && g.is_floor_spot(x, y, 8, 4) {
+                spawns.push(Spawn {
+                    kind: SpawnKind::Remains,
+                    x,
+                    y,
+                });
+                placed += 1;
+            }
+        }
+    }
+}
+
 fn scatter_creatures(g: &Grid, rng: &mut Rng, spawns: &mut Vec<Spawn>) {
+    use CreatureKind::*;
     let plan = [
-        (Layer::Crust, CreatureKind::Crawler, 10),
-        (Layer::UpperMantle, CreatureKind::MagmaSlug, 10),
-        (Layer::DeepMantle, CreatureKind::SporeDrifter, 12),
-        (Layer::DeepMantle, CreatureKind::Crawler, 4),
+        (Layer::Crust, Gnawling, 8),
+        (Layer::Crust, Hollowed, 3),
+        (Layer::UpperMantle, Hollowed, 4),
+        (Layer::UpperMantle, BlindWyrm, 2),
+        (Layer::UpperMantle, Lightseeker, 4),
+        (Layer::UpperMantle, Gnawling, 4),
+        (Layer::DeepMantle, SporePuppet, 8),
+        (Layer::DeepMantle, SporeDrifter, 8),
+        (Layer::DeepMantle, Lightseeker, 4),
+        (Layer::DeepMantle, Hollowed, 3),
+        (Layer::OuterCore, CinderWraith, 8),
+        (Layer::OuterCore, Lightseeker, 4),
+        (Layer::OuterCore, Hollowed, 3),
     ];
     for (layer, kind, n) in plan {
         let mut placed = 0;
@@ -961,7 +1154,11 @@ fn scatter_creatures(g: &Grid, rng: &mut Rng, spawns: &mut Vec<Spawn>) {
             let y = layer.top().max(200)
                 + (rng.next_u64() % (layer.bottom() - layer.top().max(200)) as u64) as i32;
             let ok = match kind {
-                CreatureKind::SporeDrifter => (-4..=4).all(|d| g.is_air(x + d, y) && g.is_air(x, y + d)),
+                SporeDrifter | Lightseeker | CinderWraith => {
+                    (-4..=4).all(|d| g.is_air(x + d, y) && g.is_air(x, y + d))
+                }
+                // Wyrms start buried in rock.
+                BlindWyrm => (-3..=3).all(|d| g.is_ground(x + d, y) && g.is_ground(x, y + d)),
                 _ => g.is_floor_spot(x, y, 8, 5),
             };
             if ok {
@@ -1018,6 +1215,17 @@ mod tests {
             count(SpawnKind::Chest) >= 12,
             "chests: {}",
             count(SpawnKind::Chest)
+        );
+        assert!(
+            count(SpawnKind::Remains) >= 6,
+            "remains: {}",
+            count(SpawnKind::Remains)
+        );
+        // The attunement altar sits early, near the middle of the shaft.
+        assert!(
+            a.spawns
+                .iter()
+                .any(|s| s.kind == SpawnKind::Altar && s.y < 300 && (s.x - 256).abs() < 120)
         );
 
         let w = &a.world;

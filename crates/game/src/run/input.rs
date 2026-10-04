@@ -220,7 +220,8 @@ pub fn bot_input(
         pr.center().distance(c) < 18.0
             && matches!(
                 pr.kind,
-                PropKind::Chest { opened: false }
+                PropKind::Chest { opened: false, .. }
+                    | PropKind::Remains { searched: false, .. }
                     | PropKind::Altar {
                         offer: super::entities::Offer::Scroll(_) | super::entities::Offer::Unrolled
                     }

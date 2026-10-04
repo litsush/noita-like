@@ -29,6 +29,9 @@ pub fn ambient_effects(
     mut crackle: Local<f32>,
     mut hum: Local<f32>,
     time: Res<Time>,
+    mut dread: Local<Dread>,
+    mut music: ResMut<crate::audio::MusicTrack>,
+    stalker: Option<Res<super::creatures::StalkerState>>,
 ) {
     let Some(world) = &session.world else { return };
     let dt = time.delta_secs();
@@ -115,6 +118,45 @@ pub fn ambient_effects(
         }
     }
 
+    // Unexplained sounds, now and then, somewhere out in the dark.
+    dread.whisper -= dt;
+    if dread.whisper <= 0.0 {
+        dread.whisper = 35.0 + run.rng.next_f32() * 50.0;
+        if player.body.pos.y > 200.0 && run.is_playing() {
+            let names = [
+                "whisper_1",
+                "whisper_2",
+                "whisper_3",
+                "whisper_4",
+                "distant_steps",
+            ];
+            let name = names[(run.rng.next_u8() % names.len() as u8) as usize];
+            let a = run.rng.next_f32() * std::f32::consts::TAU;
+            let at = player.body.center() + Vec2::from_angle(a) * (50.0 + run.rng.next_f32() * 60.0);
+            sfx.write(Sfx::at(name, at).volume(0.6).pitch(0.0));
+        }
+    }
+    // Moments of silence: the ambience drops out, then creeps back.
+    dread.silence -= dt;
+    if dread.silence <= 0.0 && run.is_playing() {
+        if dread.silent {
+            dread.silent = false;
+            dread.silence = 70.0 + run.rng.next_f32() * 60.0;
+            *music = crate::audio::MusicTrack::Ambient(run.layer.index());
+        } else if run.layer.index() > 0 {
+            dread.silent = true;
+            dread.silence = 10.0 + run.rng.next_f32() * 8.0;
+            *music = crate::audio::MusicTrack::None;
+        } else {
+            dread.silence = 30.0;
+        }
+    }
+    // The Stalker keeps its own company.
+    if stalker.is_some_and(|s| s.near > 0.3) && dread.silent {
+        dread.silent = false;
+        *music = crate::audio::MusicTrack::Ambient(run.layer.index());
+    }
+
     // Splash on entering liquid at speed.
     let sub = player.body.submersion(world);
     if *was_submerged < 0.1 && sub > 0.25 && player.body.vel.y > 40.0 {
@@ -130,4 +172,21 @@ pub fn ambient_effects(
         sfx.write(Sfx::at("splash", player.body.pos));
     }
     *was_submerged = sub;
+}
+
+/// Timers for the occasional unexplained sound and the stretches of silence.
+pub struct Dread {
+    whisper: f32,
+    silence: f32,
+    silent: bool,
+}
+
+impl Default for Dread {
+    fn default() -> Self {
+        Dread {
+            whisper: 25.0,
+            silence: 90.0,
+            silent: false,
+        }
+    }
 }

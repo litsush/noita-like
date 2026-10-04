@@ -34,6 +34,7 @@ fn main() {
                     SpawnKind::Altar => [0, 255, 255, 255],
                     SpawnKind::Shrine => [255, 0, 255, 255],
                     SpawnKind::Core => [255, 255, 255, 255],
+                    SpawnKind::Remains => [200, 200, 180, 255],
                     SpawnKind::Creature(_) => [255, 60, 60, 255],
                 };
                 for dy in -3..=0 {

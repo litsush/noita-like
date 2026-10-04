@@ -211,9 +211,12 @@ pub fn update_lighting(
         }
     }
     for c in &creatures {
+        use super::creatures::Beast;
         let glow = match c.kind {
-            sbct_sim::descent::CreatureKind::MagmaSlug => [1.0, 0.45, 0.1],
-            sbct_sim::descent::CreatureKind::SporeDrifter => [0.3, 0.9, 0.4],
+            Beast::CinderWraith => [1.0, 0.45, 0.1],
+            Beast::SporeDrifter | Beast::SporePuppet => [0.3, 0.9, 0.4],
+            Beast::Lightseeker => [0.25, 0.25, 0.35],
+            Beast::Hollowed => [0.3, 0.2, 0.45],
             _ => continue,
         };
         add(c.body.center(), glow);

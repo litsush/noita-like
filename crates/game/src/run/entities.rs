@@ -2,9 +2,9 @@
 //! thrown projectiles, blast charges, pocket suns, light orbs and shards.
 
 use bevy::prelude::*;
+use sbct_sim::Material;
 use sbct_sim::descent::{Layer, SpawnKind};
 use sbct_sim::world::disc;
-use sbct_sim::{Kind, Material, World};
 
 use super::Spell;
 use super::achievements::AchievementId;
@@ -24,9 +24,23 @@ const INTERACT_RANGE: f32 = 16.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PropKind {
-    Chest { opened: bool },
-    Altar { offer: Offer },
-    Shrine { offer: Offer, price: u32 },
+    /// About one chest in six is a mimic.
+    Chest {
+        opened: bool,
+        mimic: bool,
+    },
+    /// A fallen apprentice, holding a journal page.
+    Remains {
+        searched: bool,
+        journal: u16,
+    },
+    Altar {
+        offer: Offer,
+    },
+    Shrine {
+        offer: Offer,
+        price: u32,
+    },
     Core,
 }
 
@@ -66,12 +80,31 @@ pub fn spawn_entities(
     setup: Res<RunSetup>,
     assets: Res<GameAssets>,
     mut run: ResMut<Run>,
+    save: Res<SaveData>,
 ) {
+    // Hand out journal pages the player hasn't read first.
+    let mut unread: Vec<u16> = (0..super::lore::JOURNALS.len() as u16)
+        .filter(|i| !save.journals_read.contains(i))
+        .collect();
     commands.init_resource::<Prompt>();
     for s in &setup.spawns {
         let pos = Vec2::new(s.x as f32 + 0.5, s.y as f32 + 1.0);
         let kind = match s.kind {
-            SpawnKind::Chest => PropKind::Chest { opened: false },
+            SpawnKind::Chest => PropKind::Chest {
+                opened: false,
+                mimic: s.y > 300 && run.rng.chance(42),
+            },
+            SpawnKind::Remains => {
+                let journal = if unread.is_empty() {
+                    (run.rng.next_u64() % super::lore::JOURNALS.len() as u64) as u16
+                } else {
+                    unread.swap_remove((run.rng.next_u64() % unread.len() as u64) as usize)
+                };
+                PropKind::Remains {
+                    searched: false,
+                    journal,
+                }
+            }
             SpawnKind::Altar => PropKind::Altar {
                 offer: Offer::Unrolled,
             },
@@ -86,7 +119,16 @@ pub fn spawn_entities(
             _ => continue,
         };
         let (sprite, z, offset) = match kind {
-            PropKind::Chest { .. } => (assets.props.sprite(props_frame::CHEST_CLOSED), 3.0, 12.0),
+            PropKind::Chest { mimic, .. } => (
+                assets.props.sprite(if mimic {
+                    props_frame::MIMIC
+                } else {
+                    props_frame::CHEST_CLOSED
+                }),
+                3.0,
+                12.0,
+            ),
+            PropKind::Remains { .. } => (assets.props.sprite(props_frame::REMAINS), 3.0, 12.0),
             PropKind::Altar { .. } => (assets.props.sprite(props_frame::ALTAR), 3.0, 12.0),
             PropKind::Shrine { .. } => (assets.props.sprite(props_frame::SHRINE), 3.0, 12.0),
             PropKind::Core => (assets.core.sprite(0), 4.0, 24.0),
@@ -205,7 +247,8 @@ pub fn interact(
     input: Res<super::input::PlayerInput>,
     mut player: ResMut<RunPlayer>,
     mut run: ResMut<Run>,
-    save: Res<SaveData>,
+    mut save: ResMut<SaveData>,
+    mut shake: ResMut<Shake>,
     mut props: Query<(Entity, &mut Prop, &mut Sprite)>,
     displays: Query<(Entity, &DisplayedItem)>,
     mut prompt: ResMut<Prompt>,
@@ -229,7 +272,8 @@ pub fn interact(
     };
 
     let text = match prop.kind {
-        PropKind::Chest { opened: false } => Some("F  Open chest".to_string()),
+        PropKind::Chest { opened: false, .. } => Some("F  Open chest".to_string()),
+        PropKind::Remains { searched: false, .. } => Some("F  Search the fallen apprentice".to_string()),
         PropKind::Altar {
             offer: Offer::Unrolled,
         } if run.second_school.is_none() => Some("F  Attune to a second school".to_string()),
@@ -258,8 +302,70 @@ pub fn interact(
     };
     let at = prop.center();
     match prop.kind {
-        PropKind::Chest { opened: false } => {
-            prop.kind = PropKind::Chest { opened: true };
+        PropKind::Chest {
+            opened: false,
+            mimic: true,
+        } => {
+            // It was never a chest.
+            commands.entity(entity).despawn();
+            super::creatures::spawn_creature(
+                &mut commands,
+                &assets,
+                super::creatures::Beast::Mimic,
+                prop.pos,
+                7,
+            );
+            let knock = Vec2::new(player.facing * -80.0, -90.0);
+            super::hazards::hurt(
+                &mut player,
+                &mut run,
+                15.0,
+                super::DamageKind::Creature,
+                Some(knock),
+                &mut sfx,
+                &mut shake,
+            );
+            sfx.write(Sfx::at("mimic_bite", at));
+            sfx.write(Sfx::ui("sting_1"));
+        }
+        PropKind::Remains {
+            searched: false,
+            journal,
+        } => {
+            prop.kind = PropKind::Remains {
+                searched: true,
+                journal,
+            };
+            if let Some(atlas) = &mut sprite.texture_atlas {
+                atlas.index = props_frame::REMAINS_SEARCHED;
+            }
+            run.stats.remains_searched += 1;
+            sfx.write(Sfx::at("remains_search", at));
+            let n = 2 + run.rng.next_u8() % 4;
+            for i in 0..n {
+                let v = Vec2::new(i as f32 - n as f32 / 2.0, -2.5) * 20.0;
+                commands.spawn(ShardPickup::bundle(at, v, 4, &assets));
+            }
+            // Fallen apprentices studied every school; foreign scrolls crumble.
+            if run.rng.chance(115)
+                && let Some(sc) = run.roll_any_scroll(&save)
+            {
+                run.take_scroll(sc);
+            }
+            run.journal = Some(journal);
+            sfx.write(Sfx::ui("journal_open"));
+            if save.journals_read.insert(journal) {
+                super::save::store(&save);
+            }
+            if save.journals_read.len() >= 10 {
+                super::grant(&mut save, &mut run, AchievementId::LoreKeeper, &mut sfx);
+            }
+        }
+        PropKind::Chest { opened: false, .. } => {
+            prop.kind = PropKind::Chest {
+                opened: true,
+                mimic: false,
+            };
             if let Some(atlas) = &mut sprite.texture_atlas {
                 atlas.index = props_frame::CHEST_OPEN;
             }

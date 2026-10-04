@@ -27,7 +27,6 @@ const DASH_TIME: f32 = 0.14;
 const DASH_COOLDOWN: f32 = 0.7;
 const CLIMB_SPEED: f32 = 48.0;
 const CLIMB_STAMINA: f32 = 0.9;
-const ROPE_SPEED: f32 = 56.0;
 /// How far from the player's centre the pick reaches, in cells.
 pub const REACH: f32 = 22.0;
 const DIG_INTERVAL: f32 = 0.065;
@@ -854,6 +853,7 @@ pub fn follow_camera(
     mut camera: Single<(&mut Transform, &mut Projection), With<WorldCamera>>,
     window: Single<&Window, With<PrimaryWindow>>,
     mut smoothed: Local<Option<Vec2>>,
+    stalker: Option<Res<super::creatures::StalkerState>>,
 ) {
     let Some(world) = &session.world else { return };
     let (ref mut tf, ref mut projection) = *camera;
@@ -883,8 +883,10 @@ pub fn follow_camera(
             v.clamp(half, max - half)
         }
     };
-    let pos = Vec2::new(clamp(current.x, half.x, w), clamp(current.y, half.y, h))
-        + shake.offset(time.elapsed_secs());
+    let t = time.elapsed_secs();
+    let near = stalker.map_or(0.0, |s| s.near);
+    let wobble = Vec2::new((t * 1.7).sin(), (t * 2.3).cos()) * near * near * 2.5;
+    let pos = Vec2::new(clamp(current.x, half.x, w), clamp(current.y, half.y, h)) + shake.offset(t) + wobble;
     tf.translation.x = pos.x;
     tf.translation.y = -pos.y;
 }

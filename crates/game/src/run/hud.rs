@@ -93,7 +93,14 @@ pub fn run_hud(
     mut shake: ResMut<crate::fx::Shake>,
     mut pause_menu: ResMut<PauseMenu>,
     mut rebind: ResMut<crate::controls::Rebind>,
+    stalker: Option<Res<super::creatures::StalkerState>>,
 ) -> Result {
+    let stalker = stalker.map_or(super::creatures::StalkerState::default(), |s| {
+        super::creatures::StalkerState {
+            near: s.near,
+            ..Default::default()
+        }
+    });
     let Some(icons) = icons else { return Ok(()) };
     let icons = *icons;
     let ctx = contexts.ctx_mut()?;
@@ -484,6 +491,63 @@ pub fn run_hud(
         run.popup = (t < 4.5).then_some((p, t + dt));
     }
 
+    // ---- journal page -----------------------------------------------------------
+    if let Some(id) = run.journal {
+        let page = &super::lore::JOURNALS[id as usize % super::lore::JOURNALS.len()];
+        let mut close = false;
+        egui::Area::new("journal".into())
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, -20.0])
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(egui::Color32::from_rgb(42, 34, 28))
+                    .stroke(egui::Stroke::new(2.0, egui::Color32::from_rgb(120, 96, 64)))
+                    .inner_margin(egui::Margin::same(18))
+                    .shadow(egui::Shadow {
+                        offset: [6, 6],
+                        blur: 0,
+                        spread: 0,
+                        color: egui::Color32::from_black_alpha(160),
+                    })
+                    .show(ui, |ui| {
+                        ui.set_width(420.0);
+                        ui.horizontal(|ui| {
+                            ui::icon(ui, &icons, icon::JOURNAL, 32.0);
+                            ui.label(
+                                egui::RichText::new(format!("Journal page {}", id + 1))
+                                    .color(egui::Color32::from_rgb(200, 170, 120)),
+                            );
+                        });
+                        ui.add_space(6.0);
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(page.text)
+                                    .size(16.0)
+                                    .color(egui::Color32::from_rgb(226, 210, 180)),
+                            )
+                            .wrap(),
+                        );
+                        ui.add_space(8.0);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                            ui.label(
+                                egui::RichText::new(format!("- {}", page.author))
+                                    .italics()
+                                    .color(egui::Color32::from_rgb(170, 140, 100)),
+                            );
+                        });
+                        ui.add_space(6.0);
+                        ui.vertical_centered(|ui| {
+                            if ui.button("Close").clicked() {
+                                close = true;
+                            }
+                        });
+                    });
+            });
+        if close {
+            run.journal = None;
+        }
+    }
+
     // ---- attunement choice ----------------------------------------------------
     if let Some(offer) = run.attunement.clone() {
         let mut pick = None;
@@ -609,6 +673,27 @@ pub fn run_hud(
     }
     while run.toasts.front().is_some_and(|t| t.time > TOAST_LIFE) {
         run.toasts.pop_front();
+    }
+
+    // ---- dread: a vignette that tightens with depth, wounds and the Stalker ----
+    {
+        let depth = run.layer.index() as f32 / 4.0;
+        let strength =
+            (0.35 + depth * 0.25 + stalker.near * 0.5 + (1.0 - player.hp / player.max_hp) * 0.2).min(1.0);
+        let rect = ctx.viewport_rect();
+        let painter = ctx.layer_painter(egui::LayerId::background());
+        let bands = 10;
+        let band = rect.width().min(rect.height()) * 0.22 / bands as f32;
+        for i in 0..bands {
+            let a = strength * (1.0 - i as f32 / bands as f32).powf(1.6) * 70.0;
+            let r = rect.shrink(band * (i as f32 + 0.5));
+            let tint = if stalker.near > 0.2 {
+                egui::Color32::from_rgba_unmultiplied(20, 0, 30, a as u8)
+            } else {
+                egui::Color32::from_black_alpha(a as u8)
+            };
+            painter.rect_stroke(r, 0.0, egui::Stroke::new(band, tint), egui::StrokeKind::Middle);
+        }
     }
 
     // ---- low health / death vignette --------------------------------------------
