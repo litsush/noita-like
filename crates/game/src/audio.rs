@@ -67,13 +67,22 @@ fn base_volume(name: &str) -> f32 {
     match name {
         "explosion" => 1.0,
         "explosion_small" | "collapse" | "rumble" | "layer_sting" | "victory" | "game_over" => 0.85,
-        "item_get" | "achievement" | "death" | "chest_open" | "shrine_buy" => 0.7,
-        "hurt" | "burn" | "sizzle" | "splash" | "acid_hiss" | "spark" => 0.55,
-        n if n.starts_with("dig_") => 0.35,
+        "fusion_awaken" | "stalker_appear" | "attune" => 0.8,
+        "achievement" | "death" | "chest_open" | "shrine_buy" | "scroll_learned" | "scroll_shatter" => 0.7,
+        "fusion_cast" | "mimic_bite" | "wyrm_screech" | "lightseeker_shriek" | "puppet_burst" => 0.7,
+        n if n.starts_with("impact_") => 0.6,
+        n if n.starts_with("cast_") => 0.5,
+        n if n.starts_with("sting_") => 0.6,
+        "hurt" | "burn" | "sizzle" | "splash" | "acid_hiss" => 0.55,
+        "stalker_step" | "stalker_breath" | "hollowed_moan" | "wraith_hiss" | "wyrm_burrow" => 0.55,
+        n if n.starts_with("whisper_") || n == "distant_steps" => 0.45,
+        n if n.starts_with("dig_beam") => 0.3,
         n if n.starts_with("step_") => 0.22,
+        "shard_pickup" | "shard_vein" | "orb_fade" | "journal_open" | "remains_search" => 0.45,
+        "levitate_loop" | "tidecall_loop" | "fire_loop" => 0.4,
         "ui_hover" => 0.25,
-        "ui_click" => 0.4,
-        "jump" | "land" | "dash" | "climb" => 0.35,
+        "ui_click" | "ui_toggle" => 0.4,
+        "jump" | "land" | "dash" | "climb" | "blink" => 0.35,
         _ => 0.5,
     }
 }
@@ -82,18 +91,26 @@ fn base_volume(name: &str) -> f32 {
 /// events don't become noise.
 fn min_interval(name: &str) -> f32 {
     match name {
-        "sizzle" | "acid_hiss" | "spark" | "splash" => 0.25,
+        "sizzle" | "acid_hiss" | "splash" | "shard_vein" => 0.25,
         "explosion" | "explosion_small" => 0.08,
-        "rumble" | "collapse" => 0.8,
-        n if n.starts_with("dig_") => 0.09,
+        "rumble" => 0.8,
+        "collapse" => 1.5,
+        n if n.starts_with("impact_") => 0.06,
+        n if n.starts_with("dig_beam") => 0.09,
         n if n.starts_with("step_") => 0.05,
         "hurt" | "burn" => 0.3,
         "heartbeat" => 0.95,
         "gasp" => 1.5,
-        "water_spray" => 0.9,
-        "torch_ignite" => 0.15,
         "drown_bubble" => 0.4,
-        "pickup" => 0.06,
+        "shard_pickup" => 0.06,
+        "puppet_squelch" => 0.2,
+        // Loops are re-triggered every frame while active; their length
+        // keeps them from stacking.
+        "levitate_loop" => 1.45,
+        "tidecall_loop" => 0.95,
+        "fire_loop" => 2.9,
+        "stalker_breath" => 2.0,
+        "stalker_step" => 0.3,
         _ => 0.03,
     }
 }
@@ -212,5 +229,53 @@ fn apply_music_volume(save: Res<SaveData>, mut sinks: Query<(&MusicPlayer, &mut 
     }
     for (p, mut sink) in &mut sinks {
         sink.set_volume(Volume::Linear(track_volume(p.0, &save)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// String literals on `Sfx::` lines and inside `fn *_sound` helpers
+    /// (plus the whisper list) must all name a file in `assets/audio`.
+    #[test]
+    fn every_sound_named_in_code_exists() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let audio = crate::assets::assets_dir().join("audio");
+        let mut missing = Vec::new();
+        let mut checked = 0;
+        let mut files = vec![src];
+        while let Some(path) = files.pop() {
+            if path.is_dir() {
+                files.extend(std::fs::read_dir(&path).unwrap().map(|e| e.unwrap().path()));
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs") || path.ends_with("audio.rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let mut in_helper = false;
+            for line in text.lines() {
+                if line.starts_with("fn ") || line.starts_with("pub fn ") {
+                    in_helper = line.contains("_sound(");
+                }
+                if !(in_helper || line.contains("Sfx::") || line.contains("\"whisper_")) {
+                    continue;
+                }
+                for (i, lit) in line.split('"').enumerate() {
+                    let looks_like_sound = i % 2 == 1
+                        && !lit.is_empty()
+                        && lit
+                            .chars()
+                            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+                    if looks_like_sound {
+                        checked += 1;
+                        if !audio.join(format!("{lit}.wav")).exists() {
+                            missing.push(format!("{lit} ({})", path.display()));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 50, "only found {checked} sound names");
+        assert!(missing.is_empty(), "missing sounds: {missing:?}");
     }
 }

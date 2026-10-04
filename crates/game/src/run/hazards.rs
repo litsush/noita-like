@@ -224,7 +224,7 @@ pub fn environment(
                     .speed(70.0)
                     .gravity(0.0),
             );
-            sfx.write(Sfx::at("spark", p.body.pos));
+            sfx.write(Sfx::at("impact_fulm", p.body.pos));
         }
     }
 

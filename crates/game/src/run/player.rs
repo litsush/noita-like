@@ -390,6 +390,8 @@ pub fn player_move(
     {
         p.body.vel.y = (p.body.vel.y - 900.0 * dt).max(-55.0);
         run.mana -= 14.0 * dt;
+        // Rate-limited to its own length, so it loops while held.
+        sfx.write(Sfx::at("levitate_loop", p.body.pos).volume(0.5));
         p.levitating = true;
     }
 

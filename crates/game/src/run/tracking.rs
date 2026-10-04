@@ -136,7 +136,7 @@ pub fn process_sim_events(
                 if run.influenced(at) {
                     run.stats.gas_ignited += 1;
                 }
-                sfx.write(Sfx::at("torch_ignite", at).volume(0.6));
+                sfx.write(Sfx::at("cast_pyro", at).volume(0.6));
             }
             SimEvent::CollapseStarted { x, y } => {
                 let at = Vec2::new(x as f32, y as f32);
@@ -145,8 +145,10 @@ pub fn process_sim_events(
                 }
                 if at.distance(me) < 60.0 {
                     shake.add(0.01);
+                    sfx.write(Sfx::at("collapse", at));
+                } else {
+                    sfx.write(Sfx::at("rumble", at));
                 }
-                sfx.write(Sfx::at("rumble", at));
             }
             SimEvent::Electrified { x, y } => {
                 let at = Vec2::new(x as f32, y as f32);
@@ -154,10 +156,10 @@ pub fn process_sim_events(
                 if run.influenced(at) && world.material(x, y) == Material::Water {
                     run.stats.electrified += 1;
                 }
-                sfx.write(Sfx::at("spark", at).volume(0.5));
+                sfx.write(Sfx::at("impact_fulm", at).volume(0.5));
             }
             SimEvent::Ignited { x, y } => {
-                sfx.write(Sfx::at("torch_ignite", Vec2::new(x as f32, y as f32)).volume(0.3));
+                sfx.write(Sfx::at("cast_pyro", Vec2::new(x as f32, y as f32)).volume(0.3));
             }
         }
     }

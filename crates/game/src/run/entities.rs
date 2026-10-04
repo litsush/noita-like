@@ -379,8 +379,7 @@ pub fn interact(
             let roll = run.rng.next_u8();
             match (roll, run.roll_scroll(&save)) {
                 (0..140, Some(sc)) => {
-                    run.take_scroll(sc);
-                    sfx.write(Sfx::ui("scroll_learned"));
+                    sfx.write(Sfx::ui(scroll_sound(run.take_scroll(sc))));
                 }
                 (140..180, _) => run.light_charges = run.light_max,
                 (180..215, _) => player.hp = (player.hp + 40.0).min(player.max_hp),
@@ -404,8 +403,7 @@ pub fn interact(
         } => {
             prop.kind = PropKind::Altar { offer: Offer::Taken };
             remove_display(&mut commands);
-            run.take_scroll(sc);
-            sfx.write(Sfx::ui("scroll_learned"));
+            sfx.write(Sfx::ui(scroll_sound(run.take_scroll(sc))));
             bursts.write(
                 Burst::new(at, Color::srgb(0.6, 0.9, 1.0))
                     .count(20)
@@ -424,9 +422,8 @@ pub fn interact(
                     price,
                 };
                 remove_display(&mut commands);
-                run.take_scroll(sc);
                 sfx.write(Sfx::at("shrine_buy", at));
-                sfx.write(Sfx::ui("scroll_learned"));
+                sfx.write(Sfx::ui(scroll_sound(run.take_scroll(sc))));
             } else {
                 sfx.write(Sfx::ui("ui_click"));
             }
@@ -939,5 +936,14 @@ pub fn animate_props(
             let bob = (t * 2.5 + prop.pos.x).sin() * 1.5;
             tf.translation = to_world(prop.pos - Vec2::Y * (28.0 + bob), 4.0);
         }
+    }
+}
+
+/// Learned scrolls chime; scrolls of other schools shatter into shards.
+fn scroll_sound(learned: bool) -> &'static str {
+    if learned {
+        "scroll_learned"
+    } else {
+        "scroll_shatter"
     }
 }

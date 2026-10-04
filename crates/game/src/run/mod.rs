@@ -845,3 +845,71 @@ impl Plugin for RunPlugin {
 
 /// The egui pass schedule, named for readability above.
 use bevy_egui::EguiPrimaryContextPass as EguiLoading;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(first: School, second: Option<School>) -> Run {
+        Run::new(
+            1,
+            StartChoice::Initiate,
+            first,
+            second,
+            &SaveData::default(),
+            Vec2::ZERO,
+        )
+    }
+
+    #[test]
+    fn scrolls_outside_your_schools_shatter_into_shards() {
+        let mut r = run(School::Pyromancy, None);
+        assert!(r.take_scroll(ScrollId::FireBolt));
+        assert!(r.has(ScrollId::FireBolt));
+        let shards = r.shards;
+        assert!(!r.take_scroll(ScrollId::Tidecall));
+        assert!(!r.has(ScrollId::Tidecall));
+        assert_eq!(r.shards, shards + SHATTER_SHARDS);
+    }
+
+    #[test]
+    fn attunement_binds_a_different_second_school_and_readies_the_fusion() {
+        let save = SaveData::default();
+        let mut r = run(School::Pyromancy, None);
+        r.take_scroll(ScrollId::FireBolt);
+        assert_eq!(r.fusion_ready(), None, "one school has no fusion");
+        for _ in 0..20 {
+            let offer = r.attunement_offer(&save);
+            assert!(!offer.is_empty());
+            assert!(
+                offer
+                    .iter()
+                    .all(|s| s.def().school.is_some_and(|s| s != School::Pyromancy))
+            );
+            assert!(
+                offer
+                    .iter()
+                    .all(|s| save.school_unlocked(s.def().school.unwrap()))
+            );
+        }
+        r.attune(ScrollId::Tidecall);
+        assert_eq!(r.second_school, Some(School::Hydromancy));
+        assert!(r.in_my_schools(ScrollId::FloodOrb));
+        assert_eq!(
+            r.fusion_ready(),
+            FusionId::for_pair(School::Pyromancy, School::Hydromancy)
+        );
+        assert!(r.fusion_ready().is_some());
+    }
+
+    #[test]
+    fn rolled_scrolls_stay_within_your_schools_or_neutral() {
+        let save = SaveData::default();
+        let mut r = run(School::Terramancy, Some(School::Mycomancy));
+        for _ in 0..50 {
+            if let Some(sc) = r.roll_scroll(&save) {
+                assert!(r.in_my_schools(sc), "{sc:?}");
+            }
+        }
+    }
+}

@@ -143,6 +143,7 @@ pub fn ambient_effects(
             dread.silent = false;
             dread.silence = 70.0 + run.rng.next_f32() * 60.0;
             *music = crate::audio::MusicTrack::Ambient(run.layer.index());
+            sfx.write(Sfx::ui("sting_3").volume(0.5));
         } else if run.layer.index() > 0 {
             dread.silent = true;
             dread.silence = 10.0 + run.rng.next_f32() * 8.0;

@@ -298,6 +298,9 @@ pub fn update_creatures(
             if !immune {
                 c.hp -= h.damage * (1.0 - 0.5 * d / (h.radius + 1.0));
                 c.last_hit = Some(h.element);
+                if c.kind == Beast::SporePuppet && c.hurt_flash <= 0.0 {
+                    sfx.write(Sfx::at("puppet_squelch", c.body.center()));
+                }
                 c.hurt_flash = 0.25;
             }
             let push = (c.body.center() - h.at).normalize_or_zero() * h.push;
