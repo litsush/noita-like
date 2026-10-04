@@ -1,10 +1,15 @@
 ================================================================================
-PROMPT: Build the "Descent to the Core" roguelike prototype
+PROMPT: Build the "Descent to the Core" co-op roguelike prototype
 ================================================================================
 
 You are working in the `noita-like` repository (https://github.com/litsush/noita-like),
 a Rust workspace for a Noita-style falling-sand game called SBCT. Your job is to build
-a polished, playable roguelike prototype on top of it.
+a polished, playable co-op roguelike prototype on top of it.
+
+THIS IS A MULTIPLAYER-FIRST PROTOTYPE. The game is designed for 1-4 players
+working together, and multiplayer must work fully: every feature in this prompt
+has to function and stay in sync over the network, not just in singleplayer.
+Singleplayer is simply a session with one player.
 
 Work entirely on a new branch called `roguelike-prototype`, created from `main`.
 Commit in small, logical steps with clear messages and push the branch to `origin`
@@ -19,19 +24,26 @@ when you're done. Do not merge into `main` or open a PR unless asked.
   Lava, Fire, Smoke, Steam, with kinds Solid/Powder/Liquid/Gas/Fire and properties
   like density, flammability and dispersion), a chunked world with sleeping 64x64
   chunks (`world.rs`), world generation (`worldgen.rs`) and a seeded RNG (`rng.rs`).
-- `crates/net`: wire protocol, a `Transport` trait, Steam and TCP transports.
-- `crates/game`: the Bevy 0.19 client with bevy_egui 0.42. It has a menu, session
-  (host-authoritative multiplayer), rendering, player movement, digging and
-  placing, and a HUD.
-- README.md describes how to run it (`cargo run`, `cargo run -- --singleplayer`,
-  `--seed <n>`, LAN flags).
+- `crates/net`: wire protocol (serde/bincode, `protocol.rs` with `ClientMsg`,
+  `HostMsg`, `PROTOCOL_VERSION`), a `Transport` trait, a Steam transport (lobbies
+  plus relayed P2P) and a TCP transport for LAN/dev.
+- `crates/game`: the Bevy 0.19 client with bevy_egui 0.42. It has a menu, the session
+  (`session.rs`: Offline/Host/Client roles), rendering, player movement, digging
+  and placing, and a HUD.
+- The current network model: the host is authoritative and simulates at 60 Hz. At
+  20 Hz it sends changed chunks (run-length encoded, reliable) and player positions
+  (unreliable). Clients don't simulate cells; they own their own movement and apply
+  their own edits optimistically, and host chunk updates overwrite them. Joining
+  clients download the full world.
+- README.md describes how to run it, including local multiplayer testing:
+    cargo run -- --host-lan --name Alice
+    cargo run -- --join-lan 127.0.0.1 --name Bob
 
 Respect the existing architecture. Simulation logic belongs in `sim` (keep it
-Bevy-free and headless-testable). Presentation, input, audio and UI belong in `game`.
-Keep the existing multiplayer and menu code compiling and working. The roguelike
-mode can be singleplayer-first, but don't break the host-authoritative model:
-design new sim state so it could be synchronized later, and leave a short note
-in the README on what multiplayer support would still need.
+Bevy-free and headless-testable). Wire formats and transports belong in `net`.
+Presentation, input, audio and UI belong in `game`. Keep the host-authoritative
+model and extend it; don't replace it with something else unless you document a
+strong reason in the plan. Bump `PROTOCOL_VERSION` whenever the protocol changes.
 
 --------------------------------------------------------------------------------
 2. THE GAME
@@ -39,33 +51,130 @@ in the README on what multiplayer support would still need.
 
 Working title: "Descent to the Core".
 
-A Spelunky-style roguelike where you dig down through a procedurally generated,
-fully simulated planet to reach its core. Reaching the core wins the run.
+A Spelunky-style co-op roguelike where a team of 1-4 players digs down through a
+procedurally generated, fully simulated planet to reach its core. Reaching the core
+wins the run for the whole team.
 
-- One long run per attempt with permadeath. Death ends the run and returns you to a
-  run summary screen, then the main menu or a new run.
-- Every run uses a fresh random seed (shown on screen and in the summary so runs can
-  be replayed with `--seed`).
+- One long run per attempt with permadeath. A dead player becomes a spectator (see
+  section 6) and can be revived by teammates. The run ends in defeat only when every
+  player is dead, then shows a team run summary and returns everyone to the lobby.
+- Every run uses a fresh random seed chosen by the host (shown on screen and in the
+  summary so runs can be replayed with `--seed`).
 - Isaac-style meta progression: completing achievements permanently unlocks new
-  upgrades, which then enter the item pool for future runs. Unlocks persist between
-  sessions in a save file (e.g. JSON in the platform's data dir or next to the
-  executable; keep it simple and robust to a missing or corrupt file).
+  upgrades, which then enter the item pool for future runs. Unlocks are saved per
+  player locally (e.g. JSON in the platform's data dir; robust to a missing or
+  corrupt file). In a multiplayer run, the item pool is the UNION of every
+  connected player's unlocks, so playing with friends who have unlocked more is a
+  reward in itself. Achievements are earned and saved per player, including by
+  clients.
 
 DESIGN PRINCIPLE (the most important rule): everything is built around the pixel
-physics. Upgrades change how the player interacts with materials, not numbers.
+physics. Upgrades change how players interact with materials, not numbers.
 "Your pickaxe turns stone into sand" is good. "+10% damage" is bad. Emergent
-combinations of materials should create the memorable moments: a breached water
-pocket flooding a tunnel, lava meeting water and producing steam that opens a path,
-fire racing along fungus and burning your rope, a cave-in you trigger on purpose.
+combinations of materials should create the memorable moments, and in co-op those
+moments should involve the team: one player breaches a water pocket and floods a
+teammate's tunnel, someone's torch ignites the fungus that the rope everyone is
+climbing is anchored to, one player cools lava with water so another can cross.
 
 --------------------------------------------------------------------------------
-3. WORLD: LAYERS TO THE CORE
+3. MULTIPLAYER (FIRST-CLASS, REQUIRED)
+--------------------------------------------------------------------------------
+
+Session and lobby
+  - Hosting creates a pre-run lobby (Steam or LAN, through the existing transports)
+    that shows each player's name, colour, ready state and ping. The host picks or
+    rolls the seed and starts the run when everyone is ready. Up to 4 players.
+  - Each player gets a distinct colour tint for their sprite, nameplate, cursor,
+    rope and pings.
+  - Players can join the lobby between runs. Joining a run in progress is allowed
+    (the new player spawns as a spectator and can be revived), and a player who
+    disconnects can rejoin the same run and get their character back.
+  - If the host leaves, end the run cleanly for everyone with a clear message.
+  - The existing `--host-lan` / `--join-lan` / `--name` / `--seed` flags must keep
+    working so the team can test without Steam.
+
+Synchronization: everything the game adds must be correct for every player:
+  - All new materials and interactions (they live in the host's sim, so they ride
+    the existing chunk updates; make sure chunk traffic holds up when lots of
+    chunks change at once, e.g. after explosions or floods).
+  - Player state: position, animation state, facing, health, heat, breath, held
+    item, inventory, alive/dead/spectating.
+  - Entities: items, chests, altars, shrines, ore pickups, thrown objects (acid
+    flasks, charges, flares), creatures and the core. Give entities stable network
+    IDs and replicate spawn, update and despawn from the host.
+  - Run state: current seed, elapsed time, team ore, each player's deepest layer,
+    run outcome.
+  - Events: achievements, item pickups, layer transitions, damage, deaths,
+    revives, explosions and other moments that drive sound, particles and screen
+    shake must be replicated as lightweight events so every client sees and hears
+    them (they don't need to be bit-exact, just timely).
+
+Authority and responsiveness
+  - The host validates every client action that changes the world or the run
+    (digging, placing, using items, buying at shrines, picking up items, reviving).
+    Reject impossible actions (out of range, item not owned, not enough ore).
+  - Item pickups must be resolved by the host so two players can never take the
+    same item.
+  - Clients should still feel responsive: keep local movement owned by the client,
+    and play local cosmetic feedback (dig particles, sounds, animations) immediately,
+    letting the host correct the world.
+  - Interpolate remote players and entities smoothly between network updates.
+  - Keep bandwidth reasonable: send deltas where possible, prefer unreliable
+    delivery for frequent state and reliable delivery for events that must arrive.
+
+Co-op mechanics that use the simulation
+  - Revives: a dead player drops a "soul ember" that teammates can carry to a revive
+    shrine (or the player's body, your call) to bring them back with partial health.
+    Embers are physical objects that can fall into lava or get washed away.
+  - Spectators can follow any living teammate and can place a ping to help.
+  - Pings: any player can ping a location (with a short sound and an on-screen
+    marker that shows off-screen direction for teammates).
+  - Friendly fire from the environment is on by default: explosions, fire, acid and
+    floods hurt everyone. Direct damage between players is off. The host can
+    toggle environmental friendly fire in the lobby.
+  - Rope is shared: anyone can climb anyone's rope.
+  - Off-screen teammates get edge-of-screen indicators with their colour and health.
+
+Camera: each player has their own camera following their character (this is
+networked, not split-screen).
+
+--------------------------------------------------------------------------------
+4. BALANCING FOR 1-4 PLAYERS
+--------------------------------------------------------------------------------
+
+The game must feel good solo and with 2, 3 and 4 players. Put all scaling values
+in one clearly named table or config (e.g. a `PartyScaling` struct indexed by
+player count) so they're easy to tune, and document the reasoning in the plan.
+Starting points to tune from:
+
+  - Loot: items in chests/altars are per-player choices where it makes sense (e.g.
+    an altar offers N+1 items for N players and each player takes one), so nobody is
+    left without upgrades. Ore and rope/torch pickups scale up with player count, but
+    less than linearly.
+  - Starting supplies: each player gets their own rope and torches.
+  - Shrine prices scale with party size since ore is pooled for the team.
+  - Creatures: more spawns and slightly more health with more players, but not so
+    many that the screen becomes noise.
+  - World: the shaft gets wider with more players so the team has room to split up
+    and take different routes, while total depth stays the same so run length stays
+    around 10-20 minutes.
+  - Hazards: environmental hazards should not scale up. More players already means
+    more accidental floods and fires.
+  - Solo players can't be revived, so give a single player one extra life (a
+    "spare ember") to compensate.
+
+Playtest every player count (see section 11) and adjust the table until each
+feels fair. Record the final values and what you changed in the plan.
+
+--------------------------------------------------------------------------------
+5. WORLD: LAYERS TO THE CORE
 --------------------------------------------------------------------------------
 
 The world is a tall vertical shaft (wide enough to explore sideways, much taller
 than it is wide). Generation uses layered noise plus placement rules, not pure
-randomness, and must be deterministic from the seed. Depth is progress, and danger
-rises naturally with it.
+randomness, and must be deterministic from the seed and player count. The host
+generates it and clients receive it through the existing world download. Depth is
+progress, and danger rises naturally with it.
 
   Layer 1 - Crust: dirt, stone, roots/wood, water pockets, sand, the occasional
             oil seam. Almost safe; teaches digging, falling sand and water.
@@ -74,18 +183,22 @@ rises naturally with it.
   Layer 3 - Deep Mantle: crystal growths, glowing fungus, pressure fractures,
             acid pools, explosive gas chambers. Alien and dangerous.
   Layer 4 - Outer Core: liquid metal, extreme heat, conductive materials, sparks.
-  The Core: a final hand-built-feeling chamber containing the goal. Reaching and
-            touching it wins the run with a satisfying ending sequence.
+  The Core: a final hand-built-feeling chamber containing the goal. Any living
+            player touching it wins the run for the whole team, with a satisfying
+            ending sequence everyone sees together. Dead players count as winners.
 
 Add set pieces stamped into generation (each layer gets a few): a flooded ruin, a
 gas-filled chamber, an abandoned mine with explosive crates, a magma chamber with a
-fragile bridge, a crystal cavern. There must always be at least one possible route
-down, but it should never be obvious, and each layer should offer routes with
-different risks. Show a clear on-screen transition when the player enters a new
-layer (name banner, music/ambience shift, palette shift in lighting and background).
+fragile bridge, a crystal cavern, and some designed for co-op (e.g. a sealed door
+with two pressure plates, a lava channel one player must cool while another
+crosses). Co-op set pieces must remain solvable solo. There must always be at
+least one possible route down, but it should never be obvious, and each layer
+should offer routes with different risks. Show a clear on-screen transition when a
+player enters a new layer (name banner, ambience shift, palette shift in lighting
+and background), and notify the team when the first player reaches a new layer.
 
 --------------------------------------------------------------------------------
-4. MATERIALS AND INTERACTIONS
+6. MATERIALS AND INTERACTIONS
 --------------------------------------------------------------------------------
 
 Extend the material table to about 20 materials. Add new properties to `Props`
@@ -95,7 +208,7 @@ where needed instead of special-casing behaviour, for example:
 
 Suggested new materials: Gravel, Crystal, Fungus (flammable, slowly spreads,
 glows), Acid, Gas (flammable/explosive), Obsidian, Ice, Liquid Metal, Explosive
-(crate or powder), Rope (placed by player, flammable), Ore/gem (valuable),
+(crate or powder), Rope (placed by players, flammable), Ore/gem (valuable),
 Bedrock-like Core Shell.
 
 Required interactions (implement them generally, driven by properties):
@@ -107,12 +220,12 @@ Required interactions (implement them generally, driven by properties):
   - unsupported gravel/sand collapses; heavy materials sink through lighter liquids
   - explosions destroy terrain in a radius, throw particles, and damage entities
 
-Keep the simulation fast. The existing sleeping-chunk system must still work, and
-debug builds should stay playable. Add unit tests in `sim` for the key
-interactions.
+Keep the simulation fast enough for a host running a 4-player world (wider shaft,
+more active chunks). The existing sleeping-chunk system must still work, and debug
+builds should stay playable. Add unit tests in `sim` for the key interactions.
 
 --------------------------------------------------------------------------------
-5. PLAYER, HEALTH AND HAZARDS
+7. PLAYERS, HEALTH AND HAZARDS
 --------------------------------------------------------------------------------
 
 Base verbs only (upgrades add the rest):
@@ -120,35 +233,38 @@ Base verbs only (upgrades add the rest):
   - Dig with a pickaxe; dig speed depends on material hardness.
   - Throw or place a limited supply of rope (for climbing back up) and torches/flares
     (light, and they ignite flammables).
-  - Interact (pick up items, open chests, touch the core).
+  - Interact (pick up items, open chests, carry a soul ember, touch the core).
+  - Ping.
 
 Health and hazards: hearts or an HP bar. Damage from fire, lava, heat, acid,
 explosions, crushing by falling material, drowning (breath meter while submerged),
 and toxic gas. Heat should be a visible meter that rises near hot materials in the
 deeper layers. Brief invulnerability frames and clear hit feedback (flash, knockback,
-screen shake, sound).
+screen shake, sound). Health and damage are decided by the host.
 
 A few simple creatures are welcome but optional and secondary to environmental
 danger, e.g. a cave crawler in layer 1, a fire-immune magma slug in layer 2, and
-glowing spore drifters in layer 3. If you add them, they must interact with the
+glowing spore drifters in layer 3. If you add them, they are simulated by the host,
+replicated to clients, pick targets among all players, and interact with the
 simulation too (burn, drown, get crushed, get dissolved).
 
-Lighting: the deeper caves are dark. Implement a lighting pass where the player's
-lamp, torches, lava, fire, fungus and crystals emit light. Darkness should be a
-real mechanic.
+Lighting: the deeper caves are dark. Implement a lighting pass where every player's
+lamp, torches, lava, fire, fungus and crystals emit light. Teammates' lamps light
+the cave for everyone. Darkness should be a real mechanic.
 
 --------------------------------------------------------------------------------
-6. UPGRADES (RUN ITEMS) AND META UNLOCKS
+8. UPGRADES (RUN ITEMS) AND META UNLOCKS
 --------------------------------------------------------------------------------
 
-Run items are found in chests, on altars, or bought at rare shrines using ore/gems
-collected during the run. Implement at least 15 items. At least 6 must be
-unlocked from the start; the rest unlock through achievements. Each item needs a
-name, icon sprite, short description and flavour line. Examples to start from:
+Run items are found in chests, on altars, or bought at rare shrines using the
+team's ore. Implement at least 15 items. At least 6 must be unlocked from the start;
+the rest unlock through achievements. Each item needs a name, icon sprite, short
+description and flavour line. Items belong to the player who took them. Include a
+few items that are specifically good in co-op. Examples to start from:
 
   Tool upgrades
     - Crumbling Pick: dug stone turns into sand/gravel instead of vanishing
-    - Magma Pick: dug stone becomes lava (dangerous, powerful)
+    - Magma Pick: dug stone becomes lava (dangerous to you and your team, powerful)
     - Water Canister: spray water to cool, extinguish, or conduct electricity
     - Acid Flask: throw to dissolve terrain and enemies
     - Blast Charges: placeable explosives
@@ -161,24 +277,32 @@ name, icon sprite, short description and flavour line. Examples to start from:
     - Frost Seed: placed seed that grows ice outward
     - Fungal Spores: plant fungus that spreads, glows, and burns
     - Pocket Sun: tiny heat source that cooks lava into obsidian
+  Co-op
+    - Ember Lantern: carried soul embers revive teammates anywhere, without a shrine
+    - Anchor Line: your rope can't burn, and teammates climbing it move faster
+    - Shared Lungs: teammates near you share your breath meter
   Risk/reward
     - Beacon Heart: your light reveals far more but attracts creatures
     - Volatile Core: every explosion you cause leaves behind ore
     - Glass Cannon Pick: dig nearly instantly but take double damage
 
-Achievements unlock items and teach the physics. Implement at least 12, for example:
+Achievements unlock items and teach the physics. Implement at least 12, including
+some co-op ones, for example:
   - "Flood Survivor": flood a chamber you're in and survive -> unlocks Gill Mask
   - "Pyromaniac": ignite a gas pocket -> unlocks Blast Charges
   - "Alchemist": dissolve 500 cells with acid -> unlocks Acid Flask upgrade
   - "Obsidian Bridge": turn lava into obsidian with water -> unlocks Pocket Sun
   - "Untouched": reach layer 2 without taking damage -> unlocks a starting item
+  - "Second Chance": revive a teammate -> unlocks Ember Lantern
+  - "Friendly Fire": kill a teammate with the environment -> unlocks a risky item
+  - "Full Expedition": win a run with 4 players -> unlocks a co-op item
   - "Core Breaker": win a run -> unlocks a new starting loadout
-Show a toast with icon and sound when an achievement is earned mid-run, and an
-Unlocks/Achievements screen in the main menu showing locked (silhouette + hint)
-and unlocked entries.
+Show a toast with icon and sound when a player earns an achievement mid-run (and a
+smaller notice to teammates), and an Unlocks/Achievements screen in the main menu
+showing locked (silhouette + hint) and unlocked entries.
 
 --------------------------------------------------------------------------------
-7. ART: SPRITES, ANIMATION AND FX
+9. ART: SPRITES, ANIMATION AND FX
 --------------------------------------------------------------------------------
 
 There are no art assets yet, and you must create complete ones. Use a cohesive
@@ -195,20 +319,24 @@ intentional and polished, not like placeholder rectangles.
 
 Required:
   - Player sprite sheet: idle, run, jump, fall, climb, dig (directional), hurt,
-    death; at least 4-6 frames per looping animation.
-  - Item icons for every upgrade, plus chest, altar, shrine, rope, torch, ore/gem,
-    and the core itself (animated, pulsing, glowing).
+    death, carrying an ember, and a ghost/spectator form; at least 4-6 frames per
+    looping animation. Design it to be tinted per player, so four players are
+    easy to tell apart at a glance.
+  - Item icons for every upgrade, plus chest, altar, shrine, revive shrine, soul
+    ember, rope, torch, ore/gem, ping marker and the core itself (animated,
+    pulsing, glowing).
   - Creature sprites with animations, if creatures are included.
   - Per-material cell shading: colour variance, plus subtle animation for liquids
     (shimmer), lava (glow/flicker), fungus/crystal (glow) and fire (flicker).
   - Parallax background per layer that shifts colour/mood with depth.
   - Particles: dig debris coloured by the material dug, splashes, sparks, embers,
-    smoke puffs, explosion flash and shockwave, steam bursts, pickup sparkle.
+    smoke puffs, explosion flash and shockwave, steam bursts, pickup sparkle,
+    revive burst.
   - Juice: screen shake, hit-stop on big impacts, smooth camera with look-ahead,
-    death slow-motion.
+    death slow-motion (local to the player who died).
 
 --------------------------------------------------------------------------------
-8. AUDIO: SFX AND MUSIC
+10. AUDIO: SFX AND MUSIC
 --------------------------------------------------------------------------------
 
 There are no audio assets yet. Generate them procedurally (e.g. a small synth
@@ -218,54 +346,93 @@ and commit the generated files. Required:
     hard stone, crystal ping), place rope/torch, pickup, item get fanfare, chest open.
   - Hazards: fire crackle loop, sizzle (water on lava), splash, acid hiss, explosion,
     rumble before a collapse, hurt, death.
-  - UI: hover, click, achievement unlock, layer-entered sting, victory theme.
+  - Co-op: teammate down, revive, ping, player joined/left.
+  - UI: hover, click, ready-up, achievement unlock, layer-entered sting, victory
+    theme.
   - Ambient loop per layer that gets more ominous with depth (drones, drips, distant
     rumbles). Simple generative music is a bonus.
-Positional/volume falloff for world sounds and rate-limiting so hundreds of cell
-events don't spam audio. Add master/music/SFX volume sliders in settings.
+World sounds are positional relative to the local player's camera, so teammates'
+actions are heard at the right volume and direction. Rate-limit sounds so hundreds
+of cell events don't spam audio. Add master/music/SFX volume sliders in settings.
 
 --------------------------------------------------------------------------------
-9. UI
+11. UI
 --------------------------------------------------------------------------------
 
 Polished, consistent, readable UI (bevy_egui is already available; a custom
 pixel-art theme with a pixel font is strongly preferred over default egui styling).
-  - Main menu: New Run, Continue/Seeded Run (enter seed), Unlocks & Achievements,
-    Settings, Quit. Keep the existing multiplayer entries reachable.
-  - In-run HUD: health, heat meter, breath meter (when relevant), rope/torch counts,
-    ore count, equipped items with icons, depth meter showing the current layer and
-    distance to the core, current seed.
-  - Item pickup popup with name, description and flavour text.
-  - Pause menu with resume, settings, abandon run.
-  - Death screen and victory screen with a run summary: depth reached, time, cause of
-    death, items collected, achievements earned this run, seed.
+  - Main menu: Host Run (Steam/LAN), Join Run (Steam friends, public lobbies, lobby
+    ID, LAN address), Solo Run, Unlocks & Achievements, Settings, Quit. Reuse and
+    restyle the existing Steam/LAN menu flows.
+  - Lobby: player list with names, colours, ready states and pings; seed field
+    (host can roll or type a seed); friendly fire toggle; invite button for Steam;
+    start button for the host.
+  - In-run HUD: your health, heat meter, breath meter (when relevant), rope/torch
+    counts, your equipped items with icons; team ore; depth meter showing the
+    current layer, each teammate's depth, and distance to the core; a compact
+    teammate panel with each teammate's name, colour, health and status (alive,
+    down, carrying ember); current seed.
+  - Nameplates above remote players and edge-of-screen indicators for off-screen
+    teammates, pings and dropped soul embers.
+  - Item pickup popup with name, description and flavour text, and an altar choice
+    UI that shows which items teammates have already taken.
+  - Spectator overlay: whose camera you're following, how to switch, how to ping,
+    and how a revive works.
+  - Pause menu (doesn't pause a multiplayer game) with resume, settings, invite,
+    leave run; the host additionally gets end run.
+  - Connection feedback: joining/downloading progress, a warning on high ping or
+    lost connection, and a clean return to the menu with a reason when
+    disconnected.
+  - Death and victory screens with a team run summary: depth reached, time, each
+    player's cause of death, items collected, achievements earned this run, seed.
+    Then everyone returns to the lobby together.
   - Smooth transitions and fades between screens.
 
 --------------------------------------------------------------------------------
-10. QUALITY BAR AND PROCESS
+12. QUALITY BAR AND PROCESS
 --------------------------------------------------------------------------------
 
 - Before coding, read the existing crates and write a short plan in
-  `docs/roguelike-plan.md` (architecture, new modules, milestones). Update it as you go.
-- Build in milestones, keeping the game runnable at every commit:
-    1. Materials and interactions in `sim`, with tests
-    2. Layered worldgen down to the core, with set pieces
-    3. Player verbs, health and hazards, win and death
-    4. Items, achievements, persistence
-    5. Art, animation, particles and lighting
-    6. Audio
-    7. UI polish and the full menu flow
-    8. Balancing pass and bug fixing
+  `docs/roguelike-plan.md` (architecture, network design for every new kind of
+  state, new modules, party scaling table, milestones). Update it as you go.
+- Build multiplayer into every milestone from the start, not at the end. A
+  milestone isn't done until it works with a host and at least one client. Keep the
+  game runnable at every commit:
+    1. Lobby, ready-up and run start/end flow for 1-4 players over LAN and Steam
+    2. Materials and interactions in `sim`, with tests
+    3. Layered worldgen down to the core, with set pieces, scaled by player count
+    4. Player verbs, health and hazards, death, spectating, revives and winning
+    5. Entities, items, achievements, persistence (all replicated)
+    6. Art, animation, particles and lighting
+    7. Audio
+    8. UI polish and the full menu flow
+    9. Balancing pass for 1, 2, 3 and 4 players, and bug fixing
+- Testing multiplayer:
+    - Add automated tests for the protocol (round-trip serialization of every
+      message) and, where practical, a headless host+client test over the TCP
+      transport that runs a few seconds of a run and checks that client and host
+      agree on world chunks, player state and entities.
+    - Play-test by running one host and three LAN clients on this machine
+      (`--host-lan` / `--join-lan 127.0.0.1` with different `--name`s). Test joining,
+      leaving, rejoining, a client dying and being revived, a full wipe, a win, and
+      the host disconnecting. Check bandwidth and host frame time with four players
+      during heavy sim activity (explosions, floods).
+    - Steam can't be tested with one account; make sure the Steam path uses the same
+      messages and code paths as LAN so LAN testing covers it, and say so in the
+      README.
 - `cargo build`, `cargo test` and `cargo clippy` must pass with no warnings. Run
   `cargo fmt` (a rustfmt.toml exists).
 - Actually play the game to check it: run it, take screenshots if you can, and fix
   what looks or feels wrong. A run from the surface to the core should take roughly
-  10-20 minutes for a skilled player.
-- Keep performance smooth (target 60 FPS) on a mid-range PC.
-- Update README.md with how to play the roguelike mode, its controls, and the asset
-  generation scripts.
+  10-20 minutes for a skilled team of any size.
+- Keep performance smooth (target 60 FPS) on a mid-range PC, including for the host
+  of a 4-player game.
+- Update README.md with how to host, join and play the roguelike mode, its controls,
+  how to test multiplayer locally with four instances, and the asset generation
+  scripts.
 - When the prototype is finished, push the `roguelike-prototype` branch to origin
   (`git push -u origin roguelike-prototype`) so everyone on the team can check it out
-  and test it. Make sure the pushed branch builds and runs from a clean clone with
-  `cargo run` and that all generated assets are committed. Then write a summary of
-  what was built, how to test it, what is rough or missing, and what you'd do next.
+  and test it together. Make sure the pushed branch builds and runs from a clean clone
+  with `cargo run`, that multiplayer works between separately built copies, and that
+  all generated assets are committed. Then write a summary of what was built, how to
+  test it (solo and multiplayer), what is rough or missing, and what you'd do next.
