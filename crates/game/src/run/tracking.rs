@@ -170,6 +170,8 @@ pub fn process_sim_events(
         (s.electrified >= 200, AchievementId::Conductor),
         (s.collapsed >= 1000, AchievementId::CaveIn),
         (s.destroyed >= 1500, AchievementId::Demolitionist),
+        (s.fungus_grown >= 300, AchievementId::Gardener),
+        (s.remains_searched >= 5, AchievementId::GraveRobber),
     ];
     for (done, id) in checks {
         if done && run.is_playing() {

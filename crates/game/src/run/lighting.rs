@@ -13,9 +13,9 @@ use sbct_sim::descent::Layer;
 use sbct_sim::{Kind, Material, World};
 
 use super::creatures::Creature;
-use super::entities::{LightOrb, Projectile, ProjectileKind, Prop, PropKind, ShardPickup, Sun};
-use super::items::ItemId;
+use super::entities::{LightOrb, Projectile, Prop, PropKind, ShardPickup, Sun};
 use super::player::RunPlayer;
+use super::scrolls::ScrollId;
 use super::{Phase, Run};
 use crate::render::{InGameEntity, PIXEL_SCALE, WorldCamera};
 use crate::session::Session;
@@ -166,7 +166,6 @@ pub fn update_lighting(
     }
 
     // Point lights.
-    let flicker = 1.0 + (time.elapsed_secs() * 13.0).sin() * 0.05 + (time.elapsed_secs() * 7.3).cos() * 0.04;
     let mut add = |p: Vec2, c: [f32; 3]| {
         if let Some(i) = to_texel(p) {
             for (l, c) in map.light[i].iter_mut().zip(c) {
@@ -179,7 +178,7 @@ pub fn update_lighting(
         add(to, [0.9, 0.8, 1.3]);
     }
     if !dying {
-        let lamp = if run.has(ItemId::BeaconHeart) {
+        let lamp = if run.has(ScrollId::Beacon) {
             7.0
         } else if run.staff_dimmed {
             0.55
@@ -203,12 +202,8 @@ pub fn update_lighting(
         add(s.pos, [4.0, 3.6, 2.4]);
     }
     for p in &projectiles {
-        let c = match p.kind {
-            ProjectileKind::SparkBolt => [0.8, 1.0, 1.6],
-            ProjectileKind::AcidFlask => [0.3, 0.8, 0.2],
-            _ => [0.4, 0.4, 0.4],
-        };
-        add(p.pos, c);
+        let [r, g, b] = p.spell.school().map_or([200, 200, 220], |s| s.color());
+        add(p.pos, [r as f32 / 160.0, g as f32 / 160.0, b as f32 / 160.0]);
     }
     for prop in &props {
         if prop.kind == PropKind::Core {

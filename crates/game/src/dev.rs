@@ -3,7 +3,8 @@
 //! * `--autoplay` lets a bot play runs (see `run::input::bot_input`).
 //! * `--screenshot <dir>` saves a screenshot every few seconds.
 //! * `--quit-after <secs>` exits after that many seconds.
-//! * `--give <all|ItemName>` starts runs with items (e.g. `--give SparkRod`).
+//! * `--give <all|ScrollName,...>` starts runs knowing scrolls (e.g. `--give SparkBolt,IceLance`).
+//! * `--schools <First[,Second]>` picks the run's schools (e.g. `--schools Pyromancy,Cryomancy`).
 //! * `--window <WxH>` sets the window size; `--ui-scale <x>` the UI scale.
 //! * `--test-toasts` shows a few achievement toasts at the start of a run.
 //! * `--fps` logs frame rate once a second.
@@ -28,7 +29,14 @@ struct QuitAfter(f32);
 
 /// Items granted at the start of a run.
 #[derive(Resource)]
-pub struct GiveItems(pub Vec<crate::run::items::ItemId>);
+pub struct GiveItems(pub Vec<crate::run::scrolls::ScrollId>);
+
+/// Schools for runs started from the command line.
+#[derive(Resource)]
+pub struct DevSchools(
+    pub crate::run::scrolls::School,
+    pub Option<crate::run::scrolls::School>,
+);
 
 /// Start runs in this layer instead of on the surface.
 #[derive(Resource)]
@@ -66,11 +74,14 @@ impl Plugin for DevPlugin {
             .add_systems(Update, take_screenshots);
         }
         if let Some(which) = arg_value("--give") {
-            use crate::run::items::ItemId;
-            let names: Vec<&str> = which.split(',').collect();
-            let items = ItemId::ALL
-                .into_iter()
-                .filter(|i| names.contains(&"all") || names.contains(&format!("{i:?}").as_str()))
+            use crate::run::scrolls::ScrollId;
+            let names: Vec<String> = which.split(',').map(|n| n.to_lowercase()).collect();
+            let items = ScrollId::all()
+                .filter(|s| {
+                    names
+                        .iter()
+                        .any(|n| n == "all" || *n == s.name_id().to_lowercase())
+                })
                 .collect();
             app.insert_resource(GiveItems(items));
         }
@@ -84,6 +95,13 @@ impl Plugin for DevPlugin {
                 OnEnter(crate::AppState::Run),
                 test_toasts.after(crate::run::RunSetupDone),
             );
+        }
+        if let Some(list) = arg_value("--schools") {
+            use crate::run::scrolls::School;
+            let mut it = list.split(',').filter_map(School::from_name);
+            if let Some(first) = it.next() {
+                app.insert_resource(DevSchools(first, it.next()));
+            }
         }
         if std::env::args().any(|a| a == "--fps") {
             app.add_plugins((

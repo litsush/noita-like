@@ -6,15 +6,15 @@ use bevy_egui::{EguiContexts, egui};
 use sbct_sim::descent::{DESCENT_HEIGHT, Layer};
 
 use super::entities::Prompt;
-use super::items::{Active, icon};
 use super::player::RunPlayer;
 use super::save::{DigMode, SaveData};
-use super::{Phase, Run, random_seed, start_run};
+use super::scrolls::{self, FusionId, ScrollId, icon};
+use super::{Phase, Popup, Run, RunConfig, Spell, random_seed, start_run};
 use crate::AppState;
 use crate::audio::Sfx;
 use crate::controls::Action;
 use crate::render::{UiHasPointer, WorldCamera};
-use crate::ui::{self, ACCENT, BORDER, DANGER, GOOD, TEXT_DIM, UiIcons};
+use crate::ui::{self, ACCENT, BORDER, DANGER, TEXT_DIM, UiIcons};
 
 #[derive(Resource, Default)]
 pub struct Paused(pub bool);
@@ -34,7 +34,7 @@ pub fn toggle_pause(
     mouse: Res<ButtonInput<MouseButton>>,
     mut paused: ResMut<Paused>,
     mut menu: ResMut<PauseMenu>,
-    run: Res<Run>,
+    mut run: ResMut<Run>,
     save: Res<SaveData>,
     rebind: Res<crate::controls::Rebind>,
 ) {
@@ -45,7 +45,12 @@ pub fn toggle_pause(
         .bindings
         .just_pressed(crate::controls::Action::Pause, &keys, &mouse)
     {
-        if menu.settings_open {
+        if run.attunement.is_some() {
+            run.attunement = None;
+            run.attune_altar = None;
+        } else if run.journal.is_some() {
+            run.journal = None;
+        } else if menu.settings_open {
             menu.settings_open = false;
         } else {
             paused.0 = !paused.0;
@@ -117,6 +122,15 @@ pub fn run_hud(
                     }
                 });
                 ui.horizontal(|ui| {
+                    ui::icon(ui, &icons, icon::MANA, 16.0);
+                    ui::meter(
+                        ui,
+                        run.mana / run.max_mana,
+                        egui::Color32::from_rgb(150, 110, 240),
+                        140.0,
+                    );
+                });
+                ui.horizontal(|ui| {
                     ui::icon(ui, &icons, icon::THERMOMETER, 16.0);
                     let color = if player.heat > 80.0 {
                         DANGER
@@ -138,7 +152,7 @@ pub fn run_hud(
                 }
                 if player.thermal > 0.0 {
                     ui.horizontal(|ui| {
-                        ui::icon(ui, &icons, super::items::ItemId::ThermalSuit.def().icon, 16.0);
+                        ui::icon(ui, &icons, ScrollId::EmberHeart.icon(), 16.0);
                         ui::meter(
                             ui,
                             player.thermal / 100.0,
@@ -156,16 +170,17 @@ pub fn run_hud(
                 ui.separator();
                 let b = &save.bindings;
                 ui.horizontal(|ui| {
-                    for (index, count, key) in [
-                        (icon::TORCH, run.light_charges as u32, b.hint(Action::LightOrb)),
-                        (icon::ORE, run.shards, String::new()),
-                    ] {
-                        ui::icon(ui, &icons, index, 24.0);
-                        ui.label(egui::RichText::new(format!("{count}")).size(16.0));
-                        if !key.is_empty() {
-                            ui.label(egui::RichText::new(key).color(TEXT_DIM));
-                        }
+                    ui::icon(ui, &icons, icon::LIGHT_ORB, 24.0);
+                    ui.label(
+                        egui::RichText::new(format!("{}/{}", run.light_charges, run.light_max)).size(16.0),
+                    );
+                    ui.label(egui::RichText::new(b.hint(Action::LightOrb)).color(TEXT_DIM));
+                    ui.add_space(6.0);
+                    ui::icon(ui, &icons, icon::SHARD, 24.0);
+                    ui.label(egui::RichText::new(run.shards.to_string()).size(16.0));
+                    if run.staff_dimmed {
                         ui.add_space(6.0);
+                        ui::icon(ui, &icons, icon::EYE_CLOSED, 24.0).on_hover_text("Staff dimmed");
                     }
                 });
                 ui.horizontal(|ui| {
@@ -173,16 +188,14 @@ pub fn run_hud(
                     ui::icon(
                         ui,
                         &icons,
-                        if smart { icon::COMPASS } else { icon::PICKAXE },
+                        if smart { icon::SMART_DIG } else { icon::CURSOR_DIG },
                         16.0,
                     );
-                    ui.label(
-                        egui::RichText::new(if smart { "Smart dig" } else { "Cursor dig" }).color(if smart {
-                            ACCENT
-                        } else {
-                            ui::TEXT
-                        }),
-                    );
+                    let label = egui::RichText::new(if smart { "Smart dig" } else { "Cursor dig" });
+                    ui.label(if smart { label.color(ACCENT) } else { label });
+                    if let Some(v) = run.dig_variant() {
+                        ui::icon(ui, &icons, v.icon(), 16.0).on_hover_text(v.def().name);
+                    }
                     ui.label(
                         egui::RichText::new(format!("{} to switch", b.hint(Action::ToggleDigMode)))
                             .color(TEXT_DIM),
@@ -191,83 +204,114 @@ pub fn run_hud(
             });
         });
 
-    // ---- bottom centre: items ----------------------------------------------
-    if !run.items.is_empty() {
-        let selected = run.selected_active();
-        egui::Area::new("items".into())
-            .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -12.0])
-            .show(ctx, |ui| {
-                ui::panel_frame().show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        for &item in &run.items {
-                            let def = item.def();
-                            let r = ui
-                                .vertical(|ui| {
-                                    ui::icon(ui, &icons, def.icon, 32.0);
-                                    match def.active {
-                                        Some(Active::Charges { max, recharge }) => {
-                                            let (n, t) = run.charges.get(&item).copied().unwrap_or((0, 0.0));
-                                            let text = if max > 1 {
-                                                format!("{n}/{max}")
-                                            } else if n > 0 {
-                                                "ready".into()
-                                            } else {
-                                                "...".into()
-                                            };
-                                            ui.label(egui::RichText::new(text).size(16.0).color(if n > 0 {
-                                                GOOD
-                                            } else {
-                                                TEXT_DIM
-                                            }));
-                                            if n < max {
-                                                ui::meter(ui, t / recharge, BORDER, 32.0);
-                                            }
-                                        }
-                                        Some(Active::Spray) => {
-                                            ui::meter(
-                                                ui,
-                                                run.tank / 100.0,
-                                                egui::Color32::from_rgb(90, 160, 240),
-                                                32.0,
-                                            );
-                                        }
-                                        None => {}
-                                    }
-                                })
-                                .response;
-                            if Some(item) == selected {
-                                ui.painter().rect_stroke(
-                                    r.rect.expand(3.0),
-                                    0.0,
-                                    egui::Stroke::new(2.0, ACCENT),
-                                    egui::StrokeKind::Outside,
-                                );
-                            }
-                            r.on_hover_ui(|ui| {
-                                ui.label(egui::RichText::new(def.name).color(ACCENT));
-                                ui.label(def.desc);
-                            });
-                        }
-                    });
-                    if run.actives().len() > 1 {
+    // ---- bottom centre: schools and spells ----------------------------------
+    egui::Area::new("spells".into())
+        .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -12.0])
+        .show(ctx, |ui| {
+            ui::panel_frame().show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for school in run.schools() {
+                        ui::icon(ui, &icons, school.sigil(), 32.0).on_hover_text(school.name());
+                    }
+                    if run.second_school.is_none() {
+                        ui::icon_tinted(ui, &icons, icon::UNKNOWN, 32.0, egui::Color32::from_gray(120))
+                            .on_hover_text("Find an altar to bind a second school");
+                    }
+                    ui.separator();
+                    let selected = run.selected_spell();
+                    let spells = run.spells();
+                    if spells.is_empty() {
                         ui.label(
-                            egui::RichText::new(format!(
-                                "{}/{} or wheel: switch   {}: use",
-                                save.bindings.hint(Action::PrevItem),
-                                save.bindings.hint(Action::NextItem),
-                                save.bindings.hint(Action::UseItem)
-                            ))
+                            egui::RichText::new(
+                                "No spells yet: find scrolls in chests, on altars and at shrines.",
+                            )
                             .color(TEXT_DIM),
                         );
-                    } else if !run.actives().is_empty() {
-                        ui.label(
-                            egui::RichText::new(format!("{}: use", save.bindings.hint(Action::UseItem)))
-                                .color(TEXT_DIM),
-                        );
+                    }
+                    for spell in spells {
+                        let (cost, cooldown) = spell.cost();
+                        let cd = run.cooldowns.get(&spell).copied().unwrap_or(0.0);
+                        let fusion = matches!(spell, Spell::Fusion(_));
+                        let r = ui
+                            .vertical(|ui| {
+                                let resp = ui::icon(ui, &icons, spell.icon(), 32.0);
+                                let rect = resp.rect;
+                                if cd > 0.0 && cooldown > 0.0 {
+                                    let mut shade = rect;
+                                    shade.set_top(
+                                        rect.bottom() - rect.height() * (cd / cooldown).clamp(0.0, 1.0),
+                                    );
+                                    ui.painter().rect_filled(
+                                        shade,
+                                        0.0,
+                                        egui::Color32::from_black_alpha(160),
+                                    );
+                                }
+                                let afford = run.mana >= cost;
+                                let label = if spell.channelled() {
+                                    format!("{cost:.0}/s")
+                                } else {
+                                    format!("{cost:.0}")
+                                };
+                                ui.label(egui::RichText::new(label).size(16.0).color(if afford {
+                                    egui::Color32::from_rgb(180, 150, 255)
+                                } else {
+                                    DANGER
+                                }));
+                            })
+                            .response;
+                        let color = if fusion {
+                            egui::Color32::from_rgb(255, 215, 120)
+                        } else {
+                            ACCENT
+                        };
+                        if Some(spell) == selected {
+                            ui.painter().rect_stroke(
+                                r.rect.expand(3.0),
+                                0.0,
+                                egui::Stroke::new(2.0, color),
+                                egui::StrokeKind::Outside,
+                            );
+                        }
+                        r.on_hover_ui(|ui| {
+                            ui.label(egui::RichText::new(spell.name()).color(color));
+                            ui.label(spell.desc());
+                        });
+                    }
+                    let passives: Vec<ScrollId> =
+                        run.scrolls.iter().copied().filter(|s| !s.is_active()).collect();
+                    if !passives.is_empty() {
+                        ui.separator();
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        for p in passives {
+                            let active_dig =
+                                p.def().kind != scrolls::Kind::Dig || run.dig_variant() == Some(p);
+                            let tint = if active_dig {
+                                egui::Color32::WHITE
+                            } else {
+                                egui::Color32::from_gray(90)
+                            };
+                            ui::icon_tinted(ui, &icons, p.icon(), 24.0, tint).on_hover_ui(|ui| {
+                                ui.label(egui::RichText::new(p.def().name).color(ACCENT));
+                                ui.label(p.def().desc);
+                            });
+                        }
                     }
                 });
+                if run.spells().len() > 1 {
+                    let b = &save.bindings;
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{}/{} or wheel: switch   {}: cast",
+                            b.hint(Action::PrevItem),
+                            b.hint(Action::NextItem),
+                            b.hint(Action::UseItem)
+                        ))
+                        .color(TEXT_DIM),
+                    );
+                }
             });
-    }
+        });
 
     // ---- right: depth gauge -------------------------------------------------
     let depth_bottom = egui::Area::new("depth".into())
@@ -384,26 +428,123 @@ pub fn run_hud(
         run.banner = (t < 3.8).then_some((layer, t + dt));
     }
 
-    // ---- item popup ----------------------------------------------------------
-    if let Some((item, t)) = run.popup {
-        let def = item.def();
+    // ---- popup: scroll learned, shattered, fusion, attunement --------------
+    if let Some((p, t)) = run.popup {
+        let (icon_index, title, body, flavor) = match p {
+            Popup::Learned(sc) => (
+                sc.icon(),
+                sc.def().name.to_string(),
+                sc.def().desc.to_string(),
+                sc.def().flavor.to_string(),
+            ),
+            Popup::Shattered(sc) => (
+                icon::SHARD,
+                format!("{} crumbles", sc.def().name),
+                format!(
+                    "Not of your schools. It breaks into {} shards.",
+                    super::SHATTER_SHARDS
+                ),
+                String::new(),
+            ),
+            Popup::Fusion(f) => (
+                f.icon(),
+                format!("Fusion awakened: {}", f.def().name),
+                f.def().desc.to_string(),
+                format!(
+                    "{} and {} entwine.",
+                    f.def().schools.0.name(),
+                    f.def().schools.1.name()
+                ),
+            ),
+            Popup::Attuned(school) => (
+                school.sigil(),
+                format!("Attuned to {}", school.name()),
+                school.desc().to_string(),
+                "Two schools now bind your staff. Scrolls of others will crumble in your hands.".to_string(),
+            ),
+        };
         egui::Area::new("popup".into())
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 120.0])
             .interactable(false)
             .show(ctx, |ui| {
                 ui::panel_frame().show(ui, |ui| {
-                    ui.set_max_width(420.0);
+                    ui.set_max_width(440.0);
                     ui.horizontal(|ui| {
-                        ui::icon(ui, &icons, def.icon, 48.0);
+                        ui::icon(ui, &icons, icon_index, 48.0);
                         ui.vertical(|ui| {
-                            ui.label(egui::RichText::new(def.name).size(24.0).color(ACCENT));
-                            ui.label(def.desc);
-                            ui.label(egui::RichText::new(def.flavor).italics().color(TEXT_DIM));
+                            ui.label(egui::RichText::new(title).size(24.0).color(ACCENT));
+                            ui.label(body);
+                            if !flavor.is_empty() {
+                                ui.label(egui::RichText::new(flavor).italics().color(TEXT_DIM));
+                            }
                         });
                     });
                 });
             });
-        run.popup = (t < 4.5).then_some((item, t + dt));
+        run.popup = (t < 4.5).then_some((p, t + dt));
+    }
+
+    // ---- attunement choice ----------------------------------------------------
+    if let Some(offer) = run.attunement.clone() {
+        let mut pick = None;
+        egui::Area::new("attune".into()).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).order(egui::Order::Foreground).show(ctx, |ui| {
+            ui::panel_frame().stroke(egui::Stroke::new(2.0, ACCENT)).show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(egui::RichText::new("The altar offers a second attunement").size(24.0).color(ACCENT));
+                    ui.label(egui::RichText::new(format!("You are a student of {}. Choose one scroll; its school binds to your staff for this descent.", run.first_school.name())).color(TEXT_DIM));
+                });
+                ui.add_space(8.0);
+                ui.horizontal_top(|ui| {
+                    for (i, sc) in offer.iter().enumerate() {
+                        let school = sc.def().school;
+                        let r = ui::panel_frame()
+                            .show(ui, |ui| {
+                                ui.set_width(200.0);
+                                ui.set_min_height(190.0);
+                                ui.vertical_centered(|ui| {
+                                    ui.horizontal(|ui| {
+                                        if let Some(sch) = school {
+                                            ui::icon(ui, &icons, sch.sigil(), 32.0);
+                                        }
+                                        ui::icon(ui, &icons, sc.icon(), 32.0);
+                                    });
+                                    ui.label(egui::RichText::new(school.map_or("", |s| s.name())).color(TEXT_DIM));
+                                    ui.label(egui::RichText::new(sc.def().name).color(ACCENT));
+                                    ui.add(egui::Label::new(sc.def().desc).wrap());
+                                    if let (Some(sch), true) = (school, true)
+                                        && let Some(f) = FusionId::for_pair(run.first_school, sch)
+                                    {
+                                        ui.label(egui::RichText::new(format!("Fusion: {}", if save.fusions_discovered.contains(&f) { f.def().name } else { "???" })).color(egui::Color32::from_rgb(255, 215, 120)));
+                                    }
+                                    ui.label(egui::RichText::new(format!("[{}]", i + 1)).color(TEXT_DIM));
+                                });
+                            })
+                            .response
+                            .interact(egui::Sense::click());
+                        if r.clicked() {
+                            pick = Some(i);
+                        }
+                    }
+                });
+                if offer.is_empty() {
+                    ui.label("The altar is silent: no other school is open to you yet.");
+                }
+                ui.vertical_centered(|ui| {
+                    ui.label(egui::RichText::new("Esc to decide later").color(TEXT_DIM));
+                });
+            });
+        });
+        for (i, key) in [egui::Key::Num1, egui::Key::Num2, egui::Key::Num3]
+            .into_iter()
+            .enumerate()
+        {
+            if ctx.input(|inp| inp.key_pressed(key)) && i < offer.len() {
+                pick = Some(i);
+            }
+        }
+        if let Some(i) = pick {
+            run.attune_pick = Some(i);
+        }
     }
 
     // ---- achievement toasts ---------------------------------------------------
@@ -602,12 +743,25 @@ fn summary(
                             ui.end_row();
                         }
                     });
-                if !run.items.is_empty() {
-                    ui.add_space(6.0);
-                    ui.label(egui::RichText::new("Items").color(TEXT_DIM));
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    for school in run.schools() {
+                        ui::icon(ui, icons, school.sigil(), 24.0);
+                        ui.label(egui::RichText::new(school.name()).color(ACCENT));
+                    }
+                    if let Some(f) = run.fusion {
+                        ui.label(egui::RichText::new("·").color(TEXT_DIM));
+                        ui::icon(ui, icons, f.icon(), 24.0);
+                        ui.label(
+                            egui::RichText::new(f.def().name).color(egui::Color32::from_rgb(255, 215, 120)),
+                        );
+                    }
+                });
+                if !run.scrolls.is_empty() {
+                    ui.label(egui::RichText::new("Scrolls").color(TEXT_DIM));
                     ui.horizontal_wrapped(|ui| {
-                        for item in &run.items {
-                            ui::icon(ui, icons, item.def().icon, 32.0).on_hover_text(item.def().name);
+                        for sc in &run.scrolls {
+                            ui::icon(ui, icons, sc.icon(), 32.0).on_hover_text(sc.def().name);
                         }
                     });
                 }
@@ -626,18 +780,23 @@ fn summary(
                 }
                 ui.add_space(10.0);
                 ui.vertical_centered(|ui| {
-                    if ui::menu_button(ui, "New run").clicked() {
-                        sfx.write(Sfx::ui("ui_click"));
-                        let loadout = if save.loadout_unlocked(run.loadout) {
-                            run.loadout
+                    let config = |seed| RunConfig {
+                        seed,
+                        choice: if save.start_unlocked(run.start_choice) {
+                            run.start_choice
                         } else {
                             Default::default()
-                        };
-                        start_run(commands, random_seed(), loadout);
+                        },
+                        first: run.first_school,
+                        second: (run.start_choice == super::achievements::StartChoice::TwinSouled)
+                            .then_some(run.second_school)
+                            .flatten(),
+                    };
+                    if ui::menu_button(ui, "Descend again").clicked() {
+                        start_run(commands, config(random_seed()));
                     }
                     if ui::menu_button(ui, &format!("Retry seed {}", run.seed)).clicked() {
-                        sfx.write(Sfx::ui("ui_click"));
-                        start_run(commands, run.seed, run.loadout);
+                        start_run(commands, config(run.seed));
                     }
                     if ui::menu_button(ui, "Main menu").clicked() {
                         sfx.write(Sfx::ui("ui_click"));

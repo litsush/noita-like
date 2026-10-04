@@ -3,15 +3,17 @@
 
 use bevy::prelude::*;
 use sbct_sim::descent::{Layer, SpawnKind};
-use sbct_sim::material::MAX_CHARGE;
 use sbct_sim::world::disc;
 use sbct_sim::{Kind, Material, World};
 
-use super::items::{Active, ItemId};
+use super::Spell;
+use super::achievements::AchievementId;
 use super::physics::to_world;
 use super::player::RunPlayer;
 use super::save::SaveData;
-use super::{Phase, Run, RunSetup};
+use super::scrolls::ScrollId;
+use super::spells::{self, Harm};
+use super::{Phase, Run, RunSetup, grant};
 use crate::assets::{GameAssets, props_frame};
 use crate::audio::Sfx;
 use crate::fx::{Burst, HitStop, Shake};
@@ -19,14 +21,22 @@ use crate::render::InGameEntity;
 use crate::session::Session;
 
 const INTERACT_RANGE: f32 = 16.0;
-const BLAST_RADIUS: i32 = 14;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PropKind {
     Chest { opened: bool },
-    Altar { item: Option<ItemId> },
-    Shrine { item: Option<ItemId>, price: u32 },
+    Altar { offer: Offer },
+    Shrine { offer: Offer, price: u32 },
     Core,
+}
+
+/// What an altar or shrine holds. Rolled lazily, the first time the player
+/// comes near, so it matches their schools at that moment.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Offer {
+    Unrolled,
+    Scroll(ScrollId),
+    Taken,
 }
 
 /// A static interactable. `pos` is the bottom centre in cells.
@@ -56,7 +66,6 @@ pub fn spawn_entities(
     setup: Res<RunSetup>,
     assets: Res<GameAssets>,
     mut run: ResMut<Run>,
-    save: Res<SaveData>,
 ) {
     commands.init_resource::<Prompt>();
     for s in &setup.spawns {
@@ -64,17 +73,17 @@ pub fn spawn_entities(
         let kind = match s.kind {
             SpawnKind::Chest => PropKind::Chest { opened: false },
             SpawnKind::Altar => PropKind::Altar {
-                item: run.roll_item(&save),
+                offer: Offer::Unrolled,
             },
             SpawnKind::Shrine => {
                 let layer = Layer::at_depth(s.y);
                 PropKind::Shrine {
-                    item: run.roll_item(&save),
+                    offer: Offer::Unrolled,
                     price: 30 + layer.index() as u32 * 30,
                 }
             }
             SpawnKind::Core => PropKind::Core,
-            SpawnKind::Creature(_) => continue,
+            _ => continue,
         };
         let (sprite, z, offset) = match kind {
             PropKind::Chest { .. } => (assets.props.sprite(props_frame::CHEST_CLOSED), 3.0, 12.0),
@@ -82,27 +91,97 @@ pub fn spawn_entities(
             PropKind::Shrine { .. } => (assets.props.sprite(props_frame::SHRINE), 3.0, 12.0),
             PropKind::Core => (assets.core.sprite(0), 4.0, 24.0),
         };
-        let entity = commands
-            .spawn((
-                Prop { kind, pos },
-                InGameEntity,
-                sprite,
-                Transform::from_translation(to_world(pos - Vec2::Y * offset, z)),
-            ))
-            .id();
-        if let PropKind::Altar { item: Some(item) } | PropKind::Shrine { item: Some(item), .. } = kind {
-            let mut icon = assets.items.sprite(item.def().icon);
-            icon.custom_size = Some(Vec2::splat(10.0));
-            commands.spawn((
-                DisplayedItem(entity),
-                InGameEntity,
-                icon,
-                Transform::from_translation(to_world(pos - Vec2::Y * 30.0, 4.0)),
-            ));
+        commands.spawn((
+            Prop { kind, pos },
+            InGameEntity,
+            sprite,
+            Transform::from_translation(to_world(pos - Vec2::Y * offset, z)),
+        ));
+    }
+    // Clear the popup a starting scroll may have queued.
+    run.popup = None;
+}
+
+/// Shows the scroll an altar or shrine holds as a floating icon.
+fn display(commands: &mut Commands, assets: &GameAssets, owner: Entity, pos: Vec2, icon: usize) {
+    let mut sprite = assets.items.sprite(icon);
+    sprite.custom_size = Some(Vec2::splat(10.0));
+    commands.spawn((
+        DisplayedItem(owner),
+        InGameEntity,
+        sprite,
+        Transform::from_translation(to_world(pos - Vec2::Y * 30.0, 4.0)),
+    ));
+}
+
+/// Rolls altars and shrines as the player approaches, and resolves the
+/// attunement choice.
+pub fn prepare_offers(
+    mut commands: Commands,
+    assets: Res<GameAssets>,
+    player: Res<RunPlayer>,
+    mut run: ResMut<Run>,
+    save: Res<SaveData>,
+    mut props: Query<(Entity, &mut Prop)>,
+    displays: Query<(Entity, &DisplayedItem)>,
+    mut sfx: MessageWriter<Sfx>,
+    mut bursts: MessageWriter<Burst>,
+) {
+    // A choice made in the attunement UI.
+    if let (Some(offer), Some(i)) = (run.attunement.clone(), run.attune_pick.take())
+        && let Some(&sc) = offer.get(i)
+    {
+        run.attune(sc);
+        sfx.write(Sfx::ui("attune"));
+        if let Some(altar) = run.attune_altar.take()
+            && let Ok((_, mut prop)) = props.get_mut(altar)
+        {
+            prop.kind = PropKind::Altar { offer: Offer::Taken };
+            bursts.write(
+                Burst::new(prop.center(), Color::srgb(0.9, 0.8, 1.0))
+                    .count(30)
+                    .speed(50.0)
+                    .gravity(-30.0),
+            );
+            for (e, d) in &displays {
+                if d.0 == altar {
+                    commands.entity(e).despawn();
+                }
+            }
         }
     }
-    // Clear the popup some starting items may have queued.
-    run.popup = None;
+
+    let me = player.body.center();
+    let attuned = run.second_school.is_some();
+    for (entity, mut prop) in &mut props {
+        if prop.center().distance(me) > 90.0 {
+            continue;
+        }
+        let pos = prop.pos;
+        match prop.kind {
+            // Unattuned wizards treat any altar as an attunement altar.
+            PropKind::Altar {
+                offer: Offer::Unrolled,
+            } if attuned => {
+                let offer = run.roll_scroll(&save).map_or(Offer::Taken, Offer::Scroll);
+                if let Offer::Scroll(sc) = offer {
+                    display(&mut commands, &assets, entity, pos, sc.icon());
+                }
+                prop.kind = PropKind::Altar { offer };
+            }
+            PropKind::Shrine {
+                offer: Offer::Unrolled,
+                price,
+            } => {
+                let offer = run.roll_scroll(&save).map_or(Offer::Taken, Offer::Scroll);
+                if let Offer::Scroll(sc) = offer {
+                    display(&mut commands, &assets, entity, pos, sc.icon());
+                }
+                prop.kind = PropKind::Shrine { offer, price };
+            }
+            _ => {}
+        }
+    }
 }
 
 pub fn update_light_charges(time: Res<Time>, mut run: ResMut<Run>) {
@@ -120,23 +199,6 @@ pub fn update_light_charges(time: Res<Time>, mut run: ResMut<Run>) {
 /// Seconds for a light orb charge to come back.
 pub const LIGHT_RECHARGE: f32 = 25.0;
 
-pub fn update_charges(time: Res<Time>, mut run: ResMut<Run>) {
-    let dt = time.delta_secs();
-    let items = run.items.clone();
-    for item in items {
-        if let Some(Active::Charges { max, recharge }) = item.def().active
-            && let Some(entry) = run.charges.get_mut(&item)
-            && entry.0 < max
-        {
-            entry.1 += dt;
-            if entry.1 >= recharge {
-                entry.0 += 1;
-                entry.1 = 0.0;
-            }
-        }
-    }
-}
-
 pub fn interact(
     mut commands: Commands,
     assets: Res<GameAssets>,
@@ -152,7 +214,7 @@ pub fn interact(
     paused: Res<super::hud::Paused>,
 ) {
     prompt.0 = None;
-    if !run.is_playing() || paused.0 {
+    if !run.is_playing() || paused.0 || run.attunement.is_some() || run.journal.is_some() {
         return;
     }
     let c = player.body.center();
@@ -168,12 +230,17 @@ pub fn interact(
 
     let text = match prop.kind {
         PropKind::Chest { opened: false } => Some("F  Open chest".to_string()),
-        PropKind::Altar { item: Some(item) } => Some(format!("F  Take {}", item.def().name)),
+        PropKind::Altar {
+            offer: Offer::Unrolled,
+        } if run.second_school.is_none() => Some("F  Attune to a second school".to_string()),
+        PropKind::Altar {
+            offer: Offer::Scroll(sc),
+        } => Some(format!("F  Take {}", sc.def().name)),
         PropKind::Shrine {
-            item: Some(item),
+            offer: Offer::Scroll(sc),
             price,
-        } => Some(format!("F  Buy {} for {price} shards", item.def().name)),
-        PropKind::Core => Some("F  Touch the core".to_string()),
+        } => Some(format!("F  Buy {} for {price} shards", sc.def().name)),
+        PropKind::Core => Some("F  Touch the heart of the world".to_string()),
         _ => None,
     };
     let Some(text) = text else { return };
@@ -204,13 +271,13 @@ pub fn interact(
                     .gravity(-20.0),
             );
             let roll = run.rng.next_u8();
-            match (roll, run.roll_item(&save)) {
-                (0..150, Some(item)) => {
-                    run.give(item);
-                    sfx.write(Sfx::ui("item_get"));
+            match (roll, run.roll_scroll(&save)) {
+                (0..140, Some(sc)) => {
+                    run.take_scroll(sc);
+                    sfx.write(Sfx::ui("scroll_learned"));
                 }
-                (150..190, _) => run.light_charges = run.light_max,
-                (190..225, _) => player.hp = (player.hp + 40.0).min(player.max_hp),
+                (140..180, _) => run.light_charges = run.light_max,
+                (180..215, _) => player.hp = (player.hp + 40.0).min(player.max_hp),
                 _ => {
                     for i in 0..5 {
                         let v = Vec2::new(i as f32 - 2.0, -2.5) * 20.0;
@@ -219,11 +286,20 @@ pub fn interact(
                 }
             }
         }
-        PropKind::Altar { item: Some(item) } => {
-            prop.kind = PropKind::Altar { item: None };
+        PropKind::Altar {
+            offer: Offer::Unrolled,
+        } => {
+            run.attunement = Some(run.attunement_offer(&save));
+            run.attune_altar = Some(entity);
+            sfx.write(Sfx::ui("ui_click"));
+        }
+        PropKind::Altar {
+            offer: Offer::Scroll(sc),
+        } => {
+            prop.kind = PropKind::Altar { offer: Offer::Taken };
             remove_display(&mut commands);
-            run.give(item);
-            sfx.write(Sfx::ui("item_get"));
+            run.take_scroll(sc);
+            sfx.write(Sfx::ui("scroll_learned"));
             bursts.write(
                 Burst::new(at, Color::srgb(0.6, 0.9, 1.0))
                     .count(20)
@@ -232,16 +308,19 @@ pub fn interact(
             );
         }
         PropKind::Shrine {
-            item: Some(item),
+            offer: Offer::Scroll(sc),
             price,
         } => {
             if run.shards >= price {
                 run.shards -= price;
-                prop.kind = PropKind::Shrine { item: None, price };
+                prop.kind = PropKind::Shrine {
+                    offer: Offer::Taken,
+                    price,
+                };
                 remove_display(&mut commands);
-                run.give(item);
+                run.take_scroll(sc);
                 sfx.write(Sfx::at("shrine_buy", at));
-                sfx.write(Sfx::ui("item_get"));
+                sfx.write(Sfx::ui("scroll_learned"));
             } else {
                 sfx.write(Sfx::ui("ui_click"));
             }
@@ -260,42 +339,30 @@ pub fn interact(
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ProjectileKind {
-    AcidFlask,
-    FrostSeed,
-    Spores,
-    SparkBolt,
-}
-
+/// A spell in flight. On impact (or when it fizzles) its effect comes from
+/// [`spells::impact`].
 #[derive(Component)]
 pub struct Projectile {
-    pub kind: ProjectileKind,
+    pub spell: Spell,
     pub pos: Vec2,
     pub vel: Vec2,
+    pub gravity: f32,
     pub age: f32,
 }
 
 impl Projectile {
-    pub fn bundle(kind: ProjectileKind, pos: Vec2, vel: Vec2, assets: &GameAssets) -> impl Bundle {
-        let sprite = match kind {
-            ProjectileKind::SparkBolt => Sprite::from_color(Color::srgb(0.75, 0.9, 1.0), Vec2::splat(2.0)),
-            k => {
-                let index = match k {
-                    ProjectileKind::AcidFlask => ItemId::AcidFlask.def().icon,
-                    ProjectileKind::FrostSeed => ItemId::FrostSeed.def().icon,
-                    _ => ItemId::FungalSpores.def().icon,
-                };
-                let mut s = assets.items.sprite(index);
-                s.custom_size = Some(Vec2::splat(7.0));
-                s
-            }
-        };
+    pub fn bundle(spell: Spell, pos: Vec2, vel: Vec2, gravity: f32, assets: &GameAssets) -> impl Bundle {
+        let row = spell.school().map_or(8, |s| s.index());
+        let mut sprite = assets.spells.sprite(row * 8);
+        if matches!(spell, Spell::Fusion(_)) {
+            sprite.custom_size = Some(Vec2::splat(12.0));
+        }
         (
             Projectile {
-                kind,
+                spell,
                 pos,
                 vel,
+                gravity,
                 age: 0.0,
             },
             InGameEntity,
@@ -310,17 +377,30 @@ impl Projectile {
 pub struct Bomb {
     pub pos: Vec2,
     pub fuse: f32,
+    pub kind: BombKind,
     vy: f32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BombKind {
+    /// Explodes with this radius.
+    Blast(i32),
+    /// Just ignites what's there (spore bombs, electrolysis sparks).
+    Ignite,
+}
+
 impl Bomb {
-    pub fn bundle(pos: Vec2, assets: &GameAssets) -> impl Bundle {
-        let mut s = assets.items.sprite(ItemId::BlastCharges.def().icon);
-        s.custom_size = Some(Vec2::splat(8.0));
+    pub fn bundle(pos: Vec2, kind: BombKind, fuse: f32, assets: &GameAssets) -> impl Bundle {
+        let mut s = assets.items.sprite(ScrollId::AlchemistsCharge.icon());
+        s.custom_size = Some(Vec2::splat(if kind == BombKind::Ignite { 5.0 } else { 8.0 }));
+        if kind == BombKind::Ignite {
+            s.color = Color::srgba(1.0, 0.8, 0.5, 0.0);
+        }
         (
             Bomb {
                 pos,
-                fuse: 2.5,
+                fuse,
+                kind,
                 vy: 0.0,
             },
             InGameEntity,
@@ -340,7 +420,7 @@ pub struct Sun {
 
 impl Sun {
     pub fn bundle(pos: Vec2, assets: &GameAssets) -> impl Bundle {
-        let mut s = assets.items.sprite(ItemId::PocketSun.def().icon);
+        let mut s = assets.items.sprite(ScrollId::PocketSun.icon());
         s.custom_size = Some(Vec2::splat(12.0));
         (
             Sun {
@@ -423,118 +503,70 @@ pub fn update_projectiles(
     time: Res<Time>,
     mut session: ResMut<Session>,
     mut run: ResMut<Run>,
-    mut q: Query<(Entity, &mut Projectile, &mut Transform)>,
+    mut player: ResMut<RunPlayer>,
+    mut q: Query<(Entity, &mut Projectile, &mut Transform, &mut Sprite)>,
+    creatures: Query<&super::creatures::Creature>,
     assets: Res<GameAssets>,
     mut sfx: MessageWriter<Sfx>,
     mut bursts: MessageWriter<Burst>,
+    mut harm: MessageWriter<Harm>,
+    mut shake: ResMut<Shake>,
 ) {
     let Some(world) = session.world.as_mut() else {
         return;
     };
     let dt = time.delta_secs();
-    for (entity, mut p, mut tf) in &mut q {
+    let positions: Vec<Vec2> = creatures.iter().map(|c| c.body.center()).collect();
+    let mut impacts = Vec::new();
+    for (entity, mut p, mut tf, mut sprite) in &mut q {
         p.age += dt;
-        let gravity = if p.kind == ProjectileKind::SparkBolt {
-            0.0
-        } else {
-            260.0
-        };
-        p.vel.y += gravity * dt;
+        p.vel.y += p.gravity * dt;
         let delta = p.vel * dt;
         let steps = delta.length().ceil().max(1.0) as i32;
         let mut hit = None;
         for _ in 0..steps {
             let next = p.pos + delta / steps as f32;
             let m = world.material(next.x.floor() as i32, next.y.floor() as i32);
-            if !m.is_open() {
+            // Creatures stop bolts too.
+            let struck = positions.iter().any(|c| c.distance(next) < 5.0);
+            if !m.is_open() || struck {
                 hit = Some((next, m));
                 break;
             }
             p.pos = next;
+            spells::trail(p.spell, world, p.pos);
         }
-        let expired = p.kind == ProjectileKind::SparkBolt && p.age > 0.5;
+        let expired = p.age > 2.5;
         tf.translation = to_world(p.pos, 5.5);
-        tf.rotation = Quat::from_rotation_z(-p.age * 12.0);
+        tf.rotation = Quat::from_rotation_z(-p.vel.to_angle());
+        if let Some(atlas) = &mut sprite.texture_atlas {
+            let row = p.spell.school().map_or(8, |s| s.index());
+            atlas.index = row * 8 + (p.age * 12.0) as usize % 4;
+        }
         if hit.is_none() && !expired {
             continue;
         }
         commands.entity(entity).despawn();
         let (at, hit_mat) = hit.unwrap_or((p.pos, Material::Empty));
-        run.influence(at);
-        let (x, y) = (p.pos.x.floor() as i32, p.pos.y.floor() as i32);
-        match p.kind {
-            ProjectileKind::AcidFlask => {
-                for (cx, cy) in disc(x, y, 3) {
-                    if world.material(cx, cy).is_open() {
-                        world.set(cx, cy, Material::Acid);
-                    }
-                }
-                for i in 0..20 {
-                    let a = i as f32 / 20.0 * std::f32::consts::TAU;
-                    world.spawn_particle(
-                        p.pos.x,
-                        p.pos.y - 1.0,
-                        a.cos() * 1.5,
-                        a.sin() * 1.5 - 1.0,
-                        Material::Acid,
-                    );
-                }
-                sfx.write(Sfx::at("acid_hiss", at));
-                bursts.write(Burst::new(at, Color::srgb(0.85, 0.95, 0.9)).count(10).speed(60.0));
-            }
-            ProjectileKind::FrostSeed => {
-                for (cx, cy) in disc(x, y, 6) {
-                    let m = world.material(cx, cy);
-                    let near = (cx - x).abs() + (cy - y).abs() <= 3;
-                    if m == Material::Water || m == Material::Lava || (near && m.is_open()) {
-                        world.set_with_life(cx, cy, Material::Frost, 14);
-                    }
-                }
-                sfx.write(Sfx::at("freeze", at));
-                bursts.write(
-                    Burst::new(at, Color::srgb(0.8, 0.95, 1.0))
-                        .count(16)
-                        .speed(50.0)
-                        .gravity(20.0),
-                );
-            }
-            ProjectileKind::Spores => {
-                for (cx, cy) in disc(x, y, 7) {
-                    if world.material(cx, cy).is_open() && anchored(world, cx, cy) {
-                        world.set(cx, cy, Material::Fungus);
-                    }
-                }
-                sfx.write(Sfx::at("plant", at));
-                bursts.write(
-                    Burst::new(at, Color::srgb(0.5, 0.9, 0.5))
-                        .count(14)
-                        .speed(30.0)
-                        .gravity(-10.0),
-                );
-            }
-            ProjectileKind::SparkBolt => {
-                world.electrify(at.x.floor() as i32, at.y.floor() as i32, MAX_CHARGE);
-                for (cx, cy) in disc(x, y, 2) {
-                    if world.material(cx, cy).is_open() {
-                        world.set(cx, cy, Material::Spark);
-                    }
-                }
-                sfx.write(Sfx::at("spark", at));
-                bursts.write(
-                    Burst::new(at, Color::srgb(0.7, 0.9, 1.0))
-                        .count(12)
-                        .speed(80.0)
-                        .gravity(0.0),
-                );
-            }
-        }
+        impacts.push((p.spell, p.pos.lerp(at, 0.5), hit_mat));
     }
-}
-
-fn anchored(world: &World, x: i32, y: i32) -> bool {
-    [(0, 1), (0, -1), (1, 0), (-1, 0)]
-        .iter()
-        .any(|(dx, dy)| world.material(x + dx, y + dy).kind() == Kind::Solid)
+    for (spell, at, hit_mat) in impacts {
+        run.influence(at);
+        let mut c = spells::Ctx {
+            world,
+            commands: &mut commands,
+            assets: &assets,
+            run: &mut run,
+            player: &mut player,
+            harm: Vec::new(),
+            bursts: Vec::new(),
+            sfx: Vec::new(),
+            shake: &mut shake,
+            creatures: &positions,
+        };
+        spells::impact(spell, &mut c, at, hit_mat);
+        c.flush(&mut harm, &mut bursts, &mut sfx);
+    }
 }
 
 /// A ring of flame (Thermal Suit vent).
@@ -592,14 +624,27 @@ pub fn update_bombs(
         if bomb.fuse <= 0.0 {
             commands.entity(entity).despawn();
             let (x, y) = (bomb.pos.x as i32, bomb.pos.y as i32 - 2);
-            world.explode(x, y, BLAST_RADIUS);
             run.influence(bomb.pos);
-            if run.has(ItemId::VolatileCore) {
-                run.volatile_spots.push((x, y));
+            match bomb.kind {
+                BombKind::Blast(r) => {
+                    world.explode(x, y, r);
+                    if run.has(ScrollId::VolatileCore) {
+                        run.volatile_spots.push((x, y));
+                    }
+                    shake.add(0.9);
+                    stop.0 = 0.08;
+                    sfx.write(Sfx::at("explosion", bomb.pos));
+                }
+                BombKind::Ignite => {
+                    for (cx, cy) in disc(x, y + 2, 3) {
+                        world.ignite(cx, cy);
+                        if world.material(cx, cy).is_open() && (cx + cy) % 2 == 0 {
+                            world.set(cx, cy, Material::Fire);
+                        }
+                    }
+                    sfx.write(Sfx::at("impact_pyro", bomb.pos));
+                }
             }
-            shake.add(0.9);
-            stop.0 = 0.08;
-            sfx.write(Sfx::at("explosion", bomb.pos));
         }
     }
 }
@@ -643,6 +688,8 @@ pub fn update_light_orbs(
     time: Res<Time>,
     mut session: ResMut<Session>,
     mut run: ResMut<Run>,
+    player: Res<RunPlayer>,
+    mut save: ResMut<SaveData>,
     mut q: Query<(Entity, &mut LightOrb, &mut Transform)>,
     mut sfx: MessageWriter<Sfx>,
 ) {
@@ -652,6 +699,15 @@ pub fn update_light_orbs(
     let dt = time.delta_secs();
     let t = time.elapsed_secs();
     let ignites = run.orbs_ignite();
+    // Lightless: staff dimmed, no orbs, underground.
+    if run.staff_dimmed && q.is_empty() && player.body.pos.y > 150.0 && run.is_playing() {
+        run.stats.dark_time += dt;
+        if run.stats.dark_time >= 60.0 {
+            grant(&mut save, &mut run, AchievementId::Lightless, &mut sfx);
+        }
+    } else {
+        run.stats.dark_time = 0.0;
+    }
     for (entity, mut orb, mut tf) in &mut q {
         orb.life -= dt;
         orb.timer -= dt;

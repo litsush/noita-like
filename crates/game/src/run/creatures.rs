@@ -5,10 +5,14 @@ use bevy::prelude::*;
 use sbct_sim::descent::{CreatureKind, SpawnKind};
 use sbct_sim::{Kind, Material};
 
+use super::achievements::AchievementId;
+use super::grant;
 use super::hazards::hurt;
-use super::items::ItemId;
 use super::physics::{Body, default_solid, to_world};
 use super::player::RunPlayer;
+use super::save::SaveData;
+use super::scrolls::ScrollId;
+use super::spells::{Element, Harm};
 use super::{DamageKind, Run, RunSetup};
 use crate::assets::GameAssets;
 use crate::audio::Sfx;
@@ -31,6 +35,10 @@ pub struct Creature {
     pub hurt_flash: f32,
     /// Magma slugs leave burning trails.
     pub trail: f32,
+    /// Frozen or petrified: can't move or act.
+    pub stun: f32,
+    /// What last hurt it (for achievements like Overcharged).
+    pub last_hit: Option<Element>,
 }
 
 pub fn spawn_creatures(mut commands: Commands, setup: Res<RunSetup>, assets: Res<GameAssets>) {
@@ -55,6 +63,8 @@ pub fn spawn_creatures(mut commands: Commands, setup: Res<RunSetup>, assets: Res
                 anim: 0.0,
                 hurt_flash: 0.0,
                 trail: 0.0,
+                stun: 0.0,
+                last_hit: None,
             },
             InGameEntity,
             assets.creatures.sprite(row(kind) * 4),
@@ -82,7 +92,10 @@ pub fn update_creatures(
     mut sfx: MessageWriter<Sfx>,
     mut shake: ResMut<Shake>,
     mut bursts: MessageWriter<Burst>,
+    mut harms: MessageReader<Harm>,
+    mut save: ResMut<SaveData>,
 ) {
+    let harms: Vec<Harm> = harms.read().copied().collect();
     let Some(world) = session.world.as_mut() else {
         return;
     };
@@ -91,9 +104,31 @@ pub fn update_creatures(
         return;
     }
     let target = player.body.center();
-    let aggro = if run.has(ItemId::BeaconHeart) { 170.0 } else { 70.0 };
+    let aggro = if run.has(ScrollId::Beacon) { 170.0 } else { 70.0 };
 
     for (entity, mut c) in &mut q {
+        // Spells.
+        for h in &harms {
+            let d = c.body.center().distance(h.at);
+            if d > h.radius + c.body.half_w {
+                continue;
+            }
+            let fire_proof = matches!(c.kind, CreatureKind::MagmaSlug) && h.element == Element::Fire;
+            if !fire_proof {
+                c.hp -= h.damage * (1.0 - 0.5 * d / (h.radius + 1.0));
+                c.last_hit = Some(h.element);
+                c.hurt_flash = 0.25;
+            }
+            let push = (c.body.center() - h.at).normalize_or_zero() * h.push;
+            c.body.vel += push;
+            match h.element {
+                Element::Frost => c.stun = c.stun.max(1.5),
+                Element::Stone => c.stun = c.stun.max(3.0),
+                Element::Electric => c.stun = c.stun.max(0.4),
+                _ => {}
+            }
+        }
+        c.stun = (c.stun - dt).max(0.0);
         if c.body.center().distance(target) > ACTIVE_RANGE {
             continue;
         }
@@ -142,56 +177,63 @@ pub fn update_creatures(
             c.hurt_flash = 0.15;
         }
 
-        // Movement.
-        match c.kind {
-            CreatureKind::Crawler | CreatureKind::MagmaSlug => {
-                let speed = if c.kind == CreatureKind::Crawler {
-                    22.0
-                } else {
-                    11.0
-                };
-                let chasing = c.body.center().distance(target) < aggro * 0.6;
-                if chasing && (target.y - c.body.pos.y).abs() < 20.0 {
-                    c.dir = (target.x - c.body.pos.x).signum();
-                }
-                // Turn at walls and ledges.
-                let ahead = Vec2::new(c.body.pos.x + c.dir * (c.body.half_w + 1.0), c.body.pos.y + 1.0);
-                let ledge = c.body.on_ground && !world.is_solid(ahead.x as i32, ahead.y as i32) && !chasing;
-                if c.body.wall != 0 || ledge {
-                    c.dir = -c.dir;
-                }
-                c.body.vel.x = c.dir * speed;
-                c.body.vel.y = (c.body.vel.y + 400.0 * dt).min(300.0);
-                c.body.step(world, dt, 2, default_solid);
-                if c.kind == CreatureKind::MagmaSlug {
-                    c.trail -= dt;
-                    if c.trail <= 0.0 {
-                        c.trail = 1.4;
-                        let (x, y) = (c.body.pos.x as i32, c.body.pos.y as i32);
-                        if world.material(x, y - 1) == Material::Empty {
-                            world.set(x, y - 1, Material::Fire);
+        // Movement (a stunned creature just falls).
+        if c.stun > 0.0 {
+            c.body.vel.x *= 0.8;
+            c.body.vel.y = (c.body.vel.y + 400.0 * dt).min(300.0);
+            c.body.step(world, dt, 0, default_solid);
+        } else {
+            match c.kind {
+                CreatureKind::Crawler | CreatureKind::MagmaSlug => {
+                    let speed = if c.kind == CreatureKind::Crawler {
+                        22.0
+                    } else {
+                        11.0
+                    };
+                    let chasing = c.body.center().distance(target) < aggro * 0.6;
+                    if chasing && (target.y - c.body.pos.y).abs() < 20.0 {
+                        c.dir = (target.x - c.body.pos.x).signum();
+                    }
+                    // Turn at walls and ledges.
+                    let ahead = Vec2::new(c.body.pos.x + c.dir * (c.body.half_w + 1.0), c.body.pos.y + 1.0);
+                    let ledge =
+                        c.body.on_ground && !world.is_solid(ahead.x as i32, ahead.y as i32) && !chasing;
+                    if c.body.wall != 0 || ledge {
+                        c.dir = -c.dir;
+                    }
+                    c.body.vel.x = c.dir * speed;
+                    c.body.vel.y = (c.body.vel.y + 400.0 * dt).min(300.0);
+                    c.body.step(world, dt, 2, default_solid);
+                    if c.kind == CreatureKind::MagmaSlug {
+                        c.trail -= dt;
+                        if c.trail <= 0.0 {
+                            c.trail = 1.4;
+                            let (x, y) = (c.body.pos.x as i32, c.body.pos.y as i32);
+                            if world.material(x, y - 1) == Material::Empty {
+                                world.set(x, y - 1, Material::Fire);
+                            }
                         }
                     }
                 }
-            }
-            CreatureKind::SporeDrifter => {
-                let to = target - c.body.center();
-                let bob = (c.anim * 3.0).sin() * 12.0;
-                c.body.vel = if to.length() < aggro {
-                    to.normalize_or_zero() * 26.0 + Vec2::Y * bob
-                } else {
-                    Vec2::new(c.dir * 8.0, bob)
-                };
-                c.body.step(world, dt, 0, default_solid);
-                if c.body.wall != 0 {
-                    c.dir = -c.dir;
+                CreatureKind::SporeDrifter => {
+                    let to = target - c.body.center();
+                    let bob = (c.anim * 3.0).sin() * 12.0;
+                    c.body.vel = if to.length() < aggro {
+                        to.normalize_or_zero() * 26.0 + Vec2::Y * bob
+                    } else {
+                        Vec2::new(c.dir * 8.0, bob)
+                    };
+                    c.body.step(world, dt, 0, default_solid);
+                    if c.body.wall != 0 {
+                        c.dir = -c.dir;
+                    }
                 }
             }
         }
 
         // Touching the player.
         let touching = c.body.center().distance(target) < c.body.half_w + 5.0;
-        if touching && run.is_playing() {
+        if touching && run.is_playing() && c.stun <= 0.0 {
             let knock = Vec2::new((target.x - c.body.pos.x).signum() * 90.0, -80.0);
             match c.kind {
                 CreatureKind::SporeDrifter => {
@@ -216,7 +258,7 @@ pub fn update_creatures(
                         &mut sfx,
                         &mut shake,
                     );
-                    if !run.has(ItemId::SalamanderSkin) {
+                    if !run.has(ScrollId::SalamanderWard) {
                         player.burning = player.burning.max(1.5);
                     }
                 }
@@ -237,6 +279,9 @@ pub fn update_creatures(
         if c.hp <= 0.0 {
             commands.entity(entity).despawn();
             run.stats.creatures_killed += 1;
+            if c.last_hit == Some(Element::Electric) {
+                grant(&mut save, &mut run, AchievementId::Overcharged, &mut sfx);
+            }
             let at = c.body.center();
             let (x, y) = (at.x as i32, at.y as i32);
             match c.kind {

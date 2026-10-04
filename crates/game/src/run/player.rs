@@ -4,10 +4,10 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use sbct_sim::{Kind, Material, World};
 
-use super::entities::{Bomb, LightOrb, Projectile, ProjectileKind, ShardPickup, Sun};
+use super::entities::{LightOrb, ShardPickup};
 use super::input::PlayerInput;
-use super::items::{Active, ItemId};
 use super::physics::{Body, SolidFn, default_solid, to_world};
+use super::scrolls::{School, ScrollId};
 use super::smart_dig;
 use super::{Phase, Run, RunSetup};
 use crate::assets::{GameAssets, player_anim};
@@ -57,6 +57,12 @@ pub struct RunPlayer {
     pub climbing: bool,
     /// The dig beam this frame: staff tip to target.
     pub beam: Option<(Vec2, Vec2)>,
+    /// Seconds of the casting animation left.
+    pub cast_anim: f32,
+    pub levitating: bool,
+    /// Height where the current fall began, and the length of the last one.
+    pub fall_start: Option<f32>,
+    pub last_fall: f32,
     coyote: f32,
     jump_buffer: f32,
     jump_cut: bool,
@@ -75,8 +81,45 @@ pub struct RunPlayer {
 }
 
 impl RunPlayer {
+    pub fn new(start: Vec2) -> RunPlayer {
+        RunPlayer {
+            body: Body::new(start, HALF_WIDTH, HEIGHT),
+            hp: 100.0,
+            max_hp: 100.0,
+            iframes: 0.0,
+            heat: 0.0,
+            breath: 100.0,
+            burning: 0.0,
+            stun: 0.0,
+            crushed: false,
+            facing: 1.0,
+            dash_time: 0.0,
+            dash_cd: 0.0,
+            dash_dir: 1.0,
+            climb_stamina: CLIMB_STAMINA,
+            climbing: false,
+            beam: None,
+            cast_anim: 0.0,
+            levitating: false,
+            fall_start: None,
+            last_fall: 0.0,
+            coyote: 0.0,
+            jump_buffer: 0.0,
+            jump_cut: false,
+            dig_timer: 0.0,
+            dig_anim: None,
+            anim_time: 0.0,
+            hurt_flash: 0.0,
+            step_timer: 0.0,
+            submerged_for: 0.0,
+            heat_maxed_for: 0.0,
+            was_burning: false,
+            thermal: 0.0,
+        }
+    }
+
     pub fn solid_fn(run: &Run) -> SolidFn {
-        if run.has(ItemId::HeavyBoots) {
+        if run.has(ScrollId::IronSoles) {
             boots_solid
         } else {
             default_solid
@@ -100,7 +143,10 @@ fn boots_solid(m: Material) -> bool {
 }
 
 #[derive(Component)]
-pub struct PlayerSprite;
+pub struct PlayerSprite {
+    /// 0 = robe (first school's colour), 1 = trim (second school's), 2 = base.
+    layer: u8,
+}
 
 pub fn spawn_player(
     mut commands: Commands,
@@ -119,42 +165,19 @@ pub fn spawn_player(
         (Some(layer), Some(world), _) => dev_start(world, layer.0).unwrap_or(setup.start),
         _ => setup.start,
     };
-    commands.insert_resource(RunPlayer {
-        body: Body::new(start, HALF_WIDTH, HEIGHT),
-        hp: 100.0,
-        max_hp: 100.0,
-        iframes: 0.0,
-        heat: 0.0,
-        breath: 100.0,
-        burning: 0.0,
-        stun: 0.0,
-        crushed: false,
-        facing: 1.0,
-        dash_time: 0.0,
-        dash_cd: 0.0,
-        dash_dir: 1.0,
-        climb_stamina: CLIMB_STAMINA,
-        climbing: false,
-        beam: None,
-        coyote: 0.0,
-        jump_buffer: 0.0,
-        jump_cut: false,
-        dig_timer: 0.0,
-        dig_anim: None,
-        anim_time: 0.0,
-        hurt_flash: 0.0,
-        step_timer: 0.0,
-        submerged_for: 0.0,
-        heat_maxed_for: 0.0,
-        was_burning: false,
-        thermal: 0.0,
-    });
-    commands.spawn((
-        PlayerSprite,
-        InGameEntity,
-        assets.player.sprite(0),
-        Transform::from_translation(to_world(start - Vec2::Y * 8.0, 5.0)),
-    ));
+    commands.insert_resource(RunPlayer::new(start));
+    for (layer, sheet, z) in [
+        (0, &assets.wizard_robe, 5.0),
+        (1, &assets.wizard_trim, 5.01),
+        (2, &assets.player, 5.02),
+    ] {
+        commands.spawn((
+            PlayerSprite { layer },
+            InGameEntity,
+            sheet.sprite(0),
+            Transform::from_translation(to_world(start - Vec2::Y * 8.0, z)),
+        ));
+    }
 }
 
 /// An open spot with a floor near the top of a layer (the `--layer` dev flag).
@@ -211,7 +234,7 @@ pub fn player_move(
     keys: Res<PlayerInput>,
     time: Res<Time>,
     mut player: ResMut<RunPlayer>,
-    run: Res<Run>,
+    mut run: ResMut<Run>,
     mut session: ResMut<Session>,
     mut sfx: MessageWriter<Sfx>,
     mut bursts: MessageWriter<Burst>,
@@ -251,7 +274,8 @@ pub fn player_move(
     }
 
     let submersion = p.body.submersion(world);
-    let boots = run.has(ItemId::HeavyBoots);
+    let boots = run.has(ScrollId::IronSoles);
+    let undertow = run.has(ScrollId::Undertow);
     let swimming = submersion > 0.4 && !boots;
     p.climbing = false;
 
@@ -276,7 +300,7 @@ pub fn player_move(
         let speed = if boots && submersion > 0.2 {
             28.0
         } else if swimming {
-            42.0
+            if undertow { 80.0 } else { 42.0 }
         } else {
             RUN_SPEED
         };
@@ -285,7 +309,12 @@ pub fn player_move(
         let dv = (target - p.body.vel.x).clamp(-accel * dt, accel * dt);
         p.body.vel.x += dv;
 
-        if swimming {
+        if swimming && undertow {
+            // Water never drags you down: you steer freely.
+            p.body.vel.y *= 1.0 - 5.0 * dt;
+            p.body.vel.y += (down as i32 - up as i32) as f32 * 600.0 * dt;
+            p.body.vel.y = p.body.vel.y.clamp(-90.0, 90.0);
+        } else if swimming {
             p.body.vel.y += GRAVITY * 0.28 * dt;
             p.body.vel.y *= 1.0 - 4.0 * dt;
             if up {
@@ -301,9 +330,29 @@ pub fn player_move(
 
         // Wall climb (brief) and wall slide.
         let against_wall = !p.body.on_ground && p.body.wall != 0 && p.body.wall == dir;
-        if against_wall && up && p.climb_stamina > 0.0 {
+        // Earthen Grip: earth and stone hold you without tiring.
+        let earthen = run.has(ScrollId::EarthenGrip) && {
+            let wx = (p.body.pos.x + p.body.wall as f32 * (p.body.half_w + 1.0)) as i32;
+            let m = world.material(wx, (p.body.pos.y - 4.0) as i32);
+            matches!(
+                m,
+                Material::Dirt
+                    | Material::Stone
+                    | Material::Basalt
+                    | Material::Gravel
+                    | Material::Sand
+                    | Material::Grass
+            )
+        };
+        if against_wall && up && (p.climb_stamina > 0.0 || earthen) {
             p.body.vel.y = -CLIMB_SPEED;
-            p.climb_stamina -= dt;
+            if !earthen {
+                p.climb_stamina -= dt;
+            }
+            p.climbing = true;
+        } else if against_wall && earthen {
+            // Cling without sliding.
+            p.body.vel.y = p.body.vel.y.min(0.0).max(-CLIMB_SPEED);
             p.climbing = true;
         } else if against_wall && p.body.vel.y > 50.0 {
             p.body.vel.y = 50.0;
@@ -331,11 +380,37 @@ pub fn player_move(
         }
     }
 
+    // Levitate: hold jump in the air to float, paid in mana.
+    p.levitating = false;
+    if run.has(ScrollId::Levitate)
+        && !p.body.on_ground
+        && up
+        && p.dash_time <= 0.0
+        && !swimming
+        && run.mana > 1.0
+    {
+        p.body.vel.y = (p.body.vel.y - 900.0 * dt).max(-55.0);
+        run.mana -= 14.0 * dt;
+        p.levitating = true;
+    }
+
     let step_up = if p.body.on_ground { 3 } else { 0 };
     let result = p.body.step(world, dt, step_up, solid);
     if p.body.on_ground {
         p.climb_stamina = CLIMB_STAMINA;
     }
+    // Frozen Path: liquids under your feet freeze as you walk.
+    if run.has(ScrollId::FrozenPath) {
+        for dx in -3..=3 {
+            let (x, y) = (p.body.pos.x as i32 + dx, p.body.pos.y as i32);
+            match world.material(x, y) {
+                Material::Water | Material::Acid => world.set(x, y, Material::Ice),
+                Material::Lava | Material::Metal => world.set(x, y, Material::Obsidian),
+                _ => {}
+            }
+        }
+    }
+
     p.crushed = false;
     if !p.body.escape_overlap(world, solid) {
         // Buried: shove loose material out of the way rather than pinning
@@ -361,6 +436,16 @@ pub fn player_move(
         p.crushed = hard > 0 || powder > 10;
     }
 
+    if p.body.on_ground {
+        if let Some(start) = p.fall_start.take() {
+            p.last_fall = p.body.pos.y - start;
+        }
+    } else if p.fall_start.is_none() || p.body.vel.y < 0.0 {
+        // Measure from the top of a fall, not the start of a jump.
+        if p.body.vel.y <= 0.0 {
+            p.fall_start = Some(p.body.pos.y);
+        }
+    }
     if let Some(speed) = result.landed
         && speed > 120.0
     {
@@ -374,7 +459,7 @@ pub fn player_move(
                 .dir(Vec2::NEG_Y)
                 .life(0.4),
         );
-        if speed > 260.0 && run.has(ItemId::SeismicStomp) {
+        if speed > 260.0 && run.has(ScrollId::SeismicStomp) {
             let (x, y) = (p.body.pos.x as i32, p.body.pos.y as i32);
             world.dig(x, y + 3, 7, 140);
             world.disturb(x, y, 24);
@@ -497,7 +582,8 @@ pub fn player_dig(
     let Some(world) = session.world.as_mut() else {
         return;
     };
-    let power = if run.has(ItemId::GlassCannonPick) {
+    let variant = run.dig_variant();
+    let power = if variant == Some(ScrollId::GlassFocus) {
         235
     } else {
         BASE_PICK_POWER
@@ -527,6 +613,37 @@ pub fn player_dig(
         return;
     }
     player.dig_timer = DIG_INTERVAL;
+    // Rot Touch eats organic matter instantly; Arc Drill bites through metal.
+    let power = match variant {
+        Some(ScrollId::RotTouch) => {
+            for &(x, y) in &cells {
+                if matches!(
+                    world.material(x, y),
+                    Material::Wood | Material::Fungus | Material::Grass | Material::Dirt
+                ) {
+                    world.set(x, y, Material::Empty);
+                }
+            }
+            power
+        }
+        Some(ScrollId::ArcDrill) => {
+            for &(x, y) in &cells {
+                if world.material(x, y).props().conductive {
+                    world.electrify(x, y, 12);
+                }
+            }
+            if cells
+                .iter()
+                .any(|&(x, y)| matches!(world.material(x, y), Material::Ferrite))
+            {
+                160
+            } else {
+                power
+            }
+        }
+        _ => power,
+    };
+    let mut rot_edges = Vec::new();
     let dug = world.dig_cells(&cells, power);
     let mut shards = Vec::new();
     let Some(&(_, _, first)) = dug.first() else { return };
@@ -542,15 +659,25 @@ pub fn player_dig(
             m,
             Material::Stone | Material::Basalt | Material::Brick | Material::Obsidian | Material::Ferrite
         );
-        if rocky && run.has(ItemId::CrumblingPick) && run.rng.chance(180) {
-            let rubble = if run.rng.coin() {
-                Material::Gravel
-            } else {
-                Material::Sand
-            };
-            world.set_with_life(x, y, rubble, 0);
-        } else if rocky && run.has(ItemId::MagmaPick) && run.rng.chance(60) {
-            world.set(x, y, Material::Lava);
+        match variant {
+            Some(ScrollId::CrumblingTouch) if rocky && run.rng.chance(180) => {
+                let rubble = if run.rng.coin() {
+                    Material::Gravel
+                } else {
+                    Material::Sand
+                };
+                world.set_with_life(x, y, rubble, 0);
+            }
+            Some(ScrollId::MagmaBore) if rocky && run.rng.chance(60) => world.set(x, y, Material::Lava),
+            Some(ScrollId::RotTouch)
+                if matches!(
+                    m,
+                    Material::Wood | Material::Fungus | Material::Grass | Material::Dirt
+                ) && run.rng.chance(40) =>
+            {
+                rot_edges.push((x, y));
+            }
+            _ => {}
         }
     }
     let [r, g, b] = first.props().color;
@@ -565,19 +692,27 @@ pub fn player_dig(
     if !shards.is_empty() {
         sfx.write(Sfx::at("shard_vein", target).pitch(0.1));
     }
+    // Rot leaves glowing fungus along the edges it eats.
+    for (x, y) in rot_edges {
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            if world.material(x + dx, y + dy).is_solid_for_player() && world.material(x, y).is_open() {
+                world.set(x, y, Material::Fungus);
+                break;
+            }
+        }
+    }
     for at in shards {
         let v = Vec2::new(run.rng.next_f32() - 0.5, -run.rng.next_f32()) * 60.0;
         commands.spawn(ShardPickup::bundle(at, v, 1, &assets));
     }
 }
 
+/// Light orbs and the staff glow (spells are cast in `spells::cast_spells`).
 pub fn player_actions(
     mut commands: Commands,
     input: Res<PlayerInput>,
-    time: Res<Time>,
-    player: ResMut<RunPlayer>,
+    player: Res<RunPlayer>,
     mut run: ResMut<Run>,
-    mut session: ResMut<Session>,
     mut sfx: MessageWriter<Sfx>,
     assets: Res<GameAssets>,
     paused: Res<super::hud::Paused>,
@@ -585,25 +720,6 @@ pub fn player_actions(
     if !run.is_playing() || paused.0 || player.stun > 0.0 {
         return;
     }
-    let Some(world) = session.world.as_mut() else {
-        return;
-    };
-    let dt = time.delta_secs();
-
-    // Cycle actives.
-    let n = run.actives().len().max(1);
-    if input.cycle > 0 {
-        run.selected = (run.selected + 1) % n;
-    }
-    if input.cycle < 0 {
-        run.selected = (run.selected + n - 1) % n;
-    }
-
-    // Swimming refills the water canister.
-    if player.body.submersion(world) > 0.3 && run.has(ItemId::WaterCanister) {
-        run.tank = (run.tank + 50.0 * dt).min(100.0);
-    }
-
     let cursor = input.aim.unwrap_or(player.body.center());
     let hand = player.hand();
     let toward = (cursor - hand).normalize_or(Vec2::new(player.facing, 0.0));
@@ -618,99 +734,20 @@ pub fn player_actions(
         commands.spawn(LightOrb::bundle(hand, toward * 130.0, &assets));
         sfx.write(Sfx::at("cast_light", hand));
     }
-
-    let Some(item) = run.selected_active() else { return };
-    match item.def().active {
-        Some(Active::Spray) => {
-            if input.use_held && run.tank > 0.0 {
-                let reach = hand + toward * 30.0;
-                run.influence(reach);
-                run.tank = (run.tank - 22.0 * dt).max(0.0);
-                for i in 0..3 {
-                    let spread = (run.rng.next_f32() - 0.5) * 0.5;
-                    let v = Vec2::from_angle(toward.to_angle() + spread) * (3.0 + i as f32 * 0.4);
-                    world.spawn_particle(hand.x, hand.y, v.x, v.y, Material::Water);
-                }
-                sfx.write(Sfx::at("water_spray", hand).volume(0.6));
-            }
-        }
-        Some(Active::Charges { .. }) => {
-            if !input.use_pressed {
-                return;
-            }
-            let Some(entry) = run.charges.get_mut(&item) else {
-                return;
-            };
-            if entry.0 == 0 {
-                return;
-            }
-            entry.0 -= 1;
-            let target = aim(&player, cursor);
-            run.influence(target);
-            match item {
-                ItemId::AcidFlask => {
-                    commands.spawn(Projectile::bundle(
-                        ProjectileKind::AcidFlask,
-                        hand,
-                        toward * 180.0,
-                        &assets,
-                    ));
-                    sfx.write(Sfx::at("throw", hand));
-                }
-                ItemId::FrostSeed => {
-                    commands.spawn(Projectile::bundle(
-                        ProjectileKind::FrostSeed,
-                        hand,
-                        toward * 170.0,
-                        &assets,
-                    ));
-                    sfx.write(Sfx::at("throw", hand));
-                }
-                ItemId::FungalSpores => {
-                    commands.spawn(Projectile::bundle(
-                        ProjectileKind::Spores,
-                        hand,
-                        toward * 150.0,
-                        &assets,
-                    ));
-                    sfx.write(Sfx::at("throw", hand));
-                }
-                ItemId::SparkRod => {
-                    commands.spawn(Projectile::bundle(
-                        ProjectileKind::SparkBolt,
-                        hand,
-                        toward * 360.0,
-                        &assets,
-                    ));
-                    sfx.write(Sfx::at("spark", hand));
-                }
-                ItemId::BlastCharges => {
-                    commands.spawn(Bomb::bundle(target, &assets));
-                    sfx.write(Sfx::at("cast_alch", target));
-                }
-                ItemId::PocketSun => {
-                    commands.spawn(Sun::bundle(target, &assets));
-                    sfx.write(Sfx::at("cast_pyro", target));
-                }
-                _ => {}
-            }
-        }
-        None => {}
-    }
 }
 
 pub fn animate_player(
     time: Res<Time>,
     mut player: ResMut<RunPlayer>,
     run: Res<Run>,
-    mut q: Query<(&mut Sprite, &mut Transform), With<PlayerSprite>>,
+    mut q: Query<(&PlayerSprite, &mut Sprite, &mut Transform)>,
 ) {
-    let Ok((mut sprite, mut tf)) = q.single_mut() else {
-        return;
-    };
     let dt = time.delta_secs();
     player.anim_time += dt;
     player.hurt_flash = (player.hurt_flash - dt).max(0.0);
+    if player.cast_anim > 0.0 {
+        player.cast_anim -= dt;
+    }
     let p = &*player;
 
     let dead = matches!(run.phase, Phase::Dying(_)) || (run.phase == Phase::Over && !run.won);
@@ -718,6 +755,8 @@ pub fn animate_player(
         (player_anim::DEATH.0, player_anim::DEATH.1, 6.0, false)
     } else if p.hurt_flash > 0.25 {
         (player_anim::HURT.0, player_anim::HURT.1, 14.0, true)
+    } else if p.cast_anim > 0.0 {
+        (player_anim::CAST.0, player_anim::CAST.1, 18.0, false)
     } else if let Some((d, _)) = p.dig_anim {
         let anim = if d.y > 0.6 {
             player_anim::DIG_DOWN
@@ -755,22 +794,48 @@ pub fn animate_player(
     } else {
         frame.min(frames - 1)
     };
-    if let Some(atlas) = &mut sprite.texture_atlas {
-        atlas.index = row * player_anim::COLUMNS + frame;
-    }
-    sprite.flip_x = p.facing < 0.0;
+    let t = if p.cast_anim > 0.0 && !dead {
+        0.35 - p.cast_anim
+    } else {
+        t
+    };
+    let frame = if p.cast_anim > 0.0 && !dead {
+        ((t * fps) as usize).min(frames - 1)
+    } else {
+        frame
+    };
 
     // Flicker while invulnerable, glow orange while burning.
     let flicker = p.iframes > 0.0 && (p.anim_time * 20.0) as i32 % 2 == 0;
-    sprite.color = if p.burning > 0.0 {
-        Color::srgb(1.0, 0.7, 0.5)
+    let status = if p.burning > 0.0 {
+        Some(Color::srgb(1.0, 0.7, 0.5))
     } else if p.hurt_flash > 0.0 {
-        Color::srgb(1.0, 0.5, 0.5)
+        Some(Color::srgb(1.0, 0.5, 0.5))
     } else {
-        Color::WHITE
+        None
     };
-    sprite.color.set_alpha(if flicker { 0.4 } else { 1.0 });
-    tf.translation = to_world(p.body.pos - Vec2::Y * 8.0, 5.0).round();
+    let tint = |s: School| {
+        let [r, g, b] = s.color();
+        Color::srgb_u8(r, g, b)
+    };
+    let pos = to_world(p.body.pos - Vec2::Y * 8.0, 5.0).round();
+    for (layer, mut sprite, mut tf) in &mut q {
+        if let Some(atlas) = &mut sprite.texture_atlas {
+            atlas.index = row * player_anim::COLUMNS + frame;
+        }
+        sprite.flip_x = p.facing < 0.0;
+        let base = match layer.layer {
+            0 => tint(run.first_school),
+            // Until attuned, the trim is a pale echo of the first school.
+            1 => run
+                .second_school
+                .map_or_else(|| tint(run.first_school).mix(&Color::WHITE, 0.6), tint),
+            _ => Color::WHITE,
+        };
+        sprite.color = status.unwrap_or(base);
+        sprite.color.set_alpha(if flicker { 0.4 } else { 1.0 });
+        tf.translation = pos + Vec3::Z * layer.layer as f32 * 0.01;
+    }
 }
 
 fn run_time_since_death(run: &Run) -> f32 {

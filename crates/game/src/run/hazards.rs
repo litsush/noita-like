@@ -8,9 +8,9 @@ use sbct_sim::descent::Layer;
 use sbct_sim::{Kind, Material};
 
 use super::achievements::AchievementId;
-use super::items::ItemId;
 use super::player::RunPlayer;
 use super::save::SaveData;
+use super::scrolls::ScrollId;
 use super::{DamageKind, Run, grant};
 use crate::audio::Sfx;
 use crate::fx::{Burst, HitStop, Shake};
@@ -37,7 +37,7 @@ pub fn hurt(
     if impact.is_some() && player.iframes > 0.0 {
         return;
     }
-    let amount = if run.has(ItemId::GlassCannonPick) {
+    let amount = if run.dig_variant() == Some(ScrollId::GlassFocus) {
         amount * 2.0
     } else {
         amount
@@ -77,14 +77,16 @@ pub fn environment(
     time: Res<Time>,
     mut player: ResMut<RunPlayer>,
     mut run: ResMut<Run>,
-    session: Res<Session>,
+    mut session: ResMut<Session>,
     mut save: ResMut<SaveData>,
     mut sfx: MessageWriter<Sfx>,
     mut shake: ResMut<Shake>,
     mut stop: ResMut<HitStop>,
     mut bursts: MessageWriter<Burst>,
 ) {
-    let Some(world) = &session.world else { return };
+    let Some(world) = session.world.as_mut() else {
+        return;
+    };
     let dt = time.delta_secs();
     if dt <= 0.0 || !run.is_playing() {
         return;
@@ -93,12 +95,16 @@ pub fn environment(
     p.iframes = (p.iframes - dt).max(0.0);
     run.cause_amount = 0.0;
 
-    let salamander = run.has(ItemId::SalamanderSkin);
-    let gills = run.has(ItemId::GillMask);
-    let thermal = run.has(ItemId::ThermalSuit);
+    let salamander = run.has(ScrollId::SalamanderWard);
+    let gills = run.has(ScrollId::GillsOfTheDeep);
+    let thermal = run.has(ScrollId::EmberHeart);
+    let rime = run.has(ScrollId::RimeShell);
+    let grounded = run.has(ScrollId::Grounded);
+    let air_bubble = run.has(ScrollId::AirBubble);
 
     // What are we touching?
     let (mut fire, mut lava, mut metal, mut acid, mut water, mut charged, mut spark) = (0, 0, 0, 0, 0, 0, 0);
+    let _ = &mut fire;
     p.body.for_each_cell(|x, y| {
         let Some(c) = world.get(x, y) else { return };
         match c.mat {
@@ -116,10 +122,50 @@ pub fn environment(
     });
     // Standing on (not just in) molten metal or lava also burns.
     let under = world.material(p.body.pos.x as i32, p.body.pos.y as i32);
-    if under == Material::Metal && !run.has(ItemId::HeavyBoots) {
+    if under == Material::Metal && !run.has(ScrollId::IronSoles) {
         metal += 1;
     }
-    let head = world.material(p.body.head().x as i32, p.body.head().y as i32);
+    let head_pos = p.body.head();
+
+    // Rime Shell: lava touching you hardens to obsidian; flames gutter out.
+    if rime && (lava > 0 || fire > 0) {
+        let (x0, x1, y0, y1) = p.body.cells_at(p.body.pos);
+        for y in y0 - 1..=y1 + 1 {
+            for x in x0 - 1..=x1 + 1 {
+                match world.material(x, y) {
+                    Material::Lava => world.set(x, y, Material::Obsidian),
+                    Material::Fire => world.set(x, y, Material::Smoke),
+                    _ => {}
+                }
+            }
+        }
+        lava = 0;
+        fire = 0;
+        p.burning = 0.0;
+    }
+    // Air Bubble: gas and smoke near your face are blown away.
+    if air_bubble {
+        for (x, y) in sbct_sim::world::disc(head_pos.x as i32, head_pos.y as i32, 3) {
+            if matches!(world.material(x, y), Material::Gas | Material::Smoke) {
+                world.set(x, y, Material::Empty);
+            }
+        }
+    }
+    // Symbiosis: touching fungus heals you and restores mana.
+    if run.has(ScrollId::Symbiosis) {
+        let mut fungus = false;
+        let (x0, x1, y0, y1) = p.body.cells_at(p.body.pos);
+        for y in y0 - 1..=y1 + 1 {
+            for x in x0 - 1..=x1 + 1 {
+                fungus |= world.material(x, y) == Material::Fungus;
+            }
+        }
+        if fungus {
+            p.hp = (p.hp + 3.0 * dt).min(p.max_hp);
+            run.mana = (run.mana + 10.0 * dt).min(run.max_mana);
+        }
+    }
+    let head = world.material(head_pos.x as i32, head_pos.y as i32);
 
     // Continuous damage per second.
     macro_rules! damage {
@@ -155,7 +201,10 @@ pub fn environment(
             );
         }
     }
-    if charged > 0 || spark > 0 {
+    if grounded && (charged > 0 || spark > 0) {
+        // Grounded: the current passes through you and tops up your mana.
+        run.mana = (run.mana + 25.0 * dt).min(run.max_mana);
+    } else if charged > 0 || spark > 0 {
         let knock = Vec2::new(-p.facing * 40.0, -60.0);
         hurt(
             p,
@@ -257,7 +306,14 @@ pub fn environment(
     let underwater = head.kind() == Kind::Liquid;
     let in_gas = head == Material::Gas;
     if (underwater || in_gas) && !gills {
-        p.breath = (p.breath - if in_gas { 25.0 } else { 10.0 } * dt).max(0.0);
+        let drain = if in_gas {
+            25.0
+        } else if air_bubble {
+            5.0
+        } else {
+            10.0
+        };
+        p.breath = (p.breath - drain * dt).max(0.0);
         if in_gas {
             damage!(5.0, DamageKind::Gas);
         }
@@ -293,6 +349,14 @@ pub fn environment(
             grant(&mut save, &mut run, AchievementId::FloodSurvivor, &mut sfx);
         }
         p.submerged_for = 0.0;
+    }
+
+    // Long Fall: a big drop survived.
+    if p.last_fall > 0.0 {
+        if p.last_fall >= 150.0 && p.hp > 0.0 {
+            grant(&mut save, &mut run, AchievementId::LongFall, &mut sfx);
+        }
+        p.last_fall = 0.0;
     }
 
     if p.crushed {

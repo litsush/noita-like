@@ -12,13 +12,14 @@ pub mod entities;
 pub mod hazards;
 pub mod hud;
 pub mod input;
-pub mod items;
 pub mod juice;
 pub mod lighting;
 pub mod physics;
 pub mod player;
 pub mod save;
+pub mod scrolls;
 pub mod smart_dig;
+pub mod spells;
 pub mod tracking;
 
 use std::collections::{HashMap, VecDeque};
@@ -32,9 +33,9 @@ use sbct_sim::rng::Rng;
 use crate::AppState;
 use crate::audio::{MusicTrack, Sfx};
 use crate::session::Session;
-use achievements::{AchievementId, Loadout};
-use items::{Active, ItemId};
+use achievements::{AchievementId, StartChoice};
 use save::SaveData;
+use scrolls::{FusionId, School, ScrollId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DamageKind {
@@ -97,6 +98,12 @@ pub struct RunStats {
     pub damage_taken: f32,
     pub cells_dug: u32,
     pub creatures_killed: u32,
+    /// Seconds spent in darkness in a row (Lightless).
+    pub dark_time: f32,
+    /// Fungus cells grown by the player's magic (Gardener).
+    pub fungus_grown: u32,
+    /// Fallen apprentices searched (Grave Robber).
+    pub remains_searched: u32,
 }
 
 pub struct Toast {
@@ -107,7 +114,7 @@ pub struct Toast {
 #[derive(Resource)]
 pub struct Run {
     pub seed: u64,
-    pub loadout: Loadout,
+    pub start_choice: StartChoice,
     pub elapsed: f32,
     pub phase: Phase,
     pub won: bool,
@@ -122,27 +129,40 @@ pub struct Run {
     pub light_timer: f32,
     /// The staff's glow is dimmed (hides you from lightseekers).
     pub staff_dimmed: bool,
-    pub items: Vec<ItemId>,
-    /// Index into the player's active items.
+    pub first_school: School,
+    /// Bound at the first altar (or at the start for Twin-Souled).
+    pub second_school: Option<School>,
+    /// Learned scrolls, in order.
+    pub scrolls: Vec<ScrollId>,
+    /// The pair's fusion, once awakened.
+    pub fusion: Option<FusionId>,
+    /// Index into the castable spells.
     pub selected: usize,
-    /// Charges and recharge timers for charge-based actives.
-    pub charges: HashMap<ItemId, (u8, f32)>,
-    /// Water Canister tank, 0–100.
-    pub tank: f32,
+    pub mana: f32,
+    pub max_mana: f32,
+    /// Seconds until each spell can be cast again.
+    pub cooldowns: HashMap<Spell, f32>,
     pub stats: RunStats,
     pub earned: Vec<AchievementId>,
     pub toasts: VecDeque<Toast>,
-    /// Item just picked up, and how long its popup has shown.
-    pub popup: Option<(ItemId, f32)>,
+    /// Something to announce in the centre popup, and how long it has shown.
+    pub popup: Option<(Popup, f32)>,
     /// Layer name banner and its age.
     pub banner: Option<(Layer, f32)>,
+    /// The attunement altar's offer while its choice is open, the altar it
+    /// came from, and the choice once made in the UI.
+    pub attunement: Option<Vec<ScrollId>>,
+    pub attune_altar: Option<Entity>,
+    pub attune_pick: Option<usize>,
+    /// A journal page being read.
+    pub journal: Option<u16>,
     pub rng: Rng,
     pub core: Vec2,
-    /// Thermal Suit vent waiting to set the world alight.
+    /// Ember Heart vent waiting to set the world alight.
     pub pending_fire_burst: Option<Vec2>,
-    /// Player-caused blasts that should leave ore (Volatile Core).
+    /// Player-caused blasts that should leave shard veins (Volatile Core).
     pub volatile_spots: Vec<(i32, i32)>,
-    /// Where the player recently dug, threw or blew something up, with the
+    /// Where the player recently dug, cast or blew something up, with the
     /// time. Achievements only count sim events near these, so the planet
     /// doing its own thing doesn't hand them out.
     pub influence: VecDeque<(Vec2, f32)>,
@@ -150,11 +170,83 @@ pub struct Run {
     pub cause_amount: f32,
 }
 
+/// Anything castable: a scroll's active spell or the awakened fusion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Spell {
+    Scroll(ScrollId),
+    Fusion(FusionId),
+}
+
+impl Spell {
+    pub fn name(self) -> &'static str {
+        match self {
+            Spell::Scroll(s) => s.def().name,
+            Spell::Fusion(f) => f.def().name,
+        }
+    }
+
+    pub fn icon(self) -> usize {
+        match self {
+            Spell::Scroll(s) => s.icon(),
+            Spell::Fusion(f) => f.icon(),
+        }
+    }
+
+    pub fn desc(self) -> &'static str {
+        match self {
+            Spell::Scroll(s) => s.def().desc,
+            Spell::Fusion(f) => f.def().desc,
+        }
+    }
+
+    /// Mana cost and cooldown (channelled spells: cost per second, no cooldown).
+    pub fn cost(self) -> (f32, f32) {
+        match self {
+            Spell::Scroll(s) => match s.def().kind {
+                scrolls::Kind::Active { cost, cooldown } => (cost, cooldown),
+                scrolls::Kind::Channel { cost_per_sec } => (cost_per_sec, 0.0),
+                _ => (0.0, 0.0),
+            },
+            Spell::Fusion(f) => (f.def().cost, f.def().cooldown),
+        }
+    }
+
+    pub fn channelled(self) -> bool {
+        matches!(self, Spell::Scroll(s) if matches!(s.def().kind, scrolls::Kind::Channel { .. }))
+    }
+
+    /// The school whose colours and sounds the spell uses.
+    pub fn school(self) -> Option<School> {
+        match self {
+            Spell::Scroll(s) => s.def().school,
+            Spell::Fusion(f) => Some(f.def().schools.0),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Popup {
+    Learned(ScrollId),
+    /// An off-school scroll broken down into shards.
+    Shattered(ScrollId),
+    Fusion(FusionId),
+    Attuned(School),
+}
+
+pub const SHATTER_SHARDS: u32 = 15;
+
 impl Run {
-    pub fn new(seed: u64, loadout: Loadout, save: &SaveData, core: Vec2) -> Run {
+    pub fn new(
+        seed: u64,
+        choice: StartChoice,
+        first: School,
+        second: Option<School>,
+        save: &SaveData,
+        core: Vec2,
+    ) -> Run {
         let mut run = Run {
             seed,
-            loadout,
+            start_choice: choice,
             elapsed: 0.0,
             phase: Phase::Playing,
             won: false,
@@ -166,15 +258,23 @@ impl Run {
             light_max: 3,
             light_timer: 0.0,
             staff_dimmed: false,
-            items: Vec::new(),
+            first_school: first,
+            second_school: second.filter(|&s| s != first),
+            scrolls: Vec::new(),
+            fusion: None,
             selected: 0,
-            charges: HashMap::new(),
-            tank: 100.0,
+            mana: 100.0,
+            max_mana: 100.0,
+            cooldowns: HashMap::new(),
             stats: RunStats::default(),
             earned: Vec::new(),
             toasts: VecDeque::new(),
             popup: None,
             banner: Some((Layer::Crust, 0.0)),
+            attunement: None,
+            attune_altar: None,
+            attune_pick: None,
+            journal: None,
             rng: Rng::new(seed ^ 0x17E5),
             core,
             pending_fire_burst: None,
@@ -182,64 +282,158 @@ impl Run {
             influence: VecDeque::new(),
             cause_amount: 0.0,
         };
-        match loadout {
-            Loadout::Standard => {}
-            Loadout::Gifted => {
-                let pool = save.unlocked_items();
-                let pick = pool[(run.rng.next_u64() % pool.len() as u64) as usize];
-                run.give(pick);
+        let first_pool: Vec<ScrollId> = save
+            .scrolls_for(&[first])
+            .into_iter()
+            .filter(|s| s.def().school == Some(first))
+            .collect();
+        match choice {
+            StartChoice::Initiate | StartChoice::TwinSouled => {}
+            StartChoice::Prodigy => {
+                if let Some(sc) = run.pick(&first_pool) {
+                    run.learn(sc);
+                }
             }
-            Loadout::Excavator => {
+            StartChoice::Scavenger => {
+                run.shards = 40;
                 run.light_max = 4;
                 run.light_charges = 4;
-                run.give(ItemId::CrumblingPick);
-                run.give(ItemId::BlastCharges);
+            }
+            StartChoice::ArchmagesHeir => {
+                if let Some(sc) = run.pick(&first_pool) {
+                    run.learn(sc);
+                }
+                run.learn(ScrollId::Blink);
             }
         }
         run.popup = None;
         run
     }
 
-    pub fn has(&self, item: ItemId) -> bool {
-        self.items.contains(&item)
+    fn pick(&mut self, pool: &[ScrollId]) -> Option<ScrollId> {
+        let pool: Vec<ScrollId> = pool.iter().copied().filter(|s| !self.has(*s)).collect();
+        (!pool.is_empty()).then(|| pool[(self.rng.next_u64() % pool.len() as u64) as usize])
     }
 
-    /// Adds an item; a new pick replaces the old one.
-    pub fn give(&mut self, item: ItemId) {
-        if self.has(item) {
-            return;
-        }
-        if item.def().is_pick {
-            self.items.retain(|i| !i.def().is_pick);
-        }
-        self.items.push(item);
-        if let Some(Active::Charges { max, .. }) = item.def().active {
-            self.charges.insert(item, (max, 0.0));
-        }
-        self.popup = Some((item, 0.0));
+    pub fn has(&self, sc: ScrollId) -> bool {
+        self.scrolls.contains(&sc)
     }
 
-    pub fn actives(&self) -> Vec<ItemId> {
-        self.items
-            .iter()
-            .copied()
-            .filter(|i| i.def().active.is_some())
+    /// Knows at least one scroll of the school.
+    pub fn knows(&self, school: School) -> bool {
+        self.scrolls.iter().any(|s| s.def().school == Some(school))
+    }
+
+    /// The wizard's schools (one until attuned).
+    pub fn schools(&self) -> Vec<School> {
+        std::iter::once(self.first_school)
+            .chain(self.second_school)
             .collect()
     }
 
-    pub fn selected_active(&self) -> Option<ItemId> {
-        let actives = self.actives();
-        (!actives.is_empty()).then(|| actives[self.selected % actives.len()])
+    pub fn in_my_schools(&self, sc: ScrollId) -> bool {
+        sc.def().school.is_none_or(|s| self.schools().contains(&s))
     }
 
-    /// A random unlocked item the player doesn't have yet.
-    pub fn roll_item(&mut self, save: &SaveData) -> Option<ItemId> {
-        let pool: Vec<ItemId> = save
-            .unlocked_items()
+    /// The dig variant in effect: the newest dig scroll learned.
+    pub fn dig_variant(&self) -> Option<ScrollId> {
+        self.scrolls
+            .iter()
+            .rev()
+            .copied()
+            .find(|s| s.def().kind == scrolls::Kind::Dig)
+    }
+
+    /// Learns a scroll (a new dig scroll supersedes older ones).
+    pub fn learn(&mut self, sc: ScrollId) {
+        if self.has(sc) {
+            return;
+        }
+        self.scrolls.push(sc);
+        self.popup = Some((Popup::Learned(sc), 0.0));
+    }
+
+    /// Takes a scroll found in the world: learned if it belongs to the
+    /// wizard's schools, otherwise broken down into shards.
+    pub fn take_scroll(&mut self, sc: ScrollId) -> bool {
+        if self.in_my_schools(sc) {
+            self.learn(sc);
+            true
+        } else {
+            self.shards += SHATTER_SHARDS;
+            self.popup = Some((Popup::Shattered(sc), 0.0));
+            false
+        }
+    }
+
+    /// The pair's fusion, if both schools are known and it hasn't awakened yet.
+    pub fn fusion_ready(&self) -> Option<FusionId> {
+        let second = self.second_school?;
+        (self.fusion.is_none() && self.knows(self.first_school) && self.knows(second))
+            .then(|| FusionId::for_pair(self.first_school, second))
+            .flatten()
+    }
+
+    /// Castable spells: active scrolls, then the fusion.
+    pub fn spells(&self) -> Vec<Spell> {
+        self.scrolls
+            .iter()
+            .copied()
+            .filter(|s| s.is_active())
+            .map(Spell::Scroll)
+            .chain(self.fusion.map(Spell::Fusion))
+            .collect()
+    }
+
+    pub fn selected_spell(&self) -> Option<Spell> {
+        let spells = self.spells();
+        (!spells.is_empty()).then(|| spells[self.selected % spells.len()])
+    }
+
+    /// A random scroll for a chest, altar or shrine: from the wizard's
+    /// schools (or neutral) that they don't know yet.
+    pub fn roll_scroll(&mut self, save: &SaveData) -> Option<ScrollId> {
+        let pool = save.scrolls_for(&self.schools());
+        self.pick(&pool)
+    }
+
+    /// A random unlocked scroll from any school (fallen apprentices carry these).
+    pub fn roll_any_scroll(&mut self, save: &SaveData) -> Option<ScrollId> {
+        let pool = save.scrolls_for(&School::ALL);
+        self.pick(&pool)
+    }
+
+    /// The attunement altar's offer: one scroll each from up to three other
+    /// unlocked schools.
+    pub fn attunement_offer(&mut self, save: &SaveData) -> Vec<ScrollId> {
+        let mut others: Vec<School> = save
+            .unlocked_schools()
             .into_iter()
-            .filter(|i| !self.has(*i))
+            .filter(|&s| s != self.first_school)
             .collect();
-        (!pool.is_empty()).then(|| pool[(self.rng.next_u64() % pool.len() as u64) as usize])
+        let mut offer = Vec::new();
+        while offer.len() < 3 && !others.is_empty() {
+            let school = others.swap_remove((self.rng.next_u64() % others.len() as u64) as usize);
+            let pool: Vec<ScrollId> = save
+                .scrolls_for(&[school])
+                .into_iter()
+                .filter(|s| s.def().school == Some(school))
+                .collect();
+            if let Some(sc) = self.pick(&pool) {
+                offer.push(sc);
+            }
+        }
+        offer
+    }
+
+    /// Binds the second school by taking one of the offered scrolls.
+    pub fn attune(&mut self, sc: ScrollId) {
+        if let Some(school) = sc.def().school {
+            self.second_school = Some(school);
+            self.learn(sc);
+            self.popup = Some((Popup::Attuned(school), 0.0));
+        }
+        self.attunement = None;
     }
 
     /// Records a player action at `at` for achievement attribution.
@@ -271,7 +465,7 @@ impl Run {
 
     /// Light orbs set flammables alight once you know any Pyromancy.
     pub fn orbs_ignite(&self) -> bool {
-        false
+        self.knows(School::Pyromancy)
     }
 
     pub fn is_playing(&self) -> bool {
@@ -299,12 +493,21 @@ pub fn grant(save: &mut SaveData, run: &mut Run, id: AchievementId, sfx: &mut Me
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RunSetupDone;
 
+/// Everything chosen on the wizard screen.
+#[derive(Clone, Copy, Debug)]
+pub struct RunConfig {
+    pub seed: u64,
+    pub choice: StartChoice,
+    pub first: School,
+    /// Only for Twin-Souled.
+    pub second: Option<School>,
+}
+
 /// World generation in progress.
 #[derive(Resource)]
 pub struct PendingRun {
     rx: Mutex<Receiver<Descent>>,
-    seed: u64,
-    loadout: Loadout,
+    config: RunConfig,
 }
 
 /// What the generator decided, consumed when entering the run.
@@ -312,18 +515,19 @@ pub struct PendingRun {
 pub struct RunSetup {
     pub spawns: Vec<Spawn>,
     pub start: Vec2,
+    pub config: RunConfig,
 }
 
 /// Starts generating a run; the loading screen shows until it's ready.
-pub fn start_run(commands: &mut Commands, seed: u64, loadout: Loadout) {
+pub fn start_run(commands: &mut Commands, config: RunConfig) {
     let (tx, rx) = channel();
+    let seed = config.seed;
     std::thread::spawn(move || {
         let _ = tx.send(generate_descent(seed));
     });
     commands.insert_resource(PendingRun {
         rx: Mutex::new(rx),
-        seed,
-        loadout,
+        config,
     });
     commands.set_state(AppState::Loading);
 }
@@ -336,7 +540,12 @@ pub fn random_seed() -> u64 {
     sbct_sim::rng::hash2(nanos, 3, 9) % 100_000_000
 }
 
-fn finish_loading(mut commands: Commands, pending: Option<Res<PendingRun>>, save: Res<SaveData>) {
+fn finish_loading(
+    mut commands: Commands,
+    pending: Option<Res<PendingRun>>,
+    save: Res<SaveData>,
+    dev_schools: Option<Res<crate::dev::DevSchools>>,
+) {
     let Some(pending) = pending else { return };
     let Ok(descent) = pending.rx.lock().unwrap().try_recv() else {
         return;
@@ -344,11 +553,17 @@ fn finish_loading(mut commands: Commands, pending: Option<Res<PendingRun>>, save
     let start = Vec2::new(descent.start.0 as f32 + 0.5, descent.start.1 as f32 + 1.0);
     let core = Vec2::new(descent.core.0 as f32, descent.core.1 as f32);
     commands.insert_resource(Session::offline(descent.world, start, "Miner".into()));
+    let mut c = pending.config;
+    if let Some(dev) = &dev_schools {
+        c.first = dev.0;
+        c.second = dev.1;
+    }
     commands.insert_resource(RunSetup {
         spawns: descent.spawns,
         start,
+        config: c,
     });
-    commands.insert_resource(Run::new(pending.seed, pending.loadout, &save, core));
+    commands.insert_resource(Run::new(c.seed, c.choice, c.first, c.second, &save, core));
     commands.remove_resource::<PendingRun>();
     commands.set_state(AppState::Run);
 }
@@ -361,8 +576,8 @@ fn on_enter_run(
     give: Option<Res<crate::dev::GiveItems>>,
 ) {
     if let Some(give) = give {
-        for &item in &give.0 {
-            run.give(item);
+        for &sc in &give.0 {
+            run.learn(sc);
         }
         run.popup = None;
     }
@@ -394,6 +609,18 @@ fn update_sim_region(mut session: ResMut<Session>, player: Res<player::RunPlayer
 
 /// Chunks simulated around the player in each direction (64 cells each).
 const SIM_RADIUS_CHUNKS: usize = 4;
+
+/// Awakens the pair's fusion once a scroll of each school is known.
+fn awaken_fusion(mut run: ResMut<Run>, mut save: ResMut<SaveData>, mut sfx: MessageWriter<Sfx>) {
+    let Some(f) = run.fusion_ready() else { return };
+    run.fusion = Some(f);
+    run.popup = Some((Popup::Fusion(f), 0.0));
+    sfx.write(Sfx::ui("fusion_awaken"));
+    if save.fusions_discovered.insert(f) {
+        save::store(&save);
+    }
+    grant(&mut save, &mut run, AchievementId::FusionAdept, &mut sfx);
+}
 
 /// Layer banners, depth records and depth achievements.
 fn track_depth(
@@ -460,7 +687,7 @@ fn update_phase(
         Phase::Won(t) => {
             if t == 0.0 {
                 run.won = true;
-                grant(&mut save, &mut run, AchievementId::CoreBreaker, &mut sfx);
+                grant(&mut save, &mut run, AchievementId::RiteComplete, &mut sfx);
                 sfx.write(Sfx::ui("victory"));
                 *music = MusicTrack::None;
             }
@@ -516,6 +743,7 @@ pub struct RunPlugin;
 impl Plugin for RunPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(save::load())
+            .add_message::<spells::Harm>()
             .init_resource::<hud::Paused>()
             .init_resource::<hud::PauseMenu>()
             .init_resource::<input::PlayerInput>()
@@ -563,8 +791,10 @@ impl Plugin for RunPlugin {
                     )
                         .chain(),
                     (
-                        entities::update_charges,
+                        spells::cast_spells,
+                        awaken_fusion,
                         entities::update_light_charges,
+                        entities::prepare_offers,
                         entities::interact,
                         entities::update_projectiles,
                         entities::update_bombs,

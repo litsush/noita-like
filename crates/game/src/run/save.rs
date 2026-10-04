@@ -8,8 +8,8 @@ use std::path::PathBuf;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use super::achievements::{AchievementId, Loadout};
-use super::items::ItemId;
+use super::achievements::{AchievementId, StartChoice};
+use super::scrolls::{FusionId, School, ScrollId};
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum DigMode {
@@ -59,24 +59,53 @@ pub struct Stats {
 #[derive(Resource, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(default)]
 pub struct SaveData {
+    /// Stored by name and parsed leniently: names from older versions map
+    /// forward, unknown ones are dropped, so old saves always load.
+    #[serde(with = "named_achievements")]
     pub achievements: BTreeSet<AchievementId>,
     pub stats: Stats,
     pub settings: Settings,
-    pub loadout: Loadout,
+    pub start_choice: StartChoice,
+    /// The school picked last time, preselected on the wizard screen.
+    pub last_school: Option<String>,
+    #[serde(with = "named_fusions")]
+    pub fusions_discovered: BTreeSet<FusionId>,
+    /// Journal pages read, across all runs.
+    pub journals_read: BTreeSet<u16>,
     pub bindings: crate::controls::Bindings,
 }
 
 impl SaveData {
-    pub fn is_unlocked(&self, item: ItemId) -> bool {
-        item.def().unlock.is_none_or(|a| self.achievements.contains(&a))
+    pub fn has(&self, a: AchievementId) -> bool {
+        self.achievements.contains(&a)
     }
 
-    pub fn loadout_unlocked(&self, loadout: Loadout) -> bool {
-        loadout.unlock().is_none_or(|a| self.achievements.contains(&a))
+    pub fn school_unlocked(&self, s: School) -> bool {
+        s.unlock().is_none_or(|a| self.has(a))
     }
 
-    pub fn unlocked_items(&self) -> Vec<ItemId> {
-        ItemId::ALL.into_iter().filter(|&i| self.is_unlocked(i)).collect()
+    pub fn scroll_unlocked(&self, sc: ScrollId) -> bool {
+        let def = sc.def();
+        def.school.is_none_or(|s| self.school_unlocked(s)) && def.unlock.is_none_or(|a| self.has(a))
+    }
+
+    pub fn start_unlocked(&self, c: StartChoice) -> bool {
+        c.unlock().is_none_or(|a| self.has(a))
+    }
+
+    pub fn unlocked_schools(&self) -> Vec<School> {
+        School::ALL
+            .into_iter()
+            .filter(|&s| self.school_unlocked(s))
+            .collect()
+    }
+
+    /// Unlocked scrolls of the given schools plus neutral ones.
+    pub fn scrolls_for(&self, schools: &[School]) -> Vec<ScrollId> {
+        ScrollId::all()
+            .filter(|&sc| self.scroll_unlocked(sc))
+            .filter(|sc| sc.def().school.is_none_or(|s| schools.contains(&s)))
+            .collect()
     }
 
     /// Records an achievement; returns true if it's new.
@@ -84,6 +113,42 @@ impl SaveData {
         self.achievements.insert(id)
     }
 }
+
+/// Serde helpers that store sets of enums by name, tolerating unknown names.
+macro_rules! named_set {
+    ($module:ident, $ty:ty, $parse:expr, $name:expr) => {
+        mod $module {
+            use std::collections::BTreeSet;
+
+            use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+            #[allow(unused_imports)]
+            use super::*;
+
+            pub fn serialize<S: Serializer>(set: &BTreeSet<$ty>, s: S) -> Result<S::Ok, S::Error> {
+                let names: Vec<String> = set.iter().map(|v| $name(*v)).collect();
+                names.serialize(s)
+            }
+
+            pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeSet<$ty>, D::Error> {
+                let names = Vec::<serde_json::Value>::deserialize(d)?;
+                Ok(names
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .filter_map($parse)
+                    .collect())
+            }
+        }
+    };
+}
+
+named_set!(
+    named_achievements,
+    AchievementId,
+    AchievementId::from_name,
+    AchievementId::name_id
+);
+named_set!(named_fusions, FusionId, FusionId::from_name, FusionId::name_id);
 
 /// Where the save file lives. `SBCT_SAVE_DIR` overrides (handy for testing).
 pub fn save_dir() -> PathBuf {
@@ -150,11 +215,15 @@ mod tests {
 
         let mut data = SaveData::default();
         data.grant(AchievementId::Pyromaniac);
+        data.fusions_discovered.insert(FusionId::SteamBurst);
+        data.journals_read.insert(3);
         data.stats.runs = 3;
         store(&data);
         assert_eq!(load(), data);
-        assert!(load().is_unlocked(ItemId::BlastCharges));
-        assert!(!load().is_unlocked(ItemId::GillMask));
+        assert!(
+            load().scroll_unlocked(ScrollId::AlchemistsCharge) == load().school_unlocked(School::Alchemy)
+        );
+        assert!(!load().scroll_unlocked(ScrollId::GillsOfTheDeep));
 
         std::fs::write(dir.join("save.json"), "{ not json").unwrap();
         assert_eq!(load(), SaveData::default(), "corrupt file starts fresh");
@@ -163,6 +232,23 @@ mod tests {
         // Unknown and missing fields are fine (forward/backward compatible).
         std::fs::write(dir.join("save.json"), r#"{"stats":{"runs":7},"future_field":1}"#).unwrap();
         assert_eq!(load().stats.runs, 7);
+
+        // A save from before the wizard rework: old achievement names map
+        // forward, unknown ones and the old loadout are dropped, nothing fails.
+        std::fs::write(
+            dir.join("save.json"),
+            r#"{"achievements":["Pyromaniac","CoreBreaker","GoneAchievement"],"loadout":"Excavator",
+                "stats":{"runs":12,"wins":1,"best_depth":3988},"settings":{"master_volume":0.5}}"#,
+        )
+        .unwrap();
+        let old = load();
+        assert!(old.has(AchievementId::Pyromaniac));
+        assert!(old.has(AchievementId::RiteComplete));
+        assert_eq!(old.achievements.len(), 2);
+        assert_eq!(old.stats.wins, 1);
+        assert_eq!(old.settings.master_volume, 0.5);
+        assert_eq!(old.start_choice, StartChoice::Initiate);
+        assert!(old.start_unlocked(StartChoice::ArchmagesHeir));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -131,10 +131,10 @@ fn apply_theme(style: &mut egui::Style) {
     }
 }
 
-/// UV rectangle of icon `index` in an 8-column, 5-row sheet.
+/// UV rectangle of icon `index` in the 16-column, 8-row icon sheet.
 fn icon_uv(index: usize) -> egui::Rect {
-    let (cols, rows) = (8.0, 5.0);
-    let (x, y) = ((index % 8) as f32, (index / 8) as f32);
+    let (cols, rows) = (16.0, 8.0);
+    let (x, y) = ((index % 16) as f32, (index / 16) as f32);
     egui::Rect::from_min_max(
         egui::pos2(x / cols, y / rows),
         egui::pos2((x + 1.0) / cols, (y + 1.0) / rows),

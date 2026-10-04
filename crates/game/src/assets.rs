@@ -49,15 +49,23 @@ impl Sheet {
 
 #[derive(Resource, Clone)]
 pub struct GameAssets {
-    /// 16×16 frames, 8 per row; rows are animations (see [`player_anim`]).
+    /// The wizard's base layer: 16×16 frames, 8 per row; rows are
+    /// animations (see [`player_anim`]).
     pub player: Sheet,
-    /// 16×16 icons, 8 per row.
+    /// 16×16 icons, 16 per row (see `run::scrolls::icon`).
     pub items: Sheet,
+    /// 8×8 spell frames: a row per school (bolt 0–3, impact 4–7), then misc.
+    pub spells: Sheet,
+    /// Wizard layers (same 16×16 grid): robe and trim are tinted per school.
+    pub wizard_robe: Sheet,
+    pub wizard_trim: Sheet,
+    /// 16×32 frames: the Hollow Stalker.
+    pub stalker: Sheet,
     /// 16×24 frames: torch 0–3, chest closed 4, chest open 5, altar 6, shrine 7.
     pub props: Sheet,
     /// 48×48 frames, 8 total.
     pub core: Sheet,
-    /// 16×16 frames, 4 per row: crawler, magma slug, spore drifter.
+    /// 16×16 frames, 8 per row: a row per creature (see `run::creatures`).
     pub creatures: Sheet,
     /// Per layer: (far, near) tileable 256×256 backgrounds.
     pub backgrounds: Vec<(Handle<Image>, Handle<Image>)>,
@@ -73,8 +81,9 @@ pub mod player_anim {
     pub const DIG_SIDE: (usize, usize) = (5, 6);
     pub const DIG_DOWN: (usize, usize) = (6, 6);
     pub const DIG_UP: (usize, usize) = (7, 6);
-    pub const HURT: (usize, usize) = (8, 4);
-    pub const DEATH: (usize, usize) = (9, 8);
+    pub const CAST: (usize, usize) = (8, 6);
+    pub const HURT: (usize, usize) = (9, 4);
+    pub const DEATH: (usize, usize) = (10, 8);
     pub const COLUMNS: usize = 8;
 }
 
@@ -94,6 +103,37 @@ pub mod props_frame {
     pub const RUNE_STONE: usize = 15;
 }
 
+#[cfg(test)]
+impl Sheet {
+    /// A sheet with default (empty) handles, for tests.
+    pub fn placeholder() -> Sheet {
+        Sheet {
+            image: Handle::default(),
+            layout: Handle::default(),
+        }
+    }
+}
+
+#[cfg(test)]
+impl GameAssets {
+    /// Assets with empty handles, for tests that spawn entities.
+    pub fn placeholder() -> GameAssets {
+        let p = Sheet::placeholder;
+        GameAssets {
+            player: p(),
+            wizard_robe: p(),
+            wizard_trim: p(),
+            spells: p(),
+            stalker: p(),
+            items: p(),
+            props: p(),
+            core: p(),
+            creatures: p(),
+            backgrounds: Vec::new(),
+        }
+    }
+}
+
 pub fn load_assets(
     mut commands: Commands,
     server: Res<AssetServer>,
@@ -104,11 +144,15 @@ pub fn load_assets(
         layout: layouts.add(TextureAtlasLayout::from_grid(size, cols, rows, None, None)),
     };
     let assets = GameAssets {
-        player: sheet("sprites/player.png", UVec2::splat(16), 8, 10),
-        items: sheet("sprites/items.png", UVec2::splat(16), 8, 5),
+        player: sheet("sprites/wizard_base.png", UVec2::splat(16), 8, 11),
+        wizard_robe: sheet("sprites/wizard_robe.png", UVec2::splat(16), 8, 11),
+        wizard_trim: sheet("sprites/wizard_trim.png", UVec2::splat(16), 8, 11),
+        spells: sheet("sprites/spells.png", UVec2::splat(8), 8, 10),
+        stalker: sheet("sprites/stalker.png", UVec2::new(16, 32), 8, 1),
+        items: sheet("sprites/icons.png", UVec2::splat(16), 16, 8),
         props: sheet("sprites/props.png", UVec2::new(16, 24), 8, 2),
         core: sheet("sprites/core.png", UVec2::splat(48), 8, 1),
-        creatures: sheet("sprites/creatures.png", UVec2::splat(16), 4, 3),
+        creatures: sheet("sprites/creatures.png", UVec2::splat(16), 8, 10),
         backgrounds: (0..5)
             .map(|i| {
                 (

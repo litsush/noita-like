@@ -220,7 +220,11 @@ pub fn bot_input(
         pr.center().distance(c) < 18.0
             && matches!(
                 pr.kind,
-                PropKind::Chest { opened: false } | PropKind::Altar { item: Some(_) } | PropKind::Core
+                PropKind::Chest { opened: false }
+                    | PropKind::Altar {
+                        offer: super::entities::Offer::Scroll(_) | super::entities::Offer::Unrolled
+                    }
+                    | PropKind::Core
             )
     });
     i.interact = near && (bot.timer * 4.0) as i32 % 2 == 0;
