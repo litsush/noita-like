@@ -130,3 +130,231 @@ Each milestone ends with a runnable game and a commit.
 - **Run state isn't synced for multiplayer yet:** see the README's multiplayer section.
 - **No mid-run save:** "Continue" means retrying a seed from the summary or the New Run screen.
 - **Single-threaded simulation:** the active region keeps it fast. Checkerboard multithreading is the next performance step.
+
+---
+
+# Part B: the wizard rework ("The Last Apprentice")
+
+You play an apprentice elemental wizard descending to the heart of the world to complete your training. Many apprentices went down before you, and most never came back. The tone is mystical dark fantasy with dread: darkness, isolation, things moving at the edge of your light, and the remains and journals of those who failed.
+
+What stays: the falling-sand simulation, the layered descent, permadeath, seeds, achievements unlocking content, and the main rule that every upgrade changes how you interact with materials rather than tweaking numbers.
+
+## Core changes
+
+- **The staff replaces every tool.**
+  - *Dig spell:* the old pick, cast from the staff in both dig modes. Speed still depends on hardness. It draws a visible beam with a casting sound, and is free (no mana).
+  - *Light orb:* replaces torches. It's cast toward the cursor, sticks where it lands or drifts slowly, flickers, and fades over 60 s. It has 3 charges that recharge in 25 s each. It only ignites flammables if you know at least one Pyromancy scroll.
+  - *Staff glow:* can be dimmed with a key (default L). Darkness is a real choice because lightseekers hunt light.
+- **Rope is removed completely:** material, input, HUD, art, sound and loadouts.
+  - Climbing out without upgrades relies on the high jump, wall climb, wall jump (which now refreshes half your climb stamina), and dig-spell steps.
+  - Terramancy (Stone Shape, Earthen Grip), Aeromancy (Updraft, Levitate), Mycomancy (Mycelial Bridge) and Blink add more ways up.
+- **Shards replace ore.** The `Ore` material becomes **Shard Vein**: dark rock with glowing cyan flecks that emits a little light. Digging it drops **aether shards**, glowing pickups pulled toward you when you're near. Chests and remains also hold shards, and shrines sell scrolls for them. The purple **Crystal** material stays as decoration and is clearly different.
+- **Mana:** one shared mana bar (100, regenerating 8/s). Active spells cost 12–40 mana and have short cooldowns. The decision each moment is which spell to spend on; light-orb charges stay separate so lighting is never a mana dilemma.
+
+## Schools and specialization
+
+There are eight schools, each tied to materials in the simulation:
+
+| # | School | Materials |
+|---|---|---|
+| 0 | Pyromancy | Fire, lava, heat, embers |
+| 1 | Hydromancy | Water, steam, flooding, swimming |
+| 2 | Terramancy | Stone, sand, gravel, shaping and collapsing terrain |
+| 3 | Cryomancy | Ice, frost, freezing liquids |
+| 4 | Aeromancy | Wind, gas, pushing powders and liquids, levitation |
+| 5 | Fulmancy | Lightning, sparks, conduction through water and metal |
+| 6 | Alchemy | Acid, explosives, transmutation |
+| 7 | Mycomancy | Fungus, growth, spores, rot |
+
+Pyromancy, Hydromancy, Terramancy and Mycomancy are unlocked from the start; the others unlock through achievements.
+
+**Specialization rules:**
+1. At the start of a run you pick your first school from the unlocked ones.
+2. The first altar you use is an **attunement altar**. It offers 3 scrolls from 3 different other unlocked schools. Taking one locks in your second school. The world places an attunement altar early in the Whispering Crust, near the middle of the shaft.
+3. After that, chests, altars and shrines only offer scrolls from your two schools plus neutral scrolls. Before attunement they offer first-school and neutral scrolls.
+4. Scrolls from other schools still turn up on fallen apprentices. Picking one up breaks it down into 15 shards instead.
+5. Learning at least one scroll from each of your two schools awakens that pair's **fusion**, granted automatically with a toast. Discovered fusions are saved and shown in the Unlocks screen.
+
+## Scrolls (37)
+
+Kinds:
+- **Active:** cast with use (right mouse); switch with Q/E or the wheel.
+- **Passive:** always on.
+- **Dig:** a variant of the dig spell. One dig variant at a time; the newest replaces the old.
+
+| Idx | Scroll | School | Kind | Effect | Unlock |
+|---|---|---|---|---|---|
+| 0 | Fire Bolt | Pyro | Active | Firebolt that ignites what it hits and splashes flame | Start |
+| 1 | Magma Bore | Pyro | Dig | Rock you dig sometimes melts into lava | Deep Diver |
+| 2 | Salamander Ward | Pyro | Passive | Immune to fire and lava; water scalds | Firewalker |
+| 3 | Ember Heart | Pyro | Passive | Heat no longer hurts; it charges a fire burst that vents when full | Heat Stroke |
+| 4 | Pocket Sun | Pyro | Active | Tiny sun that cooks lava into obsidian, boils water, lights the dark | Lore Keeper |
+| 5 | Tidecall | Hydro | Active | Hold to pour a stream of water (drains mana) | Start |
+| 6 | Flood Orb | Hydro | Active | A sphere of water bursts at the target | Start |
+| 7 | Gills of the Deep | Hydro | Passive | Breathe underwater and in gas | Flood Survivor |
+| 8 | Undertow | Hydro | Passive | Swim fast and dash underwater; water never drags you down | Start |
+| 9 | Crumbling Touch | Terra | Dig | Dug rock crumbles to sand and gravel | Start |
+| 10 | Stone Shape | Terra | Active | Raise a stone ledge at the target (a step to climb on) | Start |
+| 11 | Earthen Grip | Terra | Passive | Cling to and climb earth and stone walls without tiring | Start |
+| 12 | Seismic Stomp | Terra | Passive | Hard landings shatter the ground and shake gravel loose | Cave-In |
+| 13 | Frost Seed | Cryo | Active | Seed that grows ice through water and turns lava to obsidian | School |
+| 14 | Ice Lance | Cryo | Active | Shard that freezes liquids where it hits and wounds creatures | School |
+| 15 | Frozen Path | Cryo | Passive | Liquids under your feet freeze (water to ice, lava to obsidian) | School |
+| 16 | Rime Shell | Cryo | Passive | Lava touching you hardens to obsidian; flames gutter out | Stalker's Shadow |
+| 17 | Gust | Aero | Active | Cone of wind flings powders, liquids, gas and creatures | School |
+| 18 | Updraft | Aero | Active | A rising column lifts you and loose cells upward | School |
+| 19 | Levitate | Aero | Passive | Hold jump in the air to float (drains mana) | School |
+| 20 | Air Bubble | Aero | Passive | Gas and smoke are blown from your face; underwater breath lasts twice as long | School |
+| 21 | Spark Bolt | Fulm | Active | Spark that electrifies water and metal and ignites gas | School |
+| 22 | Chain Lightning | Fulm | Active | Arc to the target that electrifies conductors along its path and jumps between creatures | Overcharged |
+| 23 | Arc Drill | Fulm | Dig | The dig beam electrifies conductive cells it touches and bites through metal | School |
+| 24 | Grounded | Fulm | Passive | Electricity can't hurt you; charged cells you touch restore mana | School |
+| 25 | Acid Flask | Alch | Active | Flask of acid that eats rock (not obsidian or crystal) | School |
+| 26 | Alchemist's Charge | Alch | Active | Placed charge that blasts a crater | Pyromaniac |
+| 27 | Transmutation | Alch | Active | Metal, ferrite and obsidian at the target become shard veins; stone becomes sand | School |
+| 28 | Volatile Core | Alch | Passive | Your explosions leave shard veins behind | Demolitionist |
+| 29 | Spore Sowing | Myco | Active | Spores that grow glowing, flammable fungus over rock | Start |
+| 30 | Rot Touch | Myco | Dig | Wood, fungus, grass and dirt rot away at a touch, leaving glowing fungus edges | Start |
+| 31 | Mycelial Bridge | Myco | Active | A fungus bridge grows from your feet toward the cursor | Gardener |
+| 32 | Symbiosis | Myco | Passive | Touching fungus heals you and restores mana | Fusion Adept |
+| 33 | Beacon | Neutral | Passive | Your glow reveals far more, but lightseekers flock to it | Start |
+| 34 | Glass Focus | Neutral | Dig | Dig almost instantly, but take double damage | Speed Digger |
+| 35 | Iron Soles | Neutral | Passive | Walk on molten metal; sink fast in water and sand | Start |
+| 36 | Blink | Neutral | Active | Step up to 14 cells toward the cursor, even through rock | Lightless |
+
+"School" means the scroll unlocks with its school. A scroll is available when its school is unlocked and its own achievement, if any, is earned. Old items map to scrolls in save migration: for example Crumbling Pick becomes Crumbling Touch, Water Canister becomes Tidecall and Spark Rod becomes Spark Bolt.
+
+## Fusions (28)
+
+One per pair of schools. Each awakens once you've learned at least one scroll from each school in the pair. All are actives that cost mana.
+
+| Idx | Pair | Fusion | Effect |
+|---|---|---|---|
+| 0 | Pyro + Hydro | Steam Burst | Scalding steam floods the target area and water there flashes to steam; steam burns creatures |
+| 1 | Pyro + Terra | Magma Surge | Rock at the target melts into a lava pool |
+| 2 | Pyro + Cryo | Thermal Shock | Stone, basalt, obsidian and ice at the target shatter into gravel |
+| 3 | Pyro + Aero | Firestorm | A fire whirl sweeps forward, igniting everything and scattering embers |
+| 4 | Pyro + Fulm | Plasma Lance | A beam vaporises a straight tunnel, igniting and charging what it touches |
+| 5 | Pyro + Alch | Napalm | A flask of burning oil splashes over the target |
+| 6 | Pyro + Myco | Spore Bomb | A spore pod blooms gas and fungus, then ignites a moment later |
+| 7 | Hydro + Terra | Mudslide | Dirt and sand at the target slump into a flowing slurry of sand and water |
+| 8 | Hydro + Cryo | Glacier | All water in a wide radius flash-freezes to ice |
+| 9 | Hydro + Aero | Typhoon | Liquid near you is torn up and hurled toward the cursor |
+| 10 | Hydro + Fulm | Storm Flood | An electrified wave of water bursts at the target |
+| 11 | Hydro + Alch | Acid Rain | Acid falls from above over the target area |
+| 12 | Hydro + Myco | Swamp Bloom | Water at the target turns into fungus mats you can stand on |
+| 13 | Terra + Cryo | Frozen Earth | Loose sand and gravel at the target freeze solid, stopping cave-ins |
+| 14 | Terra + Aero | Sandstorm | Sand, gravel and ash nearby are flung at the cursor, burying creatures |
+| 15 | Terra + Fulm | Railshot | A charged ferrite slug bores a line through rock and electrifies what it hits |
+| 16 | Terra + Alch | Petrify | Liquids at the target turn to stone; creatures there are stunned in stone |
+| 17 | Terra + Myco | Root Lattice | Wooden roots grow from your feet toward the cursor as a climbable lattice |
+| 18 | Cryo + Aero | Blizzard | A frost cone freezes liquids, smothers fire and chills creatures |
+| 19 | Cryo + Fulm | Cryo Arc | Lightning that freezes liquids along its path and stuns creatures |
+| 20 | Cryo + Alch | Shatter | Obsidian and crystal at the target turn brittle and crumble |
+| 21 | Cryo + Myco | Rimebloom | Fungus at the target becomes frost that spreads through water |
+| 22 | Aero + Fulm | Thunderstorm | Lightning strikes down around the target, igniting gas |
+| 23 | Aero + Alch | Miasma | A toxic gas cloud billows at the target (flammable, chokes creatures) |
+| 24 | Aero + Myco | Spore Gale | A gust of spores plants fungus wherever it lands |
+| 25 | Fulm + Alch | Electrolysis | Water at the target splits into explosive gas, sparked a moment later |
+| 26 | Fulm + Myco | Storm Spores | Fungus at the target crackles with sparks and ignites |
+| 27 | Alch + Myco | Decay Bloom | Organic matter at the target rots into acid and spores |
+
+## Achievements (22)
+
+Achievements still count only near the player's recent actions.
+
+| Achievement | Condition | Unlocks |
+|---|---|---|
+| Flood Survivor | Stay underwater 6 s and surface alive | Gills of the Deep |
+| Pyromaniac | Ignite a gas pocket | Alchemist's Charge |
+| Alchemist | Acid dissolves 500 cells | Alchemy school |
+| Obsidian Bridge | Turn 60 lava cells to obsidian | Cryomancy school |
+| Untouched | Reach layer 2 without damage | Prodigy (starting choice) |
+| Rite Complete | Win | Archmage's Heir (starting choice) |
+| Deep Diver | Reach layer 3 | Magma Bore |
+| Firewalker | Catch fire and survive | Salamander Ward |
+| Heat Stroke | Heat maxed 3 s, cool down alive | Ember Heart |
+| Demolitionist | Explosions destroy 1500 cells | Volatile Core |
+| Speed Digger | Reach layer 2 within 4 minutes | Glass Focus |
+| Conductor | Electrify 200 water cells | Fulmancy school |
+| Cave-In | Bring down 1000 gravel cells | Seismic Stomp |
+| Long Fall | Fall 150 cells in one drop and survive | Aeromancy school |
+| Lightless | Spend 60 s in darkness without casting a light orb | Blink |
+| Grave Robber | Search 5 fallen apprentices in one run | Scavenger (starting choice) |
+| Fusion Adept | Awaken a fusion | Symbiosis |
+| Lore Keeper | Read 10 different journal pages (across runs) | Pocket Sun |
+| Stalker's Shadow | Escape or trap the Hollow Stalker | Rime Shell |
+| Gardener | Grow 300 fungus cells | Mycelial Bridge |
+| Overcharged | Kill a creature with electricity | Chain Lightning |
+| Twin Mastery | Win with your fusion awakened | Twin-Souled (starting choice) |
+
+(Rite Complete replaces Core Breaker, keeping its saved id.)
+
+**Starting choices**, which replace loadouts:
+
+| Choice | Effect | Unlock |
+|---|---|---|
+| Initiate | 3 light orbs | Start |
+| Prodigy | Begin with a random scroll of your first school | Untouched |
+| Scavenger | +40 shards, 4 light-orb charges | Grave Robber |
+| Archmage's Heir | A first-school scroll and Blink | Rite Complete |
+| Twin-Souled | Choose both schools at the start | Twin Mastery |
+
+## World re-theme
+
+Layers keep their depths and generation, retuned for the theme:
+
+| Old layer | New name | Retune |
+|---|---|---|
+| Crust | The Whispering Crust | — |
+| Upper Mantle | The Drowned Halls | More water and flooded halls; lava rarer |
+| Deep Mantle | The Fungal Abyss | Much more fungus, spores and acid |
+| Outer Core | The Molten Sanctum | — |
+| Core | The Heart of the World | The core becomes the **Trial**, a rune-ringed heart; touching it completes your training |
+
+**Lore and remains:**
+- **Fallen apprentices** (6–8 per run): skeletal remains in robes. Searching one gives shards and sometimes a scroll, usually from a random school (off-school scrolls break into shards). Each also holds a **journal page**.
+- **Journal pages:** about 30 short lines building the lore and dread, read in a parchment popup. Pages read are saved.
+- **Ritual circles:** brick and crystal rings in the rock. **Ruined shrines** re-skin the shop shrines.
+
+## Creatures
+
+All are simulated with the cells: they burn, drown, freeze, get crushed and dissolve.
+
+| Creature | Layers | Behaviour |
+|---|---|---|
+| Gnawling | 1–3 | Scuttling cave crawler (the old crawler) |
+| Hollowed Apprentice | 1–4 | Shambles toward you; every few seconds casts a twisted bolt of a random school (fire, frost or acid cells) |
+| Blind Wyrm | 2 | Burrows through terrain, eating a tunnel as it goes. Drawn to the sound of digging; surfaces to bite |
+| Spore Puppet | 3 | Fungus-ridden walker; bursts into spores and fungus on death |
+| Spore Drifter | 3 | Floating spore puff, kept |
+| Cinder Wraith | 4 | Fire-immune drifter leaving burning trails; water destroys it |
+| Lightseeker | 2–4 | Pale flier that hunts the brightest light nearby. Light orbs lure it away; a dimmed staff hides you |
+| Mimic | any | About 1 in 6 chests bite when opened, then hop after you |
+| Hollow Stalker | 3–4, once per run | Unkillable. Fades in out of sight and walks toward you. It can't dig, won't enter water, and is trapped if buried or frozen in (then sinks away). Near it the screen darkens and wobbles and whispers rise |
+
+**Horror atmosphere:**
+- Darker ambient light and flickering light orbs.
+- A vignette that tightens with low health and near the stalker.
+- Occasional unexplained sounds (whispers, distant steps) and stretches where the ambience falls silent.
+
+## UI theme
+
+A dark grimoire look:
+- Panels in near-black violet with parchment-gold text.
+- Rune-gold accents, thin double borders and sigil badges.
+- Parchment popups for journals and scroll pickups.
+
+The wizard selection screen (first school, starting choice, seed) replaces New Run.
+
+## Part B milestones
+
+1. Part A (done, pushed).
+2. Remove rope; add the dig spell, light orb and shards.
+3. Schools, specialization, scrolls (porting items), save migration, wizard selection, attunement altar.
+4. Fusions for every pair.
+5. World re-theme, lore and remains, horror creatures.
+6. Art regeneration (agent).
+7. UI rework.
+8. Audio rework (agent).
+9. Balancing and bug fixing.
