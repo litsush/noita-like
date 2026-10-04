@@ -50,6 +50,7 @@ fn main() {
         .add_systems(OnEnter(AppState::Menu), |mut m: ResMut<audio::MusicTrack>| *m = audio::MusicTrack::Menu)
         .add_systems(OnEnter(AppState::InGame), |mut m: ResMut<audio::MusicTrack>| *m = audio::MusicTrack::None)
         .add_systems(EguiPrimaryContextPass, ui::setup_ui.before(menu::menu_ui))
+        .add_systems(EguiPrimaryContextPass, ui::ui_sounds_and_fade.after(menu::menu_ui).after(run::hud::run_hud))
         .init_state::<AppState>()
         .insert_resource(ClearColor(Color::srgb(0.45, 0.62, 0.85)))
         .insert_resource(Time::<Fixed>::from_hz(60.0))

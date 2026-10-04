@@ -3,7 +3,9 @@
 //! * `--autoplay` lets a bot play runs (see `run::input::bot_input`).
 //! * `--screenshot <dir>` saves a screenshot every few seconds.
 //! * `--quit-after <secs>` exits after that many seconds.
+//! * `--fps` logs frame rate once a second.
 //! * `--layer <0-4>` starts runs in a deeper layer.
+//! * `--menu-screen <new-run|unlocks|items|settings|multiplayer>` opens a menu page.
 //!
 //! Set `SBCT_SAVE_DIR` when testing so bot achievements don't touch your save.
 
@@ -41,6 +43,12 @@ impl Plugin for DevPlugin {
             let _ = std::fs::create_dir_all(&dir);
             app.insert_resource(Screenshots { dir, every: 4.0, next: 3.0, count: 0 })
                 .add_systems(Update, take_screenshots);
+        }
+        if std::env::args().any(|a| a == "--fps") {
+            app.add_plugins((
+                bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(),
+                bevy::diagnostic::LogDiagnosticsPlugin::default(),
+            ));
         }
         if let Some(layer) = arg_value("--layer").and_then(|s| s.parse().ok()) {
             app.insert_resource(StartLayer(layer));

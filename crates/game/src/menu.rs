@@ -9,12 +9,19 @@ use sbct_net::steam::{FriendLobby, LobbyInfo, SteamEvent, Visibility};
 use sbct_net::tcp::{self, TcpClient, TcpHost};
 
 use crate::AppState;
+use crate::run::achievements::{AchievementId, Loadout};
+use crate::run::save::SaveData;
+use crate::ui::{self, UiIcons};
 use crate::session::{EndSession, OFFLINE_ID, Session};
 use crate::steam::{SteamClient, SteamInbox, SteamStatus};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Main,
+    NewRun,
+    Unlocks,
+    Settings,
+    Multiplayer,
     Host,
     Join,
 }
@@ -42,6 +49,12 @@ pub struct MenuState {
     pub friends: Vec<FriendLobby>,
     pub searching: bool,
     friends_timer: f32,
+    /// Seed typed on the New Run screen; empty means random.
+    pub run_seed: String,
+    pub unlocks_tab: usize,
+    pub confirm_reset: bool,
+    /// Mirrors the saved loadout choice for starting runs.
+    pub loadout: Loadout,
 }
 
 impl MenuState {
@@ -67,6 +80,10 @@ impl MenuState {
             friends: Vec::new(),
             searching: false,
             friends_timer: 0.0,
+            run_seed: String::new(),
+            unlocks_tab: 0,
+            confirm_reset: false,
+            loadout: Loadout::Standard,
         }
     }
 }
@@ -128,8 +145,19 @@ fn action_from_args(menu: &mut MenuState) -> Option<Action> {
     if let Some(seed) = value("--seed") {
         menu.seed = seed;
     }
+    menu.screen = match value("--menu-screen").as_deref() {
+        Some("new-run") => Screen::NewRun,
+        Some("unlocks") => Screen::Unlocks,
+        Some("items") => {
+            menu.unlocks_tab = 1;
+            Screen::Unlocks
+        }
+        Some("settings") => Screen::Settings,
+        Some("multiplayer") => Screen::Multiplayer,
+        _ => Screen::Main,
+    };
     if args.iter().any(|a| a == "--run") {
-        menu.seed = value("--run").unwrap_or_default();
+        menu.run_seed = value("--run").unwrap_or_default();
         Some(Action::NewRun)
     } else if args.iter().any(|a| a == "--singleplayer") {
         Some(Action::Singleplayer)
@@ -182,22 +210,8 @@ pub fn menu_steam_events(
     }
 }
 
-/// A root `Ui` covering the whole window, for full-screen panels.
-fn screen_ui(ctx: &egui::Context) -> egui::Ui {
-    egui::Ui::new(
-        ctx.clone(),
-        "screen".into(),
-        egui::UiBuilder::new()
-            .layer_id(egui::LayerId::background())
-            .max_rect(ctx.viewport_rect()),
-    )
-}
-
-const BUTTON: [f32; 2] = [260.0, 44.0];
-
 fn big_button(ui: &mut egui::Ui, text: &str) -> bool {
-    ui.add_sized(BUTTON, egui::Button::new(egui::RichText::new(text).size(20.0)))
-        .clicked()
+    ui::menu_button(ui, text).clicked()
 }
 
 pub fn menu_ui(
@@ -207,84 +221,312 @@ pub fn menu_ui(
     steam: Option<Res<SteamClient>>,
     status: Res<SteamStatus>,
     mut exit: MessageWriter<AppExit>,
+    mut save: ResMut<SaveData>,
+    icons: Option<Res<UiIcons>>,
+    time: Res<Time<Real>>,
 ) -> Result {
+    let Some(icons) = icons else { return Ok(()) };
     let ctx = contexts.ctx_mut()?;
     let mut action = None;
+    let t = time.elapsed_secs();
 
-    let mut root = screen_ui(ctx);
-    egui::CentralPanel::default().show(&mut root, |ui| {
+    let mut root = ui::screen_ui(ctx);
+    egui::CentralPanel::default().frame(egui::Frame::new().fill(egui::Color32::from_rgb(12, 9, 16))).show(&mut root, |ui| {
+        paint_menu_backdrop(ui, &icons, t);
         ui.vertical_centered(|ui| {
-            ui.add_space(50.0);
-            ui.label(
-                egui::RichText::new("SBCT")
-                    .size(72.0)
-                    .strong()
-                    .color(egui::Color32::from_rgb(230, 170, 70)),
-            );
-            ui.label(egui::RichText::new("a falling-sand sandbox").size(16.0).italics());
-            ui.add_space(8.0);
-            match (&steam, &status.error) {
-                (Some(s), _) => ui.colored_label(
-                    egui::Color32::LIGHT_GREEN,
-                    format!("Steam: signed in as {}", s.my_name()),
-                ),
-                (None, Some(e)) => ui.colored_label(
-                    egui::Color32::from_rgb(230, 120, 90),
-                    format!("Steam unavailable (LAN only): {e}"),
-                ),
-                _ => ui.label(""),
-            };
+            let main = menu.screen == Screen::Main;
+            ui.add_space(if main { 36.0 } else { 16.0 });
+            ui.label(egui::RichText::new("DESCENT").size(if main { 64.0 } else { 40.0 }).color(ui::ACCENT));
+            if main {
+                ui.label(egui::RichText::new("to the core").size(32.0).color(ui::TEXT_DIM));
+            }
+            ui.add_space(6.0);
+            let stats = &save.stats;
+            if stats.runs > 0 && main {
+                let best = stats.best_time.map_or(String::new(), |b| format!("   best time {}", ui::clock(b)));
+                ui.label(
+                    egui::RichText::new(format!(
+                        "runs {}   wins {}   deepest {} m{best}",
+                        stats.runs,
+                        stats.wins,
+                        stats.best_depth / 4
+                    ))
+                    .color(ui::TEXT_DIM),
+                );
+            }
             if let Some(err) = menu.error.clone() {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    ui.colored_label(egui::Color32::from_rgb(255, 110, 110), err);
+                    ui.add_space(ui.available_width() / 2.0 - 220.0);
+                    ui.colored_label(ui::DANGER, err);
                     if ui.small_button("x").clicked() {
                         menu.error = None;
                     }
                 });
             }
-            ui.add_space(24.0);
+            ui.add_space(if main { 20.0 } else { 8.0 });
 
             match menu.screen {
                 Screen::Main => main_screen(ui, &mut menu, &mut action),
+                Screen::NewRun => new_run_screen(ui, &mut menu, &mut save, &icons, &mut action),
+                Screen::Unlocks => unlocks_screen(ui, &mut menu, &save, &icons),
+                Screen::Settings => settings_screen(ui, &mut menu, &mut save),
+                Screen::Multiplayer => {
+                    let line = match (&steam, &status.error) {
+                        (Some(s), _) => format!("Steam: signed in as {}", s.my_name()),
+                        (None, Some(e)) => format!("Steam unavailable (LAN only): {e}"),
+                        _ => String::new(),
+                    };
+                    ui.label(egui::RichText::new(line).color(if steam.is_some() { ui::GOOD } else { ui::DANGER }));
+                    ui.add_space(8.0);
+                    multiplayer_screen(ui, &mut menu, &mut action)
+                }
                 Screen::Host => host_screen(ui, &mut menu, steam.is_some(), &mut action),
                 Screen::Join => join_screen(ui, &mut menu, steam.as_deref(), &mut action),
             }
         });
     });
 
+    menu.loadout = if save.loadout_unlocked(save.loadout) { save.loadout } else { Loadout::Standard };
     if let Some(action) = action {
         run_action(action, &mut commands, &mut menu, steam.as_deref(), &mut exit);
     }
     Ok(())
 }
 
-fn main_screen(ui: &mut egui::Ui, menu: &mut MenuState, action: &mut Option<Action>) {
-    ui.horizontal(|ui| {
-        ui.add_space(ui.available_width() / 2.0 - 130.0);
-        ui.label("Name");
-        ui.add(
-            egui::TextEdit::singleline(&mut menu.name)
-                .desired_width(210.0)
-                .char_limit(32),
+/// Slowly rising embers and the pulsing core behind the title.
+fn paint_menu_backdrop(ui: &egui::Ui, icons: &UiIcons, t: f32) {
+    let rect = ui.max_rect();
+    let p = ui.painter();
+    let frame = (t * 8.0) as usize % 8;
+    let size = rect.height().min(rect.width()) * 0.9;
+    let core = egui::Rect::from_center_size(egui::pos2(rect.center().x, rect.bottom() + size * 0.25), egui::vec2(size, size));
+    let uv = egui::Rect::from_min_max(egui::pos2(frame as f32 / 8.0, 0.0), egui::pos2((frame + 1) as f32 / 8.0, 1.0));
+    p.image(icons.core, core, uv, egui::Color32::from_white_alpha(150));
+    for i in 0..60 {
+        let seed = sbct_sim::rng::hash2(i, 5, 9);
+        let x = rect.left() + (seed % 10_000) as f32 / 10_000.0 * rect.width();
+        let speed = 20.0 + (seed >> 20) as f32 % 40.0;
+        let y = rect.bottom() - (t * speed + (seed >> 8) as f32 % rect.height()) % rect.height();
+        let a = ((y - rect.top()) / rect.height() * 200.0) as u8;
+        p.rect_filled(
+            egui::Rect::from_center_size(egui::pos2(x, y), egui::vec2(3.0, 3.0)),
+            0.0,
+            egui::Color32::from_rgba_unmultiplied(255, 150, 60, a),
         );
+    }
+}
+
+fn main_screen(ui: &mut egui::Ui, menu: &mut MenuState, action: &mut Option<Action>) {
+    if ui::menu_button(ui, "New Run").clicked() {
+        menu.screen = Screen::NewRun;
+    }
+    if ui::menu_button(ui, "Unlocks & Achievements").clicked() {
+        menu.screen = Screen::Unlocks;
+    }
+    if ui::menu_button(ui, "Settings").clicked() {
+        menu.screen = Screen::Settings;
+    }
+    if ui::menu_button(ui, "Multiplayer & Sandbox").clicked() {
+        menu.screen = Screen::Multiplayer;
+    }
+    ui.add_space(12.0);
+    if ui::menu_button(ui, "Quit").clicked() {
+        *action = Some(Action::Quit);
+    }
+}
+
+fn new_run_screen(
+    ui: &mut egui::Ui,
+    menu: &mut MenuState,
+    save: &mut SaveData,
+    icons: &UiIcons,
+    action: &mut Option<Action>,
+) {
+    ui.label(egui::RichText::new("Choose a loadout").size(24.0));
+    ui.add_space(4.0);
+    ui.horizontal_top(|ui| {
+        ui.add_space(ui.available_width() / 2.0 - 3.0 * 196.0 / 2.0);
+        for loadout in Loadout::ALL {
+            let unlocked = save.loadout_unlocked(loadout);
+            let selected = save.loadout == loadout && unlocked;
+            let frame = ui::panel_frame().stroke(egui::Stroke::new(2.0, if selected { ui::ACCENT } else { ui::BORDER }));
+            let r = frame
+                .show(ui, |ui| {
+                    ui.set_width(168.0);
+                    ui.set_height(150.0);
+                    ui.vertical_centered(|ui| {
+                        let index = match loadout {
+                            Loadout::Standard => crate::run::items::icon::PICKAXE,
+                            Loadout::Gifted => crate::run::items::icon::GEM,
+                            Loadout::Excavator => crate::run::items::ItemId::BlastCharges.def().icon,
+                        };
+                        if unlocked {
+                            ui::icon(ui, icons, index, 32.0);
+                            ui.label(egui::RichText::new(loadout.name()).color(if selected { ui::ACCENT } else { ui::TEXT }));
+                            ui.label(egui::RichText::new(loadout.desc()).size(16.0).color(ui::TEXT_DIM));
+                        } else {
+                            ui::icon(ui, icons, crate::run::items::icon::LOCK, 32.0);
+                            ui.label(egui::RichText::new(loadout.name()).color(ui::TEXT_DIM));
+                            let hint = loadout.unlock().map_or("", |a| a.def().hint);
+                            ui.label(egui::RichText::new(hint).size(16.0).color(ui::TEXT_DIM));
+                        }
+                    });
+                })
+                .response
+                .interact(egui::Sense::click());
+            if r.clicked() && unlocked {
+                save.loadout = loadout;
+                crate::run::save::store(save);
+            }
+        }
     });
-    ui.add_space(16.0);
-    if big_button(ui, "New Run") {
+    ui.add_space(12.0);
+    ui.horizontal(|ui| {
+        ui.add_space(ui.available_width() / 2.0 - 170.0);
+        ui::icon(ui, icons, crate::run::items::icon::COMPASS, 16.0);
+        ui.label("Seed");
+        ui.add(egui::TextEdit::singleline(&mut menu.run_seed).desired_width(170.0).hint_text("random").char_limit(12));
+    });
+    ui.label(egui::RichText::new("Leave empty for a fresh planet; share a seed to replay one.").color(ui::TEXT_DIM));
+    ui.add_space(12.0);
+    if ui::menu_button(ui, "Descend").clicked() {
         *action = Some(Action::NewRun);
     }
-    if big_button(ui, "Host Game") {
+    if ui::menu_button(ui, "Back").clicked() {
+        menu.screen = Screen::Main;
+    }
+}
+
+fn unlocks_screen(ui: &mut egui::Ui, menu: &mut MenuState, save: &SaveData, icons: &UiIcons) {
+    let earned = save.achievements.len();
+    let items = save.unlocked_items().len();
+    ui.horizontal(|ui| {
+        ui.add_space(ui.available_width() / 2.0 - 200.0);
+        for (i, label) in [
+            format!("Achievements {earned}/{}", AchievementId::ALL.len()),
+            format!("Items {items}/{}", crate::run::items::ItemId::ALL.len()),
+        ]
+        .iter()
+        .enumerate()
+        {
+            if ui.selectable_label(menu.unlocks_tab == i, label).clicked() {
+                menu.unlocks_tab = i;
+            }
+        }
+    });
+    ui.add_space(8.0);
+    // Cards: (icon, unlocked, title, line1, line2).
+    let cards: Vec<(usize, bool, String, String, String)> = if menu.unlocks_tab == 0 {
+        AchievementId::ALL
+            .iter()
+            .map(|&a| {
+                let def = a.def();
+                let got = save.achievements.contains(&a);
+                let title = if got { def.name } else { "???" };
+                (a.icon(), got, title.to_string(), def.hint.to_string(), format!("Reward: {}", a.reward_name()))
+            })
+            .collect()
+    } else {
+        crate::run::items::ItemId::ALL
+            .iter()
+            .map(|&item| {
+                let def = item.def();
+                let got = save.is_unlocked(item);
+                let line2 = match def.unlock {
+                    None => "Available from the start".to_string(),
+                    Some(a) if got => format!("Unlocked by {}", a.def().name),
+                    Some(a) => format!("Locked: {}", a.def().hint),
+                };
+                let line1 = if got { def.desc.to_string() } else { "Unknown item".to_string() };
+                (def.icon, got, if got { def.name } else { "???" }.to_string(), line1, line2)
+            })
+            .collect()
+    };
+    const CARD: egui::Vec2 = egui::vec2(380.0, 104.0);
+    let margin = ((ui.available_width() - CARD.x * 2.0 - 20.0) / 2.0).max(0.0);
+    egui::ScrollArea::vertical().max_height(ui.available_height() - 70.0).show(ui, |ui| {
+        for pair in cards.chunks(2) {
+            ui.horizontal_top(|ui| {
+                ui.add_space(margin);
+                for (icon, got, title, line1, line2) in pair {
+                    ui::panel_frame().show(ui, |ui| {
+                        ui.set_min_size(CARD - egui::vec2(20.0, 20.0));
+                        ui.set_max_width(CARD.x - 20.0);
+                        ui.horizontal_top(|ui| {
+                            if *got {
+                                ui::icon(ui, icons, *icon, 32.0);
+                            } else {
+                                ui::icon_tinted(ui, icons, *icon, 32.0, egui::Color32::from_rgb(40, 32, 50));
+                            }
+                            ui.vertical(|ui| {
+                                ui.label(egui::RichText::new(title).color(if *got { ui::ACCENT } else { ui::TEXT_DIM }));
+                                ui.label(egui::RichText::new(line1).size(16.0));
+                                ui.label(egui::RichText::new(line2).size(16.0).color(ui::TEXT_DIM));
+                            });
+                        });
+                    });
+                }
+            });
+        }
+    });
+    ui.add_space(8.0);
+    if ui::menu_button(ui, "Back").clicked() {
+        menu.screen = Screen::Main;
+    }
+}
+
+fn settings_screen(ui: &mut egui::Ui, menu: &mut MenuState, save: &mut SaveData) {
+    ui::panel_frame().show(ui, |ui| {
+        ui.set_width(420.0);
+        crate::run::hud::settings_controls(ui, save);
+        ui.add_space(10.0);
+        ui.separator();
+        ui.label(egui::RichText::new(format!("Save file: {}", crate::run::save::save_dir().join("save.json").display())).size(16.0).color(ui::TEXT_DIM));
+        if menu.confirm_reset {
+            ui.horizontal(|ui| {
+                ui.colored_label(ui::DANGER, "Erase all unlocks and stats?");
+                if ui.button("Erase").clicked() {
+                    let settings = save.settings.clone();
+                    *save = SaveData { settings, ..Default::default() };
+                    crate::run::save::store(save);
+                    menu.confirm_reset = false;
+                }
+                if ui.button("Cancel").clicked() {
+                    menu.confirm_reset = false;
+                }
+            });
+        } else if ui.button("Reset progress").clicked() {
+            menu.confirm_reset = true;
+        }
+    });
+    ui.add_space(12.0);
+    if ui::menu_button(ui, "Back").clicked() {
+        menu.screen = Screen::Main;
+    }
+}
+
+fn multiplayer_screen(ui: &mut egui::Ui, menu: &mut MenuState, action: &mut Option<Action>) {
+    ui.horizontal(|ui| {
+        ui.add_space(ui.available_width() / 2.0 - 140.0);
+        ui.label("Name");
+        ui.add(egui::TextEdit::singleline(&mut menu.name).desired_width(210.0).char_limit(32));
+    });
+    ui.add_space(8.0);
+    ui.label(egui::RichText::new("Sandbox worlds: paint and dig freely, alone or together.").color(ui::TEXT_DIM));
+    ui.add_space(8.0);
+    if ui::menu_button(ui, "Host Game").clicked() {
         menu.screen = Screen::Host;
     }
-    if big_button(ui, "Join Game") {
+    if ui::menu_button(ui, "Join Game").clicked() {
         menu.screen = Screen::Join;
     }
-    if big_button(ui, "Singleplayer") {
+    if ui::menu_button(ui, "Sandbox (offline)").clicked() {
         *action = Some(Action::Singleplayer);
     }
-    ui.add_space(16.0);
-    if big_button(ui, "Quit") {
-        *action = Some(Action::Quit);
+    ui.add_space(12.0);
+    if ui::menu_button(ui, "Back").clicked() {
+        menu.screen = Screen::Main;
     }
 }
 
@@ -340,7 +582,7 @@ fn host_screen(ui: &mut egui::Ui, menu: &mut MenuState, steam_ok: bool, action: 
         });
     }
     if big_button(ui, "Back") {
-        menu.screen = Screen::Main;
+        menu.screen = Screen::Multiplayer;
     }
 }
 
@@ -427,7 +669,7 @@ fn join_screen(
     }
     ui.add_space(8.0);
     if big_button(ui, "Back") {
-        menu.screen = Screen::Main;
+        menu.screen = Screen::Multiplayer;
     }
 }
 
@@ -447,8 +689,8 @@ fn run_action(
     };
     match action {
         Action::NewRun => {
-            let seed = menu.seed.trim().parse().unwrap_or_else(|_| crate::run::random_seed());
-            crate::run::start_run(commands, seed, Default::default());
+            let seed = menu.run_seed.trim().parse().unwrap_or_else(|_| crate::run::random_seed());
+            crate::run::start_run(commands, seed, menu.loadout);
         }
         Action::Quit => {
             exit.write(AppExit::Success);
@@ -593,7 +835,7 @@ pub fn connecting_ui(
     session: Option<Res<Session>>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
-    let mut root = screen_ui(ctx);
+    let mut root = ui::screen_ui(ctx);
     egui::CentralPanel::default().show(&mut root, |ui| {
         ui.vertical_centered(|ui| {
             ui.add_space(ui.available_height() / 2.0 - 60.0);

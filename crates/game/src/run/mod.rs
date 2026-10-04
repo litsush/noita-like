@@ -322,6 +322,18 @@ fn on_exit_run(mut commands: Commands, mut time: ResMut<Time<Virtual>>) {
     time.set_relative_speed(1.0);
 }
 
+/// Only the area around the player is simulated (like Noita); the rest of
+/// the planet waits, keeping its pending changes.
+fn update_sim_region(mut session: ResMut<Session>, player: Res<player::RunPlayer>) {
+    if let Some(world) = &mut session.world {
+        let p = player.body.pos;
+        world.set_active_region(Some(&[(p.x as i32, p.y as i32)]), SIM_RADIUS_CHUNKS);
+    }
+}
+
+/// Chunks simulated around the player in each direction (64 cells each).
+const SIM_RADIUS_CHUNKS: usize = 4;
+
 /// Layer banners, depth records and depth achievements.
 fn track_depth(
     mut run: ResMut<Run>,
@@ -472,6 +484,7 @@ impl Plugin for RunPlugin {
                 Update,
                 (
                     hud::toggle_pause,
+                    update_sim_region,
                     input::read_input.run_if(not(resource_exists::<input::Autoplay>)),
                     input::bot_input.run_if(resource_exists::<input::Autoplay>),
                     player::player_move,

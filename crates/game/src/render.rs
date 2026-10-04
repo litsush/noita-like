@@ -31,6 +31,8 @@ pub struct WorldTiles {
     tiles_x: usize,
     handles: Vec<Handle<Image>>,
     frame: u32,
+    /// Chunks that changed while off screen; shaded once they're visible.
+    pending: std::collections::HashSet<(usize, usize)>,
 }
 
 /// Whether egui is under the mouse, so clicks on UI don't dig.
@@ -72,7 +74,7 @@ pub fn spawn_world_view(mut commands: Commands, session: Res<Session>, mut image
             handles.push(handle);
         }
     }
-    commands.insert_resource(WorldTiles { tiles_x, handles, frame: 0 });
+    commands.insert_resource(WorldTiles { tiles_x, handles, frame: 0, pending: Default::default() });
 
     if session.backdrop {
         spawn_surface_backdrop(&mut commands, world, &mut images);
@@ -133,21 +135,30 @@ pub fn upload_dirty_chunks(
     let Some(world) = &mut session.world else { return };
     tiles.frame = tiles.frame.wrapping_add(1);
     let frame = tiles.frame;
-    let mut dirty = world.take_render_dirty();
+    let tiles = &mut *tiles;
+    tiles.pending.extend(world.take_render_dirty());
 
+    // Only shade what's on screen (plus a margin); the rest waits.
+    let (tf, projection) = *camera;
+    let scale = match projection {
+        Projection::Orthographic(o) => o.scale,
+        _ => 1.0,
+    };
+    let half = Vec2::new(window.width(), window.height()) * scale / 2.0 + 16.0;
+    let cs = CHUNK_SIZE as f32;
+    let (cx0, cx1) = ((tf.translation.x - half.x) / cs, (tf.translation.x + half.x) / cs);
+    let (cy0, cy1) = ((-tf.translation.y - half.y) / cs, (-tf.translation.y + half.y) / cs);
+    let clamp = |v: f32, n: usize| (v.max(0.0) as usize).min(n - 1);
+    let (cx0, cx1) = (clamp(cx0, world.chunks_x()), clamp(cx1, world.chunks_x()));
+    let (cy0, cy1) = (clamp(cy0, world.chunks_y()), clamp(cy1, world.chunks_y()));
+    let visible = |&(cx, cy): &(usize, usize)| cx >= cx0 && cx <= cx1 && cy >= cy0 && cy <= cy1;
+    let mut dirty: Vec<(usize, usize)> = tiles.pending.iter().copied().filter(visible).collect();
+    for c in &dirty {
+        tiles.pending.remove(c);
+    }
     if frame.is_multiple_of(ANIMATE_EVERY) {
-        let (tf, projection) = *camera;
-        let scale = match projection {
-            Projection::Orthographic(o) => o.scale,
-            _ => 1.0,
-        };
-        let half = Vec2::new(window.width(), window.height()) * scale / 2.0 + 8.0;
-        let cs = CHUNK_SIZE as f32;
-        let (cx0, cx1) = ((tf.translation.x - half.x) / cs, (tf.translation.x + half.x) / cs);
-        let (cy0, cy1) = ((-tf.translation.y - half.y) / cs, (-tf.translation.y + half.y) / cs);
-        let clamp = |v: f32, n: usize| (v.max(0.0) as usize).min(n - 1);
-        for cy in clamp(cy0, world.chunks_y())..=clamp(cy1, world.chunks_y()) {
-            for cx in clamp(cx0, world.chunks_x())..=clamp(cx1, world.chunks_x()) {
+        for cy in cy0..=cy1 {
+            for cx in cx0..=cx1 {
                 if world.chunk_animates(cx, cy) {
                     dirty.push((cx, cy));
                 }

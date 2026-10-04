@@ -93,6 +93,8 @@ pub struct World {
     events: Vec<SimEvent>,
     particles: Vec<Particle>,
     pending_explosions: Vec<(i32, i32, i32)>,
+    /// Chunk rectangle (inclusive) to simulate; `None` simulates everything.
+    region: Option<(usize, usize, usize, usize)>,
 }
 
 const NEIGHBOURS: [(i32, i32); 8] = [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)];
@@ -121,7 +123,32 @@ impl World {
             events: Vec::new(),
             particles: Vec::new(),
             pending_explosions: Vec::new(),
+            region: None,
         }
+    }
+
+    /// Limits simulation to chunks within `radius` chunks of the given cells
+    /// (e.g. around each player). Chunks outside keep their pending wake-ups
+    /// and resume when the region reaches them. `None` simulates everything.
+    pub fn set_active_region(&mut self, centers: Option<&[(i32, i32)]>, radius: usize) {
+        self.region = centers.and_then(|c| {
+            let cs = CHUNK_SIZE as i32;
+            let xs = c.iter().map(|p| (p.0 / cs).clamp(0, self.chunks_x as i32 - 1) as usize);
+            let ys = c.iter().map(|p| (p.1 / cs).clamp(0, self.chunks_y as i32 - 1) as usize);
+            let (x0, x1) = (xs.clone().min()?, xs.max()?);
+            let (y0, y1) = (ys.clone().min()?, ys.max()?);
+            Some((
+                x0.saturating_sub(radius),
+                y0.saturating_sub(radius),
+                (x1 + radius).min(self.chunks_x - 1),
+                (y1 + radius).min(self.chunks_y - 1),
+            ))
+        });
+    }
+
+    #[inline]
+    fn in_region(&self, cx: usize, cy: usize) -> bool {
+        self.region.is_none_or(|(x0, y0, x1, y1)| cx >= x0 && cx <= x1 && cy >= y0 && cy <= y1)
     }
 
     pub fn width(&self) -> usize {
@@ -350,13 +377,20 @@ impl World {
     pub fn step(&mut self) {
         self.tick += 1;
         self.clock = self.clock.wrapping_add(1);
-        for c in &mut self.chunks {
-            c.active = std::mem::take(&mut c.active_next);
+        for i in 0..self.chunks.len() {
+            let (cx, cy) = (i % self.chunks_x, i / self.chunks_x);
+            let inside = self.in_region(cx, cy);
+            let c = &mut self.chunks[i];
+            c.active = inside && std::mem::take(&mut c.active_next);
         }
+        let (y_top, y_bottom) = match self.region {
+            Some((_, y0, _, y1)) => (y0 * CHUNK_SIZE, (y1 + 1) * CHUNK_SIZE),
+            None => (0, self.height),
+        };
 
         // Bottom-up so falling cells move once per tick; alternate horizontal
         // direction per row and tick to avoid a directional bias.
-        for y in (0..self.height as i32).rev() {
+        for y in (y_top as i32..y_bottom as i32).rev() {
             let cy = y as usize / CHUNK_SIZE;
             let ltr = (self.tick as i32 + y) & 1 == 0;
             for i in 0..self.chunks_x {
@@ -506,8 +540,11 @@ impl World {
             self.cells[i].life = cell.life;
             self.touch(x, y);
         } else if !self.rng.chance(110) {
-            // Heavy gas drifts lazily; stay awake so pockets keep settling.
-            self.touch(x, y);
+            // Heavy gas drifts lazily. It only keeps its chunk awake while
+            // something actually moves, so settled pockets go to sleep.
+            if self.material(x, y - 1).is_open() && self.material(x, y - 1) != Material::Gas {
+                self.touch(x, y);
+            }
             return;
         }
 
@@ -764,6 +801,9 @@ impl World {
     fn random_ticks(&mut self) {
         for cy in 0..self.chunks_y {
             for cx in 0..self.chunks_x {
+                if !self.in_region(cx, cy) {
+                    continue;
+                }
                 for _ in 0..RANDOM_TICKS_PER_CHUNK {
                     let r = self.rng.next_u64();
                     let x = (cx * CHUNK_SIZE) as i32 + (r & 63) as i32;
@@ -1325,6 +1365,31 @@ mod tests {
         run(&mut w, 200);
         assert!(w.particles().is_empty());
         assert_eq!(count(&w, Material::Sand), 1);
+    }
+
+    #[test]
+    fn region_limits_simulation_but_keeps_wakeups() {
+        let mut w = World::new(64, 512, 20);
+        w.set(10, 10, Material::Sand);
+        w.set(10, 400, Material::Sand);
+        w.set_active_region(Some(&[(10, 10)]), 1);
+        run(&mut w, 100);
+        assert_eq!(w.material(10, 400), Material::Sand, "far sand is frozen");
+        assert_ne!(w.material(10, 10), Material::Sand, "near sand fell");
+        w.set_active_region(Some(&[(10, 400)]), 1);
+        run(&mut w, 200);
+        assert_eq!(w.material(10, 511), Material::Sand, "far sand resumes when the region arrives");
+    }
+
+    #[test]
+    fn settled_gas_lets_chunks_sleep() {
+        let mut w = World::new(64, 64, 21);
+        fill(&mut w, 0, 0, 63, 63, Material::Stone);
+        fill(&mut w, 10, 10, 40, 30, Material::Gas);
+        run(&mut w, 200);
+        w.take_net_dirty();
+        run(&mut w, 5);
+        assert!(w.take_net_dirty().is_empty(), "sealed gas pocket should sleep");
     }
 
     #[test]

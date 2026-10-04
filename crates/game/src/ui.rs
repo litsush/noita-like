@@ -21,6 +21,8 @@ pub const GOOD: egui::Color32 = egui::Color32::from_rgb(120, 220, 140);
 #[derive(Resource, Clone, Copy)]
 pub struct UiIcons {
     pub items: egui::TextureId,
+    /// The 8-frame core animation strip.
+    pub core: egui::TextureId,
 }
 
 /// Sets up fonts, theme and icon textures once.
@@ -29,10 +31,11 @@ pub fn setup_ui(mut contexts: EguiContexts, assets: Res<GameAssets>, mut command
         return Ok(());
     }
     let items = contexts.add_image(EguiTextureHandle::Strong(assets.items.image.clone()));
+    let core = contexts.add_image(EguiTextureHandle::Strong(assets.core.image.clone()));
     let ctx = contexts.ctx_mut()?;
     install_font(ctx);
     ctx.all_styles_mut(apply_theme);
-    commands.insert_resource(UiIcons { items });
+    commands.insert_resource(UiIcons { items, core });
     *done = true;
     Ok(())
 }
@@ -122,9 +125,50 @@ pub fn paint_icon(painter: &egui::Painter, icons: &UiIcons, index: usize, rect: 
     painter.image(icons.items, rect, icon_uv(index), tint);
 }
 
-/// A big menu button with consistent sizing.
+/// A big menu button with consistent sizing. Hover and click sounds are
+/// played by [`ui_sounds`].
 pub fn menu_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
-    ui.add_sized([280.0, 40.0], egui::Button::new(egui::RichText::new(text).size(16.0)))
+    let r = ui.add_sized([300.0, 40.0], egui::Button::new(egui::RichText::new(text).size(16.0)));
+    if r.hovered() {
+        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("ui_hovered"), Some(r.id)));
+    }
+    if r.clicked() {
+        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("ui_clicked"), true));
+    }
+    r
+}
+
+/// Plays hover/click sounds for [`menu_button`]s, and draws the fade-in
+/// that smooths every screen change.
+pub fn ui_sounds_and_fade(
+    mut contexts: EguiContexts,
+    mut sfx: MessageWriter<crate::audio::Sfx>,
+    mut last: Local<Option<egui::Id>>,
+    state: Res<State<crate::AppState>>,
+    mut fade: Local<f32>,
+    time: Res<Time<Real>>,
+) -> Result {
+    let ctx = contexts.ctx_mut()?;
+    let (hovered, clicked) = ctx.data_mut(|d| {
+        (d.remove_temp::<Option<egui::Id>>(egui::Id::new("ui_hovered")).flatten(), d.remove_temp::<bool>(egui::Id::new("ui_clicked")))
+    });
+    if hovered.is_some() && hovered != *last {
+        sfx.write(crate::audio::Sfx::ui("ui_hover"));
+    }
+    *last = hovered;
+    if clicked == Some(true) {
+        sfx.write(crate::audio::Sfx::ui("ui_click"));
+    }
+
+    if state.is_changed() {
+        *fade = 1.0;
+    }
+    if *fade > 0.0 {
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("fade")));
+        painter.rect_filled(ctx.viewport_rect(), 0.0, egui::Color32::from_black_alpha((*fade * 255.0) as u8));
+        *fade = (*fade - time.delta_secs() * 2.5).max(0.0);
+    }
+    Ok(())
 }
 
 /// A framed panel in the theme's style.
