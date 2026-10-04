@@ -1,10 +1,10 @@
-//! The miner: movement, digging, ropes, torches and active items.
+//! The apprentice: movement, the dig spell, light orbs and spells.
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use sbct_sim::{Kind, Material, World};
 
-use super::entities::{Bomb, Projectile, ProjectileKind, Sun};
+use super::entities::{Bomb, LightOrb, Projectile, ProjectileKind, ShardPickup, Sun};
 use super::input::PlayerInput;
 use super::items::{Active, ItemId};
 use super::physics::{Body, SolidFn, default_solid, to_world};
@@ -55,7 +55,8 @@ pub struct RunPlayer {
     dash_dir: f32,
     climb_stamina: f32,
     pub climbing: bool,
-    pub on_rope: bool,
+    /// The dig beam this frame: staff tip to target.
+    pub beam: Option<(Vec2, Vec2)>,
     coyote: f32,
     jump_buffer: f32,
     jump_cut: bool,
@@ -80,6 +81,11 @@ impl RunPlayer {
         } else {
             default_solid
         }
+    }
+
+    /// The staff's glowing tip when aiming in `dir`.
+    pub fn staff_tip(&self, dir: Vec2) -> Vec2 {
+        self.body.center() + Vec2::new(0.0, -2.0) + dir.normalize_or_zero() * 7.0
     }
 
     /// Where held items and projectiles come from.
@@ -129,7 +135,7 @@ pub fn spawn_player(
         dash_dir: 1.0,
         climb_stamina: CLIMB_STAMINA,
         climbing: false,
-        on_rope: false,
+        beam: None,
         coyote: 0.0,
         jump_buffer: 0.0,
         jump_cut: false,
@@ -164,14 +170,6 @@ fn dev_start(world: &World, layer: usize) -> Option<Vec2> {
             .find(|&x| clear(x, y))
             .map(|x| Vec2::new(x as f32 + 0.5, y as f32 + 1.0))
     })
-}
-
-fn on_rope(world: &World, body: &Body) -> bool {
-    let x = body.pos.x.floor() as i32;
-    let c = body.center();
-    [c.y, c.y + 3.0, c.y - 3.0]
-        .iter()
-        .any(|&y| world.material(x, y.floor() as i32).props().climbable)
 }
 
 /// Footstep sound family for the material underfoot.
@@ -255,7 +253,6 @@ pub fn player_move(
     let submersion = p.body.submersion(world);
     let boots = run.has(ItemId::HeavyBoots);
     let swimming = submersion > 0.4 && !boots;
-    p.on_rope = on_rope(world, &p.body);
     p.climbing = false;
 
     if dash_pressed && p.dash_cd <= 0.0 {
@@ -275,10 +272,6 @@ pub fn player_move(
     if p.dash_time > 0.0 {
         p.dash_time -= dt;
         p.body.vel = Vec2::new(p.dash_dir * DASH_SPEED, 0.0);
-    } else if p.on_rope && (up || down || !p.body.on_ground) && !jump_pressed {
-        p.climbing = true;
-        p.body.vel.x = dir as f32 * 30.0;
-        p.body.vel.y = (down as i32 - up as i32) as f32 * ROPE_SPEED;
     } else {
         let speed = if boots && submersion > 0.2 {
             28.0
@@ -325,6 +318,7 @@ pub fn player_move(
                 sfx.write(Sfx::at("jump", p.body.pos));
             } else if p.body.wall != 0 {
                 p.body.vel = Vec2::new(-p.body.wall as f32 * 120.0, -JUMP_SPEED * 0.9);
+                p.climb_stamina = (p.climb_stamina + CLIMB_STAMINA * 0.5).min(CLIMB_STAMINA);
                 p.jump_buffer = 0.0;
                 p.jump_cut = false;
                 sfx.write(Sfx::at("jump", p.body.pos));
@@ -335,10 +329,6 @@ pub fn player_move(
             p.body.vel.y *= 0.5;
             p.jump_cut = true;
         }
-    }
-    if p.on_rope && jump_pressed {
-        p.body.vel.y = -JUMP_SPEED * 0.8;
-        p.body.vel.x = dir as f32 * 90.0;
     }
 
     let step_up = if p.body.on_ground { 3 } else { 0 };
@@ -430,14 +420,63 @@ fn aim(player: &RunPlayer, cursor: Vec2) -> Vec2 {
 
 fn dig_sound(m: Material) -> &'static str {
     match m {
-        Material::Crystal | Material::Ice | Material::Frost | Material::Obsidian => "dig_crystal",
-        Material::Ferrite | Material::Explosive => "dig_metal",
-        Material::Stone | Material::Basalt | Material::Brick | Material::Ore | Material::Vent => "dig_hard",
-        _ => "dig_soft",
+        Material::Crystal | Material::Ice | Material::Frost | Material::Obsidian | Material::ShardVein => {
+            "dig_beam_crystal"
+        }
+        Material::Ferrite | Material::Explosive => "dig_beam_metal",
+        Material::Stone | Material::Basalt | Material::Brick | Material::Vent => "dig_beam_hard",
+        _ => "dig_beam_soft",
+    }
+}
+
+/// The crackling beam from the staff to the dig target.
+#[derive(Component)]
+pub struct DigBeam;
+
+pub fn draw_dig_beam(
+    mut commands: Commands,
+    player: Res<RunPlayer>,
+    mut beam: Query<(&mut Transform, &mut Sprite, &mut Visibility), With<DigBeam>>,
+    time: Res<Time<Real>>,
+    mut bursts: MessageWriter<Burst>,
+) {
+    let Ok((mut tf, mut sprite, mut vis)) = beam.single_mut() else {
+        commands.spawn((
+            DigBeam,
+            InGameEntity,
+            Sprite::from_color(Color::WHITE, Vec2::ONE),
+            Transform::default(),
+            Visibility::Hidden,
+        ));
+        return;
+    };
+    let Some((from, to)) = player.beam else {
+        *vis = Visibility::Hidden;
+        return;
+    };
+    let d = to - from;
+    let t = time.elapsed_secs();
+    let flicker = 0.75 + 0.25 * (t * 40.0).sin().abs();
+    *vis = Visibility::Visible;
+    sprite.custom_size = Some(Vec2::new(d.length().max(1.0), 1.0 + flicker));
+    sprite.color = Color::srgba(0.85, 0.75, 1.0, 0.85 * flicker);
+    let mid = from + d / 2.0;
+    tf.translation = Vec3::new(mid.x, -mid.y, 5.6);
+    tf.rotation = Quat::from_rotation_z(-d.to_angle());
+    if (t * 30.0).fract() < 0.5 {
+        bursts.write(
+            Burst::new(to, Color::srgb(0.8, 0.7, 1.0))
+                .count(1)
+                .speed(25.0)
+                .gravity(0.0)
+                .life(0.25),
+        );
     }
 }
 
 pub fn player_dig(
+    mut commands: Commands,
+    assets: Res<GameAssets>,
     input: Res<PlayerInput>,
     time: Res<Time>,
     mut player: ResMut<RunPlayer>,
@@ -451,6 +490,7 @@ pub fn player_dig(
     if let Some((d, t)) = player.dig_anim {
         player.dig_anim = (t > 0.0).then_some((d, t - dt));
     }
+    player.beam = None;
     if !run.is_playing() || paused.0 || !input.dig || player.stun > 0.0 {
         return;
     }
@@ -477,6 +517,7 @@ pub fn player_dig(
     };
     let dir = (target - player.body.center()).normalize_or_zero();
     player.dig_anim = Some((dir, 0.25));
+    player.beam = Some((player.staff_tip(dir), target));
     if dir.x.abs() > 0.2 {
         player.facing = dir.x.signum();
     }
@@ -487,20 +528,14 @@ pub fn player_dig(
     }
     player.dig_timer = DIG_INTERVAL;
     let dug = world.dig_cells(&cells, power);
+    let mut shards = Vec::new();
     let Some(&(_, _, first)) = dug.first() else { return };
     run.influence(target);
 
     for &(x, y, m) in &dug {
         run.stats.cells_dug += 1;
         if m.props().value > 0 {
-            run.ore += m.props().value as u32;
-            sfx.write(Sfx::at("pickup", target).volume(0.5).pitch(0.15));
-            bursts.write(
-                Burst::new(target, Color::srgb(1.0, 0.85, 0.3))
-                    .count(2)
-                    .speed(20.0)
-                    .gravity(-20.0),
-            );
+            shards.push(Vec2::new(x as f32 + 0.5, y as f32 + 0.5));
             continue;
         }
         let rocky = matches!(
@@ -527,6 +562,13 @@ pub fn player_dig(
             .life(0.5),
     );
     sfx.write(Sfx::at(dig_sound(first), target).pitch(0.15));
+    if !shards.is_empty() {
+        sfx.write(Sfx::at("shard_vein", target).pitch(0.1));
+    }
+    for at in shards {
+        let v = Vec2::new(run.rng.next_f32() - 0.5, -run.rng.next_f32()) * 60.0;
+        commands.spawn(ShardPickup::bundle(at, v, 1, &assets));
+    }
 }
 
 pub fn player_actions(
@@ -566,21 +608,15 @@ pub fn player_actions(
     let hand = player.hand();
     let toward = (cursor - hand).normalize_or(Vec2::new(player.facing, 0.0));
 
-    if input.rope && run.ropes > 0 {
-        run.ropes -= 1;
-        throw_rope(world, &player);
-        sfx.write(Sfx::at("place_rope", player.body.pos));
+    if input.toggle_light {
+        run.staff_dimmed = !run.staff_dimmed;
+        sfx.write(Sfx::ui("ui_toggle"));
     }
 
-    if input.torch && run.torches > 0 {
-        run.torches -= 1;
-        commands.spawn(Projectile::bundle(
-            ProjectileKind::Torch,
-            hand,
-            toward * 170.0 + Vec2::Y * -40.0,
-            &assets,
-        ));
-        sfx.write(Sfx::at("throw", hand));
+    if input.light_orb && run.light_charges > 0 {
+        run.light_charges -= 1;
+        commands.spawn(LightOrb::bundle(hand, toward * 130.0, &assets));
+        sfx.write(Sfx::at("cast_light", hand));
     }
 
     let Some(item) = run.selected_active() else { return };
@@ -650,34 +686,16 @@ pub fn player_actions(
                 }
                 ItemId::BlastCharges => {
                     commands.spawn(Bomb::bundle(target, &assets));
-                    sfx.write(Sfx::at("place_rope", target).pitch(0.3));
+                    sfx.write(Sfx::at("cast_alch", target));
                 }
                 ItemId::PocketSun => {
                     commands.spawn(Sun::bundle(target, &assets));
-                    sfx.write(Sfx::at("torch_ignite", target));
+                    sfx.write(Sfx::at("cast_pyro", target));
                 }
                 _ => {}
             }
         }
         None => {}
-    }
-}
-
-/// A rope anchors to the ceiling above (or 48 cells up) and hangs to the floor.
-fn throw_rope(world: &mut World, player: &RunPlayer) {
-    let x = player.body.pos.x.floor() as i32;
-    let head = (player.body.pos.y - HEIGHT) as i32;
-    let mut top = head;
-    for y in (head - 48..head).rev() {
-        if !world.material(x, y).is_open() {
-            break;
-        }
-        top = y;
-    }
-    let mut y = top;
-    while y < top + 72 && world.material(x, y).is_open() {
-        world.set(x, y, Material::Rope);
-        y += 1;
     }
 }
 

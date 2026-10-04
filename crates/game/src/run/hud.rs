@@ -157,9 +157,8 @@ pub fn run_hud(
                 let b = &save.bindings;
                 ui.horizontal(|ui| {
                     for (index, count, key) in [
-                        (icon::ROPE, run.ropes, b.hint(Action::Rope)),
-                        (icon::TORCH, run.torches, b.hint(Action::Torch)),
-                        (icon::ORE, run.ore, String::new()),
+                        (icon::TORCH, run.light_charges as u32, b.hint(Action::LightOrb)),
+                        (icon::ORE, run.shards, String::new()),
                     ] {
                         ui::icon(ui, &icons, index, 24.0);
                         ui.label(egui::RichText::new(format!("{count}")).size(16.0));
@@ -593,7 +592,7 @@ fn summary(
                                 ),
                             ),
                             ("Time", ui::clock(run.elapsed)),
-                            ("Ore collected", run.ore.to_string()),
+                            ("Shards gathered", run.shards.to_string()),
                             ("Cells dug", run.stats.cells_dug.to_string()),
                             ("Seed", run.seed.to_string()),
                         ];

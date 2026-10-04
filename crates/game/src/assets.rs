@@ -79,11 +79,19 @@ pub mod player_anim {
 }
 
 pub mod props_frame {
-    pub const TORCH: usize = 0;
+    pub const LIGHT_ORB: usize = 0;
     pub const CHEST_CLOSED: usize = 4;
     pub const CHEST_OPEN: usize = 5;
     pub const ALTAR: usize = 6;
     pub const SHRINE: usize = 7;
+    pub const REMAINS: usize = 8;
+    pub const REMAINS_SEARCHED: usize = 9;
+    pub const JOURNAL: usize = 10;
+    pub const MIMIC: usize = 11;
+    pub const MIMIC_OPEN: usize = 12;
+    pub const MIMIC_BITE: usize = 13;
+    pub const SHARD: usize = 14;
+    pub const RUNE_STONE: usize = 15;
 }
 
 pub fn load_assets(
@@ -98,7 +106,7 @@ pub fn load_assets(
     let assets = GameAssets {
         player: sheet("sprites/player.png", UVec2::splat(16), 8, 10),
         items: sheet("sprites/items.png", UVec2::splat(16), 8, 5),
-        props: sheet("sprites/props.png", UVec2::new(16, 24), 8, 1),
+        props: sheet("sprites/props.png", UVec2::new(16, 24), 8, 2),
         core: sheet("sprites/core.png", UVec2::splat(48), 8, 1),
         creatures: sheet("sprites/creatures.png", UVec2::splat(16), 4, 3),
         backgrounds: (0..5)

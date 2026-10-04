@@ -114,9 +114,14 @@ pub struct Run {
     pub cause: Option<DamageKind>,
     pub layer: Layer,
     pub max_depth: i32,
-    pub ore: u32,
-    pub ropes: u32,
-    pub torches: u32,
+    /// Aether shards: the currency for shrines.
+    pub shards: u32,
+    /// Light orb charges and the recharge timer for the next one.
+    pub light_charges: u8,
+    pub light_max: u8,
+    pub light_timer: f32,
+    /// The staff's glow is dimmed (hides you from lightseekers).
+    pub staff_dimmed: bool,
     pub items: Vec<ItemId>,
     /// Index into the player's active items.
     pub selected: usize,
@@ -156,9 +161,11 @@ impl Run {
             cause: None,
             layer: Layer::Crust,
             max_depth: 0,
-            ore: 0,
-            ropes: 4,
-            torches: 5,
+            shards: 0,
+            light_charges: 3,
+            light_max: 3,
+            light_timer: 0.0,
+            staff_dimmed: false,
             items: Vec::new(),
             selected: 0,
             charges: HashMap::new(),
@@ -183,8 +190,8 @@ impl Run {
                 run.give(pick);
             }
             Loadout::Excavator => {
-                run.ropes = 8;
-                run.torches = 8;
+                run.light_max = 4;
+                run.light_charges = 4;
                 run.give(ItemId::CrumblingPick);
                 run.give(ItemId::BlastCharges);
             }
@@ -260,6 +267,11 @@ impl Run {
         self.influence
             .iter()
             .any(|(p, t)| p.distance(at) < INFLUENCE_RADIUS && self.elapsed - t <= INFLUENCE_SECS)
+    }
+
+    /// Light orbs set flammables alight once you know any Pyromancy.
+    pub fn orbs_ignite(&self) -> bool {
+        false
     }
 
     pub fn is_playing(&self) -> bool {
@@ -540,25 +552,36 @@ impl Plugin for RunPlugin {
             .add_systems(
                 Update,
                 (
-                    hud::toggle_pause,
-                    update_sim_region,
-                    input::read_input.run_if(not(resource_exists::<input::Autoplay>)),
-                    input::bot_input.run_if(resource_exists::<input::Autoplay>),
-                    player::player_move,
-                    player::player_dig,
-                    player::player_actions,
-                    entities::update_charges,
-                    entities::interact,
-                    entities::update_projectiles,
-                    entities::update_bombs,
-                    entities::update_suns,
-                    entities::update_torches,
-                    tracking::process_sim_events,
-                    hazards::environment,
-                    creatures::update_creatures,
-                    track_depth,
-                    update_phase,
-                    apply_time_scale,
+                    (
+                        hud::toggle_pause,
+                        update_sim_region,
+                        input::read_input.run_if(not(resource_exists::<input::Autoplay>)),
+                        input::bot_input.run_if(resource_exists::<input::Autoplay>),
+                        player::player_move,
+                        player::player_dig,
+                        player::player_actions,
+                    )
+                        .chain(),
+                    (
+                        entities::update_charges,
+                        entities::update_light_charges,
+                        entities::interact,
+                        entities::update_projectiles,
+                        entities::update_bombs,
+                        entities::update_suns,
+                        entities::update_light_orbs,
+                        entities::update_shards,
+                    )
+                        .chain(),
+                    (
+                        tracking::process_sim_events,
+                        hazards::environment,
+                        creatures::update_creatures,
+                        track_depth,
+                        update_phase,
+                        apply_time_scale,
+                    )
+                        .chain(),
                 )
                     .chain()
                     .run_if(in_state(AppState::Run).and_then(running)),
@@ -570,6 +593,7 @@ impl Plugin for RunPlugin {
                     entities::animate_props,
                     creatures::animate_creatures,
                     player::follow_camera,
+                    player::draw_dig_beam,
                     smart_dig::highlight_targets,
                     crate::render::upload_dirty_chunks,
                     crate::render::draw_sim_particles,

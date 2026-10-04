@@ -105,16 +105,17 @@ pub fn cell_rgba(cell: Cell, x: i32, y: i32, frame: u32) -> [u8; 4] {
                 b = 150;
             }
         }
-        Material::Ore => {
-            // Gold flecks.
-            if cell.shade > 215 {
-                r = 245;
-                g = 200;
-                b = 70;
-            } else if cell.shade > 200 {
-                r = 210;
-                g = 160;
-                b = 60;
+        Material::ShardVein => {
+            // Glowing aether flecks that pulse slowly.
+            let glint = (wave(t * 0.05 + cell.shade as f32) * 30.0) as i32;
+            if cell.shade > 205 {
+                r = 120 + glint / 2;
+                g = 225 + glint / 4;
+                b = 255;
+            } else if cell.shade > 185 {
+                r = 70;
+                g = 160 + glint / 3;
+                b = 200;
             }
         }
         Material::Ferrite => {
@@ -129,13 +130,6 @@ pub fn cell_rgba(cell: Cell, x: i32, y: i32, frame: u32) -> [u8; 4] {
                 r -= 30;
                 g -= 26;
                 b -= 26;
-            }
-        }
-        Material::Rope => {
-            if y.rem_euclid(3) == 0 {
-                r -= 30;
-                g -= 26;
-                b -= 20;
             }
         }
         Material::Ice => a = 235,

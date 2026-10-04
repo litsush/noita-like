@@ -19,8 +19,8 @@ pub enum Action {
     NextItem,
     PrevItem,
     ToggleDigMode,
-    Rope,
-    Torch,
+    LightOrb,
+    ToggleStaffLight,
     Interact,
     Pause,
 }
@@ -37,8 +37,8 @@ impl Action {
         Action::NextItem,
         Action::PrevItem,
         Action::ToggleDigMode,
-        Action::Rope,
-        Action::Torch,
+        Action::LightOrb,
+        Action::ToggleStaffLight,
         Action::Interact,
         Action::Pause,
     ];
@@ -56,8 +56,8 @@ impl Action {
             Action::NextItem => "next_item",
             Action::PrevItem => "prev_item",
             Action::ToggleDigMode => "toggle_dig_mode",
-            Action::Rope => "rope",
-            Action::Torch => "torch",
+            Action::LightOrb => "light_orb",
+            Action::ToggleStaffLight => "toggle_staff_light",
             Action::Interact => "interact",
             Action::Pause => "pause",
         }
@@ -70,13 +70,13 @@ impl Action {
             Action::Jump => "Jump / climb",
             Action::Down => "Down / dig down",
             Action::Dash => "Dash",
-            Action::Dig => "Dig",
-            Action::UseItem => "Use item",
+            Action::Dig => "Dig spell",
+            Action::UseItem => "Cast selected spell",
             Action::NextItem => "Next item",
             Action::PrevItem => "Previous item",
             Action::ToggleDigMode => "Toggle smart dig",
-            Action::Rope => "Throw rope",
-            Action::Torch => "Throw torch",
+            Action::LightOrb => "Cast light orb",
+            Action::ToggleStaffLight => "Dim / light staff",
             Action::Interact => "Interact",
             Action::Pause => "Pause menu",
         }
@@ -90,8 +90,8 @@ impl Action {
             | Action::NextItem
             | Action::PrevItem
             | Action::ToggleDigMode
-            | Action::Rope
-            | Action::Torch => "Digging & items",
+            | Action::LightOrb
+            | Action::ToggleStaffLight => "Magic & digging",
             Action::Interact | Action::Pause => "Interface",
         }
     }
@@ -320,8 +320,8 @@ impl Default for Bindings {
             (Action::NextItem, d(Some(Key(KeyE)), None)),
             (Action::PrevItem, d(Some(Key(KeyQ)), None)),
             (Action::ToggleDigMode, d(Some(Key(Tab)), None)),
-            (Action::Rope, d(Some(Key(KeyR)), None)),
-            (Action::Torch, d(Some(Key(KeyT)), None)),
+            (Action::LightOrb, d(Some(Key(KeyT)), None)),
+            (Action::ToggleStaffLight, d(Some(Key(KeyL)), None)),
             (Action::Interact, d(Some(Key(KeyF)), None)),
             (Action::Pause, d(Some(Key(Escape)), None)),
         ]

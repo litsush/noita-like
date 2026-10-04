@@ -453,7 +453,7 @@ fn fill_pockets(g: &mut Grid, seed: u64) {
     }
 }
 
-/// Ore veins, crystals, fungus, vents, roots, unstable ceilings and fractures.
+/// Shard veins, crystals, fungus, vents, roots, unstable ceilings and fractures.
 fn decorate(g: &mut Grid, seed: u64, rng: &mut Rng, surface: &[i32]) {
     for y in 1..g.h - 1 {
         let layer = Layer::at_depth(y);
@@ -464,7 +464,7 @@ fn decorate(g: &mut Grid, seed: u64, rng: &mut Rng, surface: &[i32]) {
                 let ore = fbm(seed ^ 30, fx / 9.0, fy / 9.0, 2);
                 let rich = [0.80, 0.78, 0.76, 0.75, 0.9][layer.index()];
                 if ore > rich {
-                    g.set(x, y, Material::Ore);
+                    g.set(x, y, Material::ShardVein);
                     continue;
                 }
                 // Gravel ceilings over caves in the mantle: cave-ins waiting to happen.
@@ -666,7 +666,7 @@ fn flooded_ruin(g: &mut Grid, rng: &mut Rng, x: i32, y: i32, spawns: &mut Vec<Sp
     });
 }
 
-/// Horizontal timbered tunnel with explosive crates, a hanging rope and an altar.
+/// Horizontal timbered tunnel with explosive crates and an altar.
 fn abandoned_mine(g: &mut Grid, rng: &mut Rng, x: i32, y: i32, spawns: &mut Vec<Spawn>) {
     let (w, h) = (110, 18);
     g.fill_rect(x, y, w, h, Material::Empty);
@@ -679,10 +679,6 @@ fn abandoned_mine(g: &mut Grid, rng: &mut Rng, x: i32, y: i32, spawns: &mut Vec<
         let cx = x + 10 + (rng.next_u64() % (w as u64 - 30)) as i32;
         g.fill_rect(cx, y + h - 8, 6, 6, Material::Explosive);
     }
-    let rx = x + 20 + (rng.next_u8() % 60) as i32;
-    g.fill_rect(rx, y - 20, 1, 30, Material::Rope);
-    g.fill_rect(rx - 1, y - 20, 3, 20, Material::Empty);
-    g.fill_rect(rx, y - 20, 1, 30, Material::Rope);
     let altar_left = rng.coin();
     let ax = if altar_left { x + 8 } else { x + w - 9 };
     spawns.push(Spawn {
@@ -1037,7 +1033,7 @@ mod tests {
         assert!(has(Layer::DeepMantle, Material::Fungus));
         assert!(has(Layer::OuterCore, Material::Metal));
         assert!(has(Layer::Core, Material::CoreShell));
-        assert!(has(Layer::Crust, Material::Ore));
+        assert!(has(Layer::Crust, Material::ShardVein));
     }
 
     /// Everything but the core shell can be dug, so the core is reachable iff

@@ -42,8 +42,7 @@ pub enum Material {
     Ice,
     Metal,
     Explosive,
-    Rope,
-    Ore,
+    ShardVein,
     CoreShell,
     Spark,
     Basalt,
@@ -84,9 +83,7 @@ pub struct Props {
     pub light: [u8; 3],
     /// Chance out of 255 per random tick to spread into a free neighbour.
     pub growth: u8,
-    /// Players can climb it and pass through it.
-    pub climbable: bool,
-    /// Ore collected when dug.
+    /// Aether shards dropped when dug.
     pub value: u8,
 }
 
@@ -106,7 +103,6 @@ const BASE: Props = Props {
     explosive: 0,
     light: [0, 0, 0],
     growth: 0,
-    climbable: false,
     value: 0,
 };
 
@@ -244,13 +240,9 @@ static PROPS: [Props; Material::COUNT] = [
         ..solid("Explosive", [180, 46, 38], 20, 18)
     },
     Props {
-        flammability: 90,
-        climbable: true,
-        ..solid("Rope", [176, 142, 92], 18, 1)
-    },
-    Props {
         value: 1,
-        ..solid("Ore", [128, 112, 98], 30, 45)
+        light: [20, 90, 110],
+        ..solid("Shard Vein", [52, 58, 74], 16, 45)
     },
     Props {
         acid_resistant: true,
@@ -285,7 +277,7 @@ static PROPS: [Props; Material::COUNT] = [
 ];
 
 impl Material {
-    pub const COUNT: usize = 31;
+    pub const COUNT: usize = 30;
 
     /// Materials a sandbox player can place, in hotbar order.
     pub const PLACEABLE: [Material; 9] = [
@@ -322,7 +314,7 @@ impl Material {
     /// Whether a player collides with this material.
     #[inline]
     pub fn is_solid_for_player(self) -> bool {
-        matches!(self.kind(), Kind::Solid | Kind::Powder) && !self.props().climbable
+        matches!(self.kind(), Kind::Solid | Kind::Powder)
     }
 
     /// Whether flowing materials can occupy this cell (air, gas, fire, sparks).
@@ -372,6 +364,6 @@ mod tests {
     fn props_match_variants() {
         assert_eq!(Material::Frost.props().name, "Frost");
         assert_eq!(Material::CoreShell.props().hardness, INDESTRUCTIBLE);
-        assert!(Material::Rope.props().climbable && !Material::Rope.is_solid_for_player());
+        assert!(Material::ShardVein.props().value > 0 && Material::ShardVein.is_solid_for_player());
     }
 }

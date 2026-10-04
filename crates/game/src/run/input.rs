@@ -29,8 +29,8 @@ pub struct PlayerInput {
     /// Using the selected active item at `aim` (held / just pressed).
     pub use_held: bool,
     pub use_pressed: bool,
-    pub rope: bool,
-    pub torch: bool,
+    pub light_orb: bool,
+    pub toggle_light: bool,
     pub interact: bool,
     /// Cycle actives: +1 / -1.
     pub cycle: i32,
@@ -126,8 +126,8 @@ pub fn read_input(
         dig: gated(Action::Dig, held(Action::Dig)),
         use_held: gated(Action::UseItem, held(Action::UseItem)),
         use_pressed: gated(Action::UseItem, just(Action::UseItem)),
-        rope: just(Action::Rope),
-        torch: just(Action::Torch),
+        light_orb: just(Action::LightOrb),
+        toggle_light: just(Action::ToggleStaffLight),
         interact: just(Action::Interact),
         cycle: if just(Action::NextItem) || scroll < 0.0 {
             1
@@ -233,6 +233,6 @@ pub fn bot_input(
     } else {
         0
     };
-    i.torch = run.torches > 2 && (bot.timer * 0.05).fract() < dt * 0.05 && run.layer.index() > 0;
+    i.light_orb = run.light_charges > 1 && (bot.timer * 0.05).fract() < dt * 0.05 && run.layer.index() > 0;
     *input = i;
 }

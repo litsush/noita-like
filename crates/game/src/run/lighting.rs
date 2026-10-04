@@ -13,7 +13,7 @@ use sbct_sim::descent::Layer;
 use sbct_sim::{Kind, Material, World};
 
 use super::creatures::Creature;
-use super::entities::{Projectile, ProjectileKind, Prop, PropKind, Sun, Torch};
+use super::entities::{LightOrb, Projectile, ProjectileKind, Prop, PropKind, ShardPickup, Sun};
 use super::items::ItemId;
 use super::player::RunPlayer;
 use super::{Phase, Run};
@@ -127,7 +127,8 @@ pub fn update_lighting(
     camera: Single<&Transform, (With<WorldCamera>, Without<LightOverlay>)>,
     mut overlay: Single<&mut Transform, With<LightOverlay>>,
     window: Single<&Window, With<PrimaryWindow>>,
-    torches: Query<&Torch>,
+    orbs: Query<&LightOrb>,
+    shards: Query<&ShardPickup>,
     suns: Query<&Sun>,
     props: Query<&Prop>,
     projectiles: Query<&Projectile>,
@@ -174,23 +175,35 @@ pub fn update_lighting(
         }
     };
     let dying = matches!(run.phase, Phase::Dying(_)) || (run.phase == Phase::Over && !run.won);
+    if let Some((_, to)) = player.beam {
+        add(to, [0.9, 0.8, 1.3]);
+    }
     if !dying {
-        let lamp = if run.has(ItemId::BeaconHeart) { 7.0 } else { 2.4 };
+        let lamp = if run.has(ItemId::BeaconHeart) {
+            7.0
+        } else if run.staff_dimmed {
+            0.55
+        } else {
+            2.4
+        };
         add(
             player.body.head() + Vec2::new(player.facing * 2.0, 0.0),
             [lamp, lamp * 0.95, lamp * 0.82],
         );
         add(player.body.center(), [0.9, 0.85, 0.75]);
     }
-    for t in &torches {
-        add(t.pos - Vec2::Y * 6.0, [1.6 * flicker, 1.0 * flicker, 0.45]);
+    for o in &orbs {
+        let b = o.brightness();
+        add(o.pos, [2.2 * b, 2.1 * b, 1.8 * b]);
+    }
+    for s in &shards {
+        add(s.pos, [0.25, 0.7, 0.8]);
     }
     for s in &suns {
         add(s.pos, [4.0, 3.6, 2.4]);
     }
     for p in &projectiles {
         let c = match p.kind {
-            ProjectileKind::Torch => [1.4, 0.9, 0.4],
             ProjectileKind::SparkBolt => [0.8, 1.0, 1.6],
             ProjectileKind::AcidFlask => [0.3, 0.8, 0.2],
             _ => [0.4, 0.4, 0.4],

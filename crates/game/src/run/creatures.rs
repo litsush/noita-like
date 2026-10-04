@@ -73,6 +73,7 @@ fn row(kind: CreatureKind) -> usize {
 
 pub fn update_creatures(
     mut commands: Commands,
+    assets: Res<GameAssets>,
     time: Res<Time>,
     mut session: ResMut<Session>,
     mut player: ResMut<RunPlayer>,
@@ -267,7 +268,10 @@ pub fn update_creatures(
                     sfx.write(Sfx::at("hurt", at).volume(0.4).pitch(0.3));
                 }
             }
-            run.ore += 3;
+            for i in 0..3 {
+                let v = Vec2::new(i as f32 - 1.0, -2.0) * 25.0;
+                commands.spawn(super::entities::ShardPickup::bundle(at, v, 1, &assets));
+            }
         }
     }
 }

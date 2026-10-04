@@ -1,5 +1,5 @@
 //! Things in the world besides cells: chests, altars, shrines, the core,
-//! thrown projectiles, blast charges, pocket suns and stuck torches.
+//! thrown projectiles, blast charges, pocket suns, light orbs and shards.
 
 use bevy::prelude::*;
 use sbct_sim::descent::{Layer, SpawnKind};
@@ -7,7 +7,7 @@ use sbct_sim::material::MAX_CHARGE;
 use sbct_sim::world::disc;
 use sbct_sim::{Kind, Material, World};
 
-use super::items::{Active, ItemId, icon};
+use super::items::{Active, ItemId};
 use super::physics::to_world;
 use super::player::RunPlayer;
 use super::save::SaveData;
@@ -105,6 +105,21 @@ pub fn spawn_entities(
     run.popup = None;
 }
 
+pub fn update_light_charges(time: Res<Time>, mut run: ResMut<Run>) {
+    if run.light_charges < run.light_max {
+        run.light_timer += time.delta_secs();
+        if run.light_timer >= LIGHT_RECHARGE {
+            run.light_timer = 0.0;
+            run.light_charges += 1;
+        }
+    } else {
+        run.light_timer = 0.0;
+    }
+}
+
+/// Seconds for a light orb charge to come back.
+pub const LIGHT_RECHARGE: f32 = 25.0;
+
 pub fn update_charges(time: Res<Time>, mut run: ResMut<Run>) {
     let dt = time.delta_secs();
     let items = run.items.clone();
@@ -124,6 +139,7 @@ pub fn update_charges(time: Res<Time>, mut run: ResMut<Run>) {
 
 pub fn interact(
     mut commands: Commands,
+    assets: Res<GameAssets>,
     input: Res<super::input::PlayerInput>,
     mut player: ResMut<RunPlayer>,
     mut run: ResMut<Run>,
@@ -156,7 +172,7 @@ pub fn interact(
         PropKind::Shrine {
             item: Some(item),
             price,
-        } => Some(format!("F  Buy {} for {price} ore", item.def().name)),
+        } => Some(format!("F  Buy {} for {price} shards", item.def().name)),
         PropKind::Core => Some("F  Touch the core".to_string()),
         _ => None,
     };
@@ -193,12 +209,14 @@ pub fn interact(
                     run.give(item);
                     sfx.write(Sfx::ui("item_get"));
                 }
-                (150..200, _) => {
-                    run.ropes += 2;
-                    run.torches += 2;
+                (150..190, _) => run.light_charges = run.light_max,
+                (190..225, _) => player.hp = (player.hp + 40.0).min(player.max_hp),
+                _ => {
+                    for i in 0..5 {
+                        let v = Vec2::new(i as f32 - 2.0, -2.5) * 20.0;
+                        commands.spawn(ShardPickup::bundle(at, v, 5, &assets));
+                    }
                 }
-                (200..230, _) => player.hp = (player.hp + 40.0).min(player.max_hp),
-                _ => run.ore += 25,
             }
         }
         PropKind::Altar { item: Some(item) } => {
@@ -217,8 +235,8 @@ pub fn interact(
             item: Some(item),
             price,
         } => {
-            if run.ore >= price {
-                run.ore -= price;
+            if run.shards >= price {
+                run.shards -= price;
                 prop.kind = PropKind::Shrine { item: None, price };
                 remove_display(&mut commands);
                 run.give(item);
@@ -244,7 +262,6 @@ pub fn interact(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProjectileKind {
-    Torch,
     AcidFlask,
     FrostSeed,
     Spores,
@@ -265,7 +282,6 @@ impl Projectile {
             ProjectileKind::SparkBolt => Sprite::from_color(Color::srgb(0.75, 0.9, 1.0), Vec2::splat(2.0)),
             k => {
                 let index = match k {
-                    ProjectileKind::Torch => icon::TORCH,
                     ProjectileKind::AcidFlask => ItemId::AcidFlask.def().icon,
                     ProjectileKind::FrostSeed => ItemId::FrostSeed.def().icon,
                     _ => ItemId::FungalSpores.def().icon,
@@ -339,12 +355,67 @@ impl Sun {
     }
 }
 
-/// A torch stuck where it landed. Lights the area and can ignite things.
+/// A conjured ball of light: flies toward the cursor, sticks or drifts, and
+/// fades. With Pyromancy it ignites flammables it touches.
 #[derive(Component)]
-pub struct Torch {
+pub struct LightOrb {
     pub pos: Vec2,
+    vel: Vec2,
     pub life: f32,
+    stuck: bool,
     timer: f32,
+    /// Random flicker dips (horror).
+    pub flicker: f32,
+}
+
+pub const LIGHT_ORB_LIFE: f32 = 60.0;
+
+impl LightOrb {
+    pub fn bundle(pos: Vec2, vel: Vec2, assets: &GameAssets) -> impl Bundle {
+        (
+            LightOrb {
+                pos,
+                vel,
+                life: LIGHT_ORB_LIFE,
+                stuck: false,
+                timer: 0.0,
+                flicker: 1.0,
+            },
+            InGameEntity,
+            assets.props.sprite(props_frame::LIGHT_ORB),
+            Transform::from_translation(to_world(pos - Vec2::Y * 0.0, 5.5)),
+        )
+    }
+
+    /// Brightness multiplier: fades over its life and flickers.
+    pub fn brightness(&self) -> f32 {
+        (self.life / LIGHT_ORB_LIFE).sqrt().max(0.15) * self.flicker
+    }
+}
+
+/// A glowing aether shard on the ground. Pulled toward you when close.
+#[derive(Component)]
+pub struct ShardPickup {
+    pub pos: Vec2,
+    vel: Vec2,
+    value: u32,
+    age: f32,
+}
+
+impl ShardPickup {
+    pub fn bundle(pos: Vec2, vel: Vec2, value: u32, assets: &GameAssets) -> impl Bundle {
+        (
+            ShardPickup {
+                pos,
+                vel,
+                value,
+                age: 0.0,
+            },
+            InGameEntity,
+            assets.props.sprite(props_frame::SHARD),
+            Transform::from_translation(to_world(pos, 5.2)),
+        )
+    }
 }
 
 pub fn update_projectiles(
@@ -392,23 +463,6 @@ pub fn update_projectiles(
         run.influence(at);
         let (x, y) = (p.pos.x.floor() as i32, p.pos.y.floor() as i32);
         match p.kind {
-            ProjectileKind::Torch => {
-                if hit_mat == Material::Water || hit_mat == Material::Acid {
-                    sfx.write(Sfx::at("sizzle", at).volume(0.5));
-                } else {
-                    sfx.write(Sfx::at("torch_ignite", at));
-                    commands.spawn((
-                        Torch {
-                            pos: p.pos,
-                            life: 150.0,
-                            timer: 0.0,
-                        },
-                        InGameEntity,
-                        assets.props.sprite(props_frame::TORCH),
-                        Transform::from_translation(to_world(p.pos - Vec2::Y * 6.0, 4.5)),
-                    ));
-                }
-            }
             ProjectileKind::AcidFlask => {
                 for (cx, cy) in disc(x, y, 3) {
                     if world.material(cx, cy).is_open() {
@@ -584,55 +638,131 @@ pub fn update_suns(
     }
 }
 
-pub fn update_torches(
+pub fn update_light_orbs(
     mut commands: Commands,
     time: Res<Time>,
     mut session: ResMut<Session>,
     mut run: ResMut<Run>,
-    mut q: Query<(Entity, &mut Torch)>,
+    mut q: Query<(Entity, &mut LightOrb, &mut Transform)>,
     mut sfx: MessageWriter<Sfx>,
 ) {
     let Some(world) = session.world.as_mut() else {
         return;
     };
     let dt = time.delta_secs();
-    for (entity, mut torch) in &mut q {
-        torch.life -= dt;
-        torch.timer -= dt;
-        let (x, y) = (torch.pos.x as i32, torch.pos.y as i32);
-        let here = world.material(x, y);
-        if torch.life <= 0.0 || matches!(here, Material::Water | Material::Acid) {
-            if here == Material::Water {
-                sfx.write(Sfx::at("sizzle", torch.pos).volume(0.4));
-            }
+    let t = time.elapsed_secs();
+    let ignites = run.orbs_ignite();
+    for (entity, mut orb, mut tf) in &mut q {
+        orb.life -= dt;
+        orb.timer -= dt;
+        if orb.life <= 0.0 {
+            sfx.write(Sfx::at("orb_fade", orb.pos).volume(0.6));
             commands.entity(entity).despawn();
             continue;
         }
-        if torch.timer <= 0.0 {
-            torch.timer = 0.4;
-            let (dx, dy) = (
-                (run.rng.next_u8() % 5) as i32 - 2,
-                (run.rng.next_u8() % 5) as i32 - 3,
-            );
-            if world.material(x + dx, y + dy).props().flammability > 0 {
-                world.ignite(x + dx, y + dy);
+        if !orb.stuck {
+            orb.vel *= 1.0 - 2.5 * dt;
+            let next = orb.pos + orb.vel * dt;
+            if world.material(next.x as i32, next.y as i32).is_solid_for_player() {
+                orb.stuck = true;
+            } else {
+                orb.pos = next;
+            }
+            if orb.vel.length() < 6.0 {
+                orb.stuck = true;
+            }
+        }
+        // Drift and bob gently once it settles.
+        let bob = Vec2::new(
+            (t * 0.7 + orb.pos.x).sin() * 1.5,
+            (t * 1.3 + orb.pos.y).sin() * 1.0,
+        );
+        // Now and then the light gutters.
+        orb.flicker = if run.rng.chance(4) {
+            0.35
+        } else {
+            (orb.flicker + dt * 3.0).min(1.0)
+        };
+        tf.translation = to_world(orb.pos + bob, 5.5);
+        if ignites && orb.timer <= 0.0 {
+            orb.timer = 0.5;
+            let (x, y) = (orb.pos.x as i32, orb.pos.y as i32);
+            for (cx, cy) in disc(x, y, 3) {
+                if world.material(cx, cy).props().flammability > 0 && run.rng.chance(60) {
+                    world.ignite(cx, cy);
+                }
             }
         }
     }
 }
 
+const SHARD_MAGNET: f32 = 26.0;
+
+pub fn update_shards(
+    mut commands: Commands,
+    time: Res<Time>,
+    session: Res<Session>,
+    player: Res<RunPlayer>,
+    mut run: ResMut<Run>,
+    mut q: Query<(Entity, &mut ShardPickup, &mut Transform)>,
+    mut sfx: MessageWriter<Sfx>,
+    mut bursts: MessageWriter<Burst>,
+) {
+    let Some(world) = &session.world else {
+        return;
+    };
+    let dt = time.delta_secs();
+    let me = player.body.center();
+    for (entity, mut s, mut tf) in &mut q {
+        s.age += dt;
+        let to = me - s.pos;
+        let d = to.length();
+        if d < 4.0 && s.age > 0.3 {
+            run.shards += s.value;
+            commands.entity(entity).despawn();
+            sfx.write(Sfx::at("shard_pickup", s.pos).pitch(0.2));
+            bursts.write(
+                Burst::new(s.pos, Color::srgb(0.5, 0.95, 1.0))
+                    .count(4)
+                    .speed(25.0)
+                    .gravity(-20.0)
+                    .life(0.3),
+            );
+            continue;
+        }
+        if d < SHARD_MAGNET && s.age > 0.3 && run.is_playing() {
+            // Pulled in faster the closer it gets.
+            s.vel = to / d * (60.0 + (SHARD_MAGNET - d) * 12.0);
+            let step = s.vel * dt;
+            s.pos += step;
+        } else {
+            s.vel.y = (s.vel.y + 300.0 * dt).min(200.0);
+            s.vel.x *= 1.0 - 3.0 * dt;
+            let next = s.pos + s.vel * dt;
+            if world.material(next.x as i32, next.y as i32).is_open() {
+                s.pos = next;
+            } else {
+                s.vel = Vec2::ZERO;
+            }
+        }
+        let glint = 1.0 + (time.elapsed_secs() * 5.0 + s.pos.x).sin() * 0.1;
+        tf.translation = to_world(s.pos, 5.2);
+        tf.scale = Vec3::splat(glint);
+    }
+}
+
 pub fn animate_props(
     time: Res<Time>,
-    mut torches: Query<&mut Sprite, With<Torch>>,
-    mut props: Query<(&Prop, &mut Sprite), Without<Torch>>,
+    mut orbs: Query<&mut Sprite, With<LightOrb>>,
+    mut props: Query<(&Prop, &mut Sprite), Without<LightOrb>>,
     mut displays: Query<(&DisplayedItem, &mut Transform)>,
     prop_pos: Query<&Prop>,
 ) {
     let t = time.elapsed_secs();
     let frame = (t * 10.0) as usize;
-    for mut s in &mut torches {
+    for mut s in &mut orbs {
         if let Some(atlas) = &mut s.texture_atlas {
-            atlas.index = props_frame::TORCH + frame % 4;
+            atlas.index = props_frame::LIGHT_ORB + frame % 4;
         }
     }
     for (prop, mut s) in &mut props {

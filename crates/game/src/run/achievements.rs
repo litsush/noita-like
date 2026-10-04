@@ -51,9 +51,9 @@ impl Loadout {
 
     pub fn desc(self) -> &'static str {
         match self {
-            Loadout::Standard => "4 ropes, 5 torches.",
-            Loadout::Gifted => "4 ropes, 5 torches and a random unlocked item.",
-            Loadout::Excavator => "8 ropes, 8 torches, Crumbling Pick and Blast Charges.",
+            Loadout::Standard => "3 light orbs.",
+            Loadout::Gifted => "3 light orbs and a random unlocked item.",
+            Loadout::Excavator => "4 light orbs, Crumbling Pick and Blast Charges.",
         }
     }
 

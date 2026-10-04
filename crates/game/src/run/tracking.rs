@@ -102,7 +102,7 @@ pub fn process_sim_events(
                     for (cx, cy) in disc(x, y, radius + 3) {
                         let m = world.material(cx, cy);
                         if m.is_solid_for_player() && m != Material::CoreShell && run.rng.chance(110) {
-                            world.set(cx, cy, Material::Ore);
+                            world.set(cx, cy, Material::ShardVein);
                         }
                     }
                 }

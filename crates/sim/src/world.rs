@@ -1154,6 +1154,7 @@ impl World {
                         | Material::Gas
                         | Material::Frost
                         | Material::Oil
+                        | Material::ShardVein
                 )
             })
         })
