@@ -142,7 +142,10 @@ pub fn bot_input(
     let side = Vec2::new(c.x + dir * 8.0, c.y);
     let blocked_side = dir != 0.0 && p.wall != 0;
     let hazard_below = (1..14).any(|d| {
-        matches!(world.material(c.x as i32, c.y as i32 + d), Material::Lava | Material::Acid | Material::Metal)
+        matches!(
+            world.material(c.x as i32, c.y as i32 + d),
+            Material::Lava | Material::Acid | Material::Metal
+        )
     });
     i.aim = Some(if blocked_side || hazard_below { side } else { below });
     i.dig = true;
@@ -154,12 +157,21 @@ pub fn bot_input(
     // Grab chests, altars and the core.
     let near = props.iter().any(|pr| {
         pr.center().distance(c) < 18.0
-            && matches!(pr.kind, PropKind::Chest { opened: false } | PropKind::Altar { item: Some(_) } | PropKind::Core)
+            && matches!(
+                pr.kind,
+                PropKind::Chest { opened: false } | PropKind::Altar { item: Some(_) } | PropKind::Core
+            )
     });
     i.interact = near && (bot.timer * 4.0) as i32 % 2 == 0;
 
     // Occasionally use whatever active is selected, and light the way.
     i.use_pressed = (bot.timer * 0.5).fract() < dt * 0.5;
+    i.use_held = (bot.timer * 0.25).fract() < 0.2;
+    i.cycle = if (bot.timer * 0.5 + 0.5).fract() < dt * 0.5 {
+        1
+    } else {
+        0
+    };
     i.torch = run.torches > 2 && (bot.timer * 0.05).fract() < dt * 0.05 && run.layer.index() > 0;
     *input = i;
 }

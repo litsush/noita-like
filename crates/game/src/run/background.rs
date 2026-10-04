@@ -32,7 +32,12 @@ pub fn spawn_backgrounds(
             commands.spawn((
                 Parallax { layer, factor },
                 InGameEntity,
-                Sprite { image: image.clone(), custom_size: Some(Vec2::ONE), rect: Some(Rect::new(0.0, 0.0, 1.0, 1.0)), ..default() },
+                Sprite {
+                    image: image.clone(),
+                    custom_size: Some(Vec2::ONE),
+                    rect: Some(Rect::new(0.0, 0.0, 1.0, 1.0)),
+                    ..default()
+                },
                 Transform::from_xyz(0.0, 0.0, z),
                 Visibility::Hidden,
             ));
@@ -46,12 +51,21 @@ pub fn spawn_backgrounds(
     for (x, &top) in surface.0.iter().enumerate() {
         for y in 0..(top.max(0) as usize + 3).min(height) {
             let t = y as f32 / height as f32;
-            let c = [(118.0 + 40.0 * t) as u8, (160.0 + 30.0 * t) as u8, (218.0 + 10.0 * t) as u8, 255];
+            let c = [
+                (118.0 + 40.0 * t) as u8,
+                (160.0 + 30.0 * t) as u8,
+                (218.0 + 10.0 * t) as u8,
+                255,
+            ];
             data[(y * width + x) * 4..][..4].copy_from_slice(&c);
         }
     }
     let sky = Image::new(
-        Extent3d { width: width as u32, height: height as u32, depth_or_array_layers: 1 },
+        Extent3d {
+            width: width as u32,
+            height: height as u32,
+            depth_or_array_layers: 1,
+        },
         TextureDimension::D2,
         data,
         TextureFormat::Rgba8UnormSrgb,
@@ -60,7 +74,11 @@ pub fn spawn_backgrounds(
     let (w, h) = (width as f32, height as f32);
     commands.spawn((
         InGameEntity,
-        Sprite { image: images.add(sky), custom_size: Some(Vec2::new(w, h)), ..default() },
+        Sprite {
+            image: images.add(sky),
+            custom_size: Some(Vec2::new(w, h)),
+            ..default()
+        },
         Transform::from_xyz(w / 2.0, -h / 2.0, -4.0),
     ));
 }

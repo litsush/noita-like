@@ -212,7 +212,11 @@ impl Run {
     }
 
     pub fn actives(&self) -> Vec<ItemId> {
-        self.items.iter().copied().filter(|i| i.def().active.is_some()).collect()
+        self.items
+            .iter()
+            .copied()
+            .filter(|i| i.def().active.is_some())
+            .collect()
     }
 
     pub fn selected_active(&self) -> Option<ItemId> {
@@ -222,25 +226,39 @@ impl Run {
 
     /// A random unlocked item the player doesn't have yet.
     pub fn roll_item(&mut self, save: &SaveData) -> Option<ItemId> {
-        let pool: Vec<ItemId> = save.unlocked_items().into_iter().filter(|i| !self.has(*i)).collect();
+        let pool: Vec<ItemId> = save
+            .unlocked_items()
+            .into_iter()
+            .filter(|i| !self.has(*i))
+            .collect();
         (!pool.is_empty()).then(|| pool[(self.rng.next_u64() % pool.len() as u64) as usize])
     }
 
     /// Records a player action at `at` for achievement attribution.
     pub fn influence(&mut self, at: Vec2) {
         let now = self.elapsed;
-        if self.influence.back().is_some_and(|(p, t)| p.distance(at) < 8.0 && now - t < 0.5) {
+        if self
+            .influence
+            .back()
+            .is_some_and(|(p, t)| p.distance(at) < 8.0 && now - t < 0.5)
+        {
             return;
         }
         self.influence.push_back((at, now));
-        while self.influence.front().is_some_and(|(_, t)| now - t > INFLUENCE_SECS) {
+        while self
+            .influence
+            .front()
+            .is_some_and(|(_, t)| now - t > INFLUENCE_SECS)
+        {
             self.influence.pop_front();
         }
     }
 
     /// Whether a sim event at `at` can be credited to the player.
     pub fn influenced(&self, at: Vec2) -> bool {
-        self.influence.iter().any(|(p, t)| p.distance(at) < INFLUENCE_RADIUS && self.elapsed - t <= INFLUENCE_SECS)
+        self.influence
+            .iter()
+            .any(|(p, t)| p.distance(at) < INFLUENCE_RADIUS && self.elapsed - t <= INFLUENCE_SECS)
     }
 
     pub fn is_playing(&self) -> bool {
@@ -255,7 +273,10 @@ pub fn grant(save: &mut SaveData, run: &mut Run, id: AchievementId, sfx: &mut Me
     }
     run.earned.push(id);
     if save.grant(id) {
-        run.toasts.push_back(Toast { achievement: id, time: 0.0 });
+        run.toasts.push_back(Toast {
+            achievement: id,
+            time: 0.0,
+        });
         sfx.write(Sfx::ui("achievement"));
         save::store(save);
     }
@@ -282,30 +303,53 @@ pub fn start_run(commands: &mut Commands, seed: u64, loadout: Loadout) {
     std::thread::spawn(move || {
         let _ = tx.send(generate_descent(seed));
     });
-    commands.insert_resource(PendingRun { rx: Mutex::new(rx), seed, loadout });
+    commands.insert_resource(PendingRun {
+        rx: Mutex::new(rx),
+        seed,
+        loadout,
+    });
     commands.set_state(AppState::Loading);
 }
 
 pub fn random_seed() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() as u64);
     sbct_sim::rng::hash2(nanos, 3, 9) % 100_000_000
 }
 
 fn finish_loading(mut commands: Commands, pending: Option<Res<PendingRun>>, save: Res<SaveData>) {
     let Some(pending) = pending else { return };
-    let Ok(descent) = pending.rx.lock().unwrap().try_recv() else { return };
+    let Ok(descent) = pending.rx.lock().unwrap().try_recv() else {
+        return;
+    };
     let start = Vec2::new(descent.start.0 as f32 + 0.5, descent.start.1 as f32 + 1.0);
     let core = Vec2::new(descent.core.0 as f32, descent.core.1 as f32);
     commands.insert_resource(Session::offline(descent.world, start, "Miner".into()));
-    commands.insert_resource(RunSetup { spawns: descent.spawns, start });
+    commands.insert_resource(RunSetup {
+        spawns: descent.spawns,
+        start,
+    });
     commands.insert_resource(Run::new(pending.seed, pending.loadout, &save, core));
     commands.remove_resource::<PendingRun>();
     commands.set_state(AppState::Run);
 }
 
-fn on_enter_run(mut save: ResMut<SaveData>, mut music: ResMut<MusicTrack>, mut run: ResMut<Run>, start: Option<Res<crate::dev::StartLayer>>) {
-    if let Some(layer) = start.and_then(|l| Layer::ALL.get(l.0).copied()) {
+fn on_enter_run(
+    mut save: ResMut<SaveData>,
+    mut music: ResMut<MusicTrack>,
+    mut run: ResMut<Run>,
+    start: Option<Res<crate::dev::StartLayer>>,
+    give: Option<Res<crate::dev::GiveItems>>,
+) {
+    if let Some(give) = give {
+        for &item in &give.0 {
+            run.give(item);
+        }
+        run.popup = None;
+    }
+    if let Some(layer) = start.and_then(|l| Layer::ALL.get(l.0.min(4)).copied()) {
         run.layer = layer;
         run.banner = Some((layer, 0.0));
     }
@@ -474,11 +518,16 @@ impl Plugin for RunPlugin {
             )
             .add_systems(
                 OnExit(AppState::Run),
-                (crate::render::cleanup_world_view, crate::render::reset_particle_pool, on_exit_run),
+                (
+                    crate::render::cleanup_world_view,
+                    crate::render::reset_particle_pool,
+                    on_exit_run,
+                ),
             )
             .add_systems(
                 FixedUpdate,
-                crate::session::step_world.run_if(in_state(AppState::Run).and_then(resource_exists::<Session>)),
+                crate::session::step_world
+                    .run_if(in_state(AppState::Run).and_then(resource_exists::<Session>)),
             )
             .add_systems(
                 Update,

@@ -37,7 +37,11 @@ pub fn hurt(
     if impact.is_some() && player.iframes > 0.0 {
         return;
     }
-    let amount = if run.has(ItemId::GlassCannonPick) { amount * 2.0 } else { amount };
+    let amount = if run.has(ItemId::GlassCannonPick) {
+        amount * 2.0
+    } else {
+        amount
+    };
     player.hp -= amount;
     run.stats.damage_taken += amount;
     if amount >= run.cause_amount {
@@ -52,7 +56,10 @@ pub fn hurt(
         sfx.write(Sfx::at("hurt", player.body.pos));
     } else if player.hurt_flash <= 0.0 {
         player.hurt_flash = 0.2;
-        let name = if matches!(kind, DamageKind::Fire | DamageKind::Lava | DamageKind::Metal | DamageKind::Heat) {
+        let name = if matches!(
+            kind,
+            DamageKind::Fire | DamageKind::Lava | DamageKind::Metal | DamageKind::Heat
+        ) {
             "burn"
         } else {
             "hurt"
@@ -63,7 +70,7 @@ pub fn hurt(
 
 /// Ambient heat added by depth, so the deep layers press on you.
 fn layer_heat(layer: Layer) -> f32 {
-    [0.0, 10.0, 16.0, 34.0, 44.0][layer.index()]
+    [0.0, 8.0, 12.0, 26.0, 32.0][layer.index()]
 }
 
 pub fn environment(
@@ -140,16 +147,34 @@ pub fn environment(
     if acid > 0 {
         damage!(28.0, DamageKind::Acid);
         if run.rng.chance(40) {
-            bursts.write(Burst::new(p.body.pos, Color::srgb(0.5, 0.9, 0.2)).count(2).gravity(-30.0).speed(15.0));
+            bursts.write(
+                Burst::new(p.body.pos, Color::srgb(0.5, 0.9, 0.2))
+                    .count(2)
+                    .gravity(-30.0)
+                    .speed(15.0),
+            );
         }
     }
     if charged > 0 || spark > 0 {
         let knock = Vec2::new(-p.facing * 40.0, -60.0);
-        hurt(p, &mut run, if charged > 0 { 22.0 } else { 8.0 }, DamageKind::Electric, Some(knock), &mut sfx, &mut shake);
+        hurt(
+            p,
+            &mut run,
+            if charged > 0 { 22.0 } else { 8.0 },
+            DamageKind::Electric,
+            Some(knock),
+            &mut sfx,
+            &mut shake,
+        );
         if p.stun <= 0.0 && charged > 0 {
             p.stun = 0.35;
             stop.0 = 0.06;
-            bursts.write(Burst::new(p.body.center(), Color::srgb(0.7, 0.9, 1.0)).count(14).speed(70.0).gravity(0.0));
+            bursts.write(
+                Burst::new(p.body.center(), Color::srgb(0.7, 0.9, 1.0))
+                    .count(14)
+                    .speed(70.0)
+                    .gravity(0.0),
+            );
             sfx.write(Sfx::at("spark", p.body.pos));
         }
     }
@@ -159,13 +184,21 @@ pub fn environment(
         if p.body.submersion(world) > 0.25 {
             p.burning = 0.0;
             sfx.write(Sfx::at("sizzle", p.body.pos).volume(0.6));
-            bursts.write(Burst::new(p.body.center(), Color::srgba(0.8, 0.8, 0.85, 0.7)).count(10).gravity(-60.0));
+            bursts.write(
+                Burst::new(p.body.center(), Color::srgba(0.8, 0.8, 0.85, 0.7))
+                    .count(10)
+                    .gravity(-60.0),
+            );
         } else if !salamander {
             p.burning -= dt;
             damage!(7.0, DamageKind::Fire);
             if run.rng.chance(120) {
                 bursts.write(
-                    Burst::new(p.body.center(), Color::srgb(1.0, 0.55, 0.15)).count(2).gravity(-80.0).speed(20.0).life(0.4),
+                    Burst::new(p.body.center(), Color::srgb(1.0, 0.55, 0.15))
+                        .count(2)
+                        .gravity(-80.0)
+                        .speed(20.0)
+                        .life(0.4),
                 );
             }
         } else {
@@ -194,7 +227,11 @@ pub fn environment(
     if p.body.submersion(world) > 0.5 {
         heat -= 60.0;
     }
-    let delta = if heat > 40.0 { (heat - 40.0) * 0.25 } else { -15.0 - (40.0 - heat) * 0.2 };
+    let delta = if heat > 45.0 {
+        (heat - 45.0) * 0.25
+    } else {
+        -20.0 - (45.0 - heat) * 0.2
+    };
     if thermal && delta > 0.0 {
         // The suit soaks it up instead, then vents.
         p.thermal += delta * dt;
@@ -225,11 +262,23 @@ pub fn environment(
             damage!(5.0, DamageKind::Gas);
         }
         if p.breath <= 0.0 {
-            damage!(15.0, if in_gas { DamageKind::Gas } else { DamageKind::Drowned });
+            damage!(
+                15.0,
+                if in_gas {
+                    DamageKind::Gas
+                } else {
+                    DamageKind::Drowned
+                }
+            );
         }
         if underwater && run.rng.chance(12) {
             sfx.write(Sfx::at("drown_bubble", p.body.pos).volume(0.4));
-            bursts.write(Burst::new(p.body.head(), Color::srgba(0.8, 0.9, 1.0, 0.7)).count(1).gravity(-50.0).speed(5.0));
+            bursts.write(
+                Burst::new(p.body.head(), Color::srgba(0.8, 0.9, 1.0, 0.7))
+                    .count(1)
+                    .gravity(-50.0)
+                    .speed(5.0),
+            );
         }
     } else {
         if p.breath < 40.0 && !underwater {
@@ -247,7 +296,7 @@ pub fn environment(
     }
 
     if p.crushed {
-        damage!(40.0, DamageKind::Crushed);
+        damage!(15.0, DamageKind::Crushed);
     }
 
     if p.hp > 0.0 && p.hp < p.max_hp * 0.25 && run.rng.chance(3) {

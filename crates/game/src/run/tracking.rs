@@ -29,20 +29,35 @@ pub fn process_sim_events(
     mut shake: ResMut<Shake>,
     mut stop: ResMut<HitStop>,
 ) {
-    let Some(world) = session.world.as_mut() else { return };
+    let Some(world) = session.world.as_mut() else {
+        return;
+    };
     let events = world.take_events();
     let me = player.body.center();
 
     for event in events {
         match event {
-            SimEvent::Explosion { x, y, radius, destroyed } => {
+            SimEvent::Explosion {
+                x,
+                y,
+                radius,
+                destroyed,
+            } => {
                 let at = Vec2::new(x as f32, y as f32);
                 let d = at.distance(me);
                 let reach = radius as f32 * 2.2;
                 if d < reach {
                     let k = 1.0 - d / reach;
                     let knock = (me - at).normalize_or(Vec2::NEG_Y) * 260.0 * k + Vec2::Y * -80.0 * k;
-                    hurt(&mut player, &mut run, 75.0 * k, DamageKind::Explosion, Some(knock), &mut sfx, &mut shake);
+                    hurt(
+                        &mut player,
+                        &mut run,
+                        75.0 * k,
+                        DamageKind::Explosion,
+                        Some(knock),
+                        &mut sfx,
+                        &mut shake,
+                    );
                 }
                 if run.influenced(at) {
                     run.stats.destroyed += destroyed;
@@ -54,15 +69,35 @@ pub fn process_sim_events(
                     }
                 }
                 blast_creatures(&mut creatures, at, radius as f32);
-                let name = if radius >= 8 { "explosion" } else { "explosion_small" };
+                let name = if radius >= 8 {
+                    "explosion"
+                } else {
+                    "explosion_small"
+                };
                 sfx.write(Sfx::at(name, at));
                 bursts.write(
-                    Burst::new(at, Color::srgb(1.0, 0.95, 0.7)).count(30).speed(radius as f32 * 12.0).gravity(0.0).life(0.25).size(2.0),
+                    Burst::new(at, Color::srgb(1.0, 0.95, 0.7))
+                        .count(30)
+                        .speed(radius as f32 * 12.0)
+                        .gravity(0.0)
+                        .life(0.25)
+                        .size(2.0),
                 );
-                bursts.write(Burst::new(at, Color::srgba(0.3, 0.28, 0.28, 0.8)).count(20).speed(40.0).gravity(-40.0).life(1.2).size(2.0));
+                bursts.write(
+                    Burst::new(at, Color::srgba(0.3, 0.28, 0.28, 0.8))
+                        .count(20)
+                        .speed(40.0)
+                        .gravity(-40.0)
+                        .life(1.2)
+                        .size(2.0),
+                );
 
                 // Volatile Core: blasts the player caused leave ore in the crater walls.
-                if let Some(i) = run.volatile_spots.iter().position(|&(vx, vy)| (vx - x).abs() <= 2 && (vy - y).abs() <= 4) {
+                if let Some(i) = run
+                    .volatile_spots
+                    .iter()
+                    .position(|&(vx, vy)| (vx - x).abs() <= 2 && (vy - y).abs() <= 4)
+                {
                     run.volatile_spots.swap_remove(i);
                     for (cx, cy) in disc(x, y, radius + 3) {
                         let m = world.material(cx, cy);
@@ -76,7 +111,12 @@ pub fn process_sim_events(
                 let at = Vec2::new(x as f32, y as f32);
                 sfx.write(Sfx::at("sizzle", at).volume(0.7));
                 if run.rng.chance(60) {
-                    bursts.write(Burst::new(at, Color::srgba(0.85, 0.85, 0.9, 0.6)).count(3).gravity(-60.0).speed(20.0));
+                    bursts.write(
+                        Burst::new(at, Color::srgba(0.85, 0.85, 0.9, 0.6))
+                            .count(3)
+                            .gravity(-60.0)
+                            .speed(20.0),
+                    );
                 }
             }
             SimEvent::Dissolve { x, y } => {
@@ -128,7 +168,7 @@ pub fn process_sim_events(
         (s.obsidian >= 60, AchievementId::ObsidianBridge),
         (s.gas_ignited >= 20, AchievementId::Pyromaniac),
         (s.electrified >= 200, AchievementId::Conductor),
-        (s.collapsed >= 300, AchievementId::CaveIn),
+        (s.collapsed >= 1000, AchievementId::CaveIn),
         (s.destroyed >= 1500, AchievementId::Demolitionist),
     ];
     for (done, id) in checks {

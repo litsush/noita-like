@@ -30,7 +30,14 @@ pub struct MoveResult {
 
 impl Body {
     pub fn new(pos: Vec2, half_w: f32, height: f32) -> Body {
-        Body { pos, vel: Vec2::ZERO, half_w, height, on_ground: false, wall: 0 }
+        Body {
+            pos,
+            vel: Vec2::ZERO,
+            half_w,
+            height,
+            on_ground: false,
+            wall: 0,
+        }
     }
 
     pub fn center(&self) -> Vec2 {
@@ -70,7 +77,9 @@ impl Body {
     pub fn submersion(&self, world: &World) -> f32 {
         let x = self.pos.x.floor() as i32;
         let (_, _, y0, y1) = self.cells_at(self.pos);
-        let n = (y0..=y1).filter(|&y| world.material(x, y).kind() == Kind::Liquid).count();
+        let n = (y0..=y1)
+            .filter(|&y| world.material(x, y).kind() == Kind::Liquid)
+            .count();
         n as f32 / (y1 - y0 + 1) as f32
     }
 
@@ -140,7 +149,11 @@ impl Body {
             return true;
         }
         for d in 1..=4 {
-            for offset in [Vec2::new(0.0, -d as f32), Vec2::new(d as f32, 0.0), Vec2::new(-d as f32, 0.0)] {
+            for offset in [
+                Vec2::new(0.0, -d as f32),
+                Vec2::new(d as f32, 0.0),
+                Vec2::new(-d as f32, 0.0),
+            ] {
                 if !self.collides(world, self.pos + offset, solid) {
                     self.pos += offset;
                     return true;

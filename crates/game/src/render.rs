@@ -7,8 +7,8 @@ use bevy::image::ImageSampler;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
-use sbct_sim::{CHUNK_SIZE, Material};
 use sbct_sim::rng::hash2;
+use sbct_sim::{CHUNK_SIZE, Material};
 
 use crate::session::Session;
 
@@ -57,7 +57,11 @@ pub fn spawn_world_view(mut commands: Commands, session: Res<Session>, mut image
     for ty in 0..tiles_y {
         for tx in 0..tiles_x {
             let mut image = Image::new_fill(
-                Extent3d { width: TILE as u32, height: TILE as u32, depth_or_array_layers: 1 },
+                Extent3d {
+                    width: TILE as u32,
+                    height: TILE as u32,
+                    depth_or_array_layers: 1,
+                },
                 TextureDimension::D2,
                 &[0, 0, 0, 0],
                 TextureFormat::Rgba8UnormSrgb,
@@ -68,13 +72,22 @@ pub fn spawn_world_view(mut commands: Commands, session: Res<Session>, mut image
             let t = TILE as f32;
             commands.spawn((
                 InGameEntity,
-                Sprite { image: handle.clone(), custom_size: Some(Vec2::splat(t)), ..default() },
+                Sprite {
+                    image: handle.clone(),
+                    custom_size: Some(Vec2::splat(t)),
+                    ..default()
+                },
                 Transform::from_xyz(tx as f32 * t + t / 2.0, -(ty as f32 * t + t / 2.0), 0.0),
             ));
             handles.push(handle);
         }
     }
-    commands.insert_resource(WorldTiles { tiles_x, handles, frame: 0, pending: Default::default() });
+    commands.insert_resource(WorldTiles {
+        tiles_x,
+        handles,
+        frame: 0,
+        pending: Default::default(),
+    });
 
     if session.backdrop {
         spawn_surface_backdrop(&mut commands, world, &mut images);
@@ -147,7 +160,10 @@ pub fn upload_dirty_chunks(
     let half = Vec2::new(window.width(), window.height()) * scale / 2.0 + 16.0;
     let cs = CHUNK_SIZE as f32;
     let (cx0, cx1) = ((tf.translation.x - half.x) / cs, (tf.translation.x + half.x) / cs);
-    let (cy0, cy1) = ((-tf.translation.y - half.y) / cs, (-tf.translation.y + half.y) / cs);
+    let (cy0, cy1) = (
+        (-tf.translation.y - half.y) / cs,
+        (-tf.translation.y + half.y) / cs,
+    );
     let clamp = |v: f32, n: usize| (v.max(0.0) as usize).min(n - 1);
     let (cx0, cx1) = (clamp(cx0, world.chunks_x()), clamp(cx1, world.chunks_x()));
     let (cy0, cy1) = (clamp(cy0, world.chunks_y()), clamp(cy1, world.chunks_y()));
@@ -171,8 +187,12 @@ pub fn upload_dirty_chunks(
     let per_tile = TILE / CHUNK_SIZE;
     for (cx, cy) in dirty {
         let (tx, ty) = (cx / per_tile, cy / per_tile);
-        let Some(handle) = tiles.handles.get(ty * tiles.tiles_x + tx) else { continue };
-        let Some(mut image) = images.get_mut(handle) else { continue };
+        let Some(handle) = tiles.handles.get(ty * tiles.tiles_x + tx) else {
+            continue;
+        };
+        let Some(mut image) = images.get_mut(handle) else {
+            continue;
+        };
         let Some(data) = image.data.as_mut() else { continue };
         world.write_chunk_rgba(cx, cy, data, TILE, (tx * TILE, ty * TILE), frame);
     }
@@ -202,13 +222,21 @@ pub fn draw_sim_particles(
     let particles = world.particles();
     while pool.0.len() < particles.len().min(4000) {
         let e = commands
-            .spawn((SimParticleSprite, InGameEntity, Sprite::from_color(Color::WHITE, Vec2::ONE), Transform::default(), Visibility::Hidden))
+            .spawn((
+                SimParticleSprite,
+                InGameEntity,
+                Sprite::from_color(Color::WHITE, Vec2::ONE),
+                Transform::default(),
+                Visibility::Hidden,
+            ))
             .id();
         pool.0.push(e);
     }
     let mut used = 0;
     for (p, &e) in particles.iter().zip(pool.0.iter()) {
-        let Ok((mut tf, mut sprite, mut vis)) = sprites.get_mut(e) else { continue };
+        let Ok((mut tf, mut sprite, mut vis)) = sprites.get_mut(e) else {
+            continue;
+        };
         let cell = sbct_sim::Cell::new(p.mat, 128);
         let [r, g, b, a] = sbct_sim::color::cell_rgba(cell, p.x as i32, p.y as i32, 0);
         sprite.color = Color::srgba_u8(r, g, b, a.max(200));

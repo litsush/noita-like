@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use super::achievements::{AchievementId, Loadout, Reward};
+use super::achievements::{AchievementId, Loadout};
 use super::items::ItemId;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -22,7 +22,12 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { master_volume: 0.8, music_volume: 0.6, sfx_volume: 0.8, screen_shake: true }
+        Settings {
+            master_volume: 0.8,
+            music_volume: 0.6,
+            sfx_volume: 0.8,
+            screen_shake: true,
+        }
     }
 }
 
@@ -63,10 +68,6 @@ impl SaveData {
     pub fn grant(&mut self, id: AchievementId) -> bool {
         self.achievements.insert(id)
     }
-
-    pub fn rewards_unlocked(&self) -> Vec<Reward> {
-        self.achievements.iter().map(|a| a.def().reward).collect()
-    }
 }
 
 /// Where the save file lives. `SBCT_SAVE_DIR` overrides (handy for testing).
@@ -93,7 +94,10 @@ pub fn load() -> SaveData {
     match serde_json::from_str(&text) {
         Ok(data) => data,
         Err(e) => {
-            warn!("save file {} is corrupt ({e}); backing it up and starting fresh", path.display());
+            warn!(
+                "save file {} is corrupt ({e}); backing it up and starting fresh",
+                path.display()
+            );
             let _ = std::fs::rename(&path, path.with_extension("json.bak"));
             SaveData::default()
         }
@@ -106,7 +110,10 @@ pub fn store(data: &SaveData) {
     let result = (|| -> std::io::Result<()> {
         std::fs::create_dir_all(&dir)?;
         let tmp = dir.join("save.json.tmp");
-        std::fs::write(&tmp, serde_json::to_string_pretty(data).expect("save data serializes"))?;
+        std::fs::write(
+            &tmp,
+            serde_json::to_string_pretty(data).expect("save data serializes"),
+        )?;
         std::fs::rename(tmp, dir.join("save.json"))
     })();
     if let Err(e) = result {

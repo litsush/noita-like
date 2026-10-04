@@ -23,7 +23,11 @@ pub fn cell_rgba(cell: Cell, x: i32, y: i32, frame: u32) -> [u8; 4] {
     }
     let props = mat.props();
     let v = props.variance as i32;
-    let offset = if v == 0 { 0 } else { (cell.shade as i32 * v) / 255 - v / 2 };
+    let offset = if v == 0 {
+        0
+    } else {
+        (cell.shade as i32 * v) / 255 - v / 2
+    };
     let [mut r, mut g, mut b] = props.color.map(|c| c as i32 + offset);
     let mut a = 255;
     let t = frame as f32;

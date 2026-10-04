@@ -35,7 +35,9 @@ pub struct Creature {
 
 pub fn spawn_creatures(mut commands: Commands, setup: Res<RunSetup>, assets: Res<GameAssets>) {
     for s in &setup.spawns {
-        let SpawnKind::Creature(kind) = s.kind else { continue };
+        let SpawnKind::Creature(kind) = s.kind else {
+            continue;
+        };
         let (half_w, h, hp) = match kind {
             CreatureKind::Crawler => (4.0, 6.0, 30.0),
             CreatureKind::MagmaSlug => (5.0, 5.0, 45.0),
@@ -44,7 +46,16 @@ pub fn spawn_creatures(mut commands: Commands, setup: Res<RunSetup>, assets: Res
         let pos = Vec2::new(s.x as f32 + 0.5, s.y as f32 + 1.0);
         let dir = if s.x % 2 == 0 { 1.0 } else { -1.0 };
         commands.spawn((
-            Creature { kind, body: Body::new(pos, half_w, h), hp, dir, soaked: 0.0, anim: 0.0, hurt_flash: 0.0, trail: 0.0 },
+            Creature {
+                kind,
+                body: Body::new(pos, half_w, h),
+                hp,
+                dir,
+                soaked: 0.0,
+                anim: 0.0,
+                hurt_flash: 0.0,
+                trail: 0.0,
+            },
             InGameEntity,
             assets.creatures.sprite(row(kind) * 4),
             Transform::from_translation(to_world(pos - Vec2::Y * 8.0, 4.8)),
@@ -71,7 +82,9 @@ pub fn update_creatures(
     mut shake: ResMut<Shake>,
     mut bursts: MessageWriter<Burst>,
 ) {
-    let Some(world) = session.world.as_mut() else { return };
+    let Some(world) = session.world.as_mut() else {
+        return;
+    };
     let dt = time.delta_secs();
     if dt <= 0.0 {
         return;
@@ -105,7 +118,11 @@ pub fn update_creatures(
         if c.kind == CreatureKind::MagmaSlug && water > 0 {
             damage += 60.0 * dt;
             if run.rng.chance(40) {
-                bursts.write(Burst::new(c.body.center(), Color::srgba(0.85, 0.85, 0.9, 0.7)).count(3).gravity(-60.0));
+                bursts.write(
+                    Burst::new(c.body.center(), Color::srgba(0.85, 0.85, 0.9, 0.7))
+                        .count(3)
+                        .gravity(-60.0),
+                );
             }
         }
         if c.body.submersion(world) > 0.6 && c.kind == CreatureKind::Crawler {
@@ -127,7 +144,11 @@ pub fn update_creatures(
         // Movement.
         match c.kind {
             CreatureKind::Crawler | CreatureKind::MagmaSlug => {
-                let speed = if c.kind == CreatureKind::Crawler { 22.0 } else { 11.0 };
+                let speed = if c.kind == CreatureKind::Crawler {
+                    22.0
+                } else {
+                    11.0
+                };
                 let chasing = c.body.center().distance(target) < aggro * 0.6;
                 if chasing && (target.y - c.body.pos.y).abs() < 20.0 {
                     c.dir = (target.x - c.body.pos.x).signum();
@@ -173,17 +194,41 @@ pub fn update_creatures(
             let knock = Vec2::new((target.x - c.body.pos.x).signum() * 90.0, -80.0);
             match c.kind {
                 CreatureKind::SporeDrifter => {
-                    hurt(&mut player, &mut run, 12.0, DamageKind::Creature, Some(knock), &mut sfx, &mut shake);
+                    hurt(
+                        &mut player,
+                        &mut run,
+                        12.0,
+                        DamageKind::Creature,
+                        Some(knock),
+                        &mut sfx,
+                        &mut shake,
+                    );
                     c.hp = 0.0;
                 }
                 CreatureKind::MagmaSlug => {
-                    hurt(&mut player, &mut run, 18.0, DamageKind::Creature, Some(knock), &mut sfx, &mut shake);
+                    hurt(
+                        &mut player,
+                        &mut run,
+                        18.0,
+                        DamageKind::Creature,
+                        Some(knock),
+                        &mut sfx,
+                        &mut shake,
+                    );
                     if !run.has(ItemId::SalamanderSkin) {
                         player.burning = player.burning.max(1.5);
                     }
                 }
                 CreatureKind::Crawler => {
-                    hurt(&mut player, &mut run, 14.0, DamageKind::Creature, Some(knock), &mut sfx, &mut shake);
+                    hurt(
+                        &mut player,
+                        &mut run,
+                        14.0,
+                        DamageKind::Creature,
+                        Some(knock),
+                        &mut sfx,
+                        &mut shake,
+                    );
                 }
             }
         }
@@ -202,7 +247,12 @@ pub fn update_creatures(
                             world.set(cx, cy, grow);
                         }
                     }
-                    bursts.write(Burst::new(at, Color::srgb(0.6, 1.0, 0.6)).count(20).speed(40.0).gravity(-10.0));
+                    bursts.write(
+                        Burst::new(at, Color::srgb(0.6, 1.0, 0.6))
+                            .count(20)
+                            .speed(40.0)
+                            .gravity(-10.0),
+                    );
                     sfx.write(Sfx::at("plant", at));
                 }
                 CreatureKind::MagmaSlug => {
@@ -242,8 +292,16 @@ pub fn animate_creatures(mut q: Query<(&Creature, &mut Sprite, &mut Transform)>)
             atlas.index = row(c.kind) * 4 + frame;
         }
         sprite.flip_x = c.dir < 0.0;
-        sprite.color = if c.hurt_flash > 0.0 { Color::srgb(1.0, 0.4, 0.4) } else { Color::WHITE };
-        let offset = if c.kind == CreatureKind::SporeDrifter { c.body.height / 2.0 } else { 8.0 };
+        sprite.color = if c.hurt_flash > 0.0 {
+            Color::srgb(1.0, 0.4, 0.4)
+        } else {
+            Color::WHITE
+        };
+        let offset = if c.kind == CreatureKind::SporeDrifter {
+            c.body.height / 2.0
+        } else {
+            8.0
+        };
         tf.translation = to_world(c.body.pos - Vec2::Y * offset, 4.8).round();
     }
 }

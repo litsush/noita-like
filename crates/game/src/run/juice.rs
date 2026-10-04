@@ -5,9 +5,9 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use sbct_sim::Material;
 
+use super::Run;
 use super::entities::{Prop, PropKind};
 use super::player::RunPlayer;
-use super::Run;
 use crate::audio::Sfx;
 use crate::fx::Burst;
 use crate::render::{PIXEL_SCALE, WorldCamera};
@@ -44,7 +44,13 @@ pub fn ambient_effects(
         let above = world.material(x, y - 1);
         match world.material(x, y) {
             Material::Lava if above.is_open() && run.rng.chance(60) => {
-                bursts.write(Burst::new(at, Color::srgb(1.0, 0.55, 0.15)).count(1).speed(15.0).gravity(-45.0).life(0.9));
+                bursts.write(
+                    Burst::new(at, Color::srgb(1.0, 0.55, 0.15))
+                        .count(1)
+                        .speed(15.0)
+                        .gravity(-45.0)
+                        .life(0.9),
+                );
             }
             Material::Fire => {
                 fires += 1;
@@ -52,14 +58,33 @@ pub fn ambient_effects(
                     nearest_fire = Some(at);
                 }
                 if above.is_open() && run.rng.chance(50) {
-                    bursts.write(Burst::new(at, Color::srgba(0.25, 0.23, 0.23, 0.6)).count(1).speed(8.0).gravity(-30.0).life(1.4).size(2.0));
+                    bursts.write(
+                        Burst::new(at, Color::srgba(0.25, 0.23, 0.23, 0.6))
+                            .count(1)
+                            .speed(8.0)
+                            .gravity(-30.0)
+                            .life(1.4)
+                            .size(2.0),
+                    );
                 }
             }
             Material::Acid if above.is_open() && run.rng.chance(30) => {
-                bursts.write(Burst::new(at, Color::srgba(0.6, 1.0, 0.3, 0.8)).count(1).speed(6.0).gravity(-25.0).life(0.6));
+                bursts.write(
+                    Burst::new(at, Color::srgba(0.6, 1.0, 0.3, 0.8))
+                        .count(1)
+                        .speed(6.0)
+                        .gravity(-25.0)
+                        .life(0.6),
+                );
             }
             Material::Metal if above.is_open() && run.rng.chance(20) => {
-                bursts.write(Burst::new(at, Color::srgb(1.0, 0.85, 0.5)).count(1).speed(25.0).gravity(60.0).life(0.4));
+                bursts.write(
+                    Burst::new(at, Color::srgb(1.0, 0.85, 0.5))
+                        .count(1)
+                        .speed(25.0)
+                        .gravity(60.0)
+                        .life(0.4),
+                );
             }
             _ => {}
         }
@@ -70,7 +95,11 @@ pub fn ambient_effects(
     if fires > 0 && *crackle <= 0.0 {
         *crackle = 2.9;
         if let Some(at) = nearest_fire {
-            sfx.write(Sfx::at("fire_loop", at).volume((fires as f32 / 6.0).min(1.0)).pitch(0.0));
+            sfx.write(
+                Sfx::at("fire_loop", at)
+                    .volume((fires as f32 / 6.0).min(1.0))
+                    .pitch(0.0),
+            );
         }
     }
 
@@ -91,7 +120,13 @@ pub fn ambient_effects(
     if *was_submerged < 0.1 && sub > 0.25 && player.body.vel.y > 40.0 {
         let liquid = world.material(player.body.pos.x as i32, player.body.pos.y as i32);
         let [r, g, b] = liquid.props().color;
-        bursts.write(Burst::new(player.body.pos - Vec2::Y * 6.0, Color::srgb_u8(r, g, b)).count(16).speed(60.0).dir(Vec2::NEG_Y).life(0.6));
+        bursts.write(
+            Burst::new(player.body.pos - Vec2::Y * 6.0, Color::srgb_u8(r, g, b))
+                .count(16)
+                .speed(60.0)
+                .dir(Vec2::NEG_Y)
+                .life(0.6),
+        );
         sfx.write(Sfx::at("splash", player.body.pos));
     }
     *was_submerged = sub;

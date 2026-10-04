@@ -25,14 +25,26 @@ pub enum Layer {
 }
 
 impl Layer {
-    pub const ALL: [Layer; 5] = [Layer::Crust, Layer::UpperMantle, Layer::DeepMantle, Layer::OuterCore, Layer::Core];
+    pub const ALL: [Layer; 5] = [
+        Layer::Crust,
+        Layer::UpperMantle,
+        Layer::DeepMantle,
+        Layer::OuterCore,
+        Layer::Core,
+    ];
 
     pub fn index(self) -> usize {
         self as usize
     }
 
     pub fn name(self) -> &'static str {
-        ["The Crust", "Upper Mantle", "Deep Mantle", "Outer Core", "The Core"][self.index()]
+        [
+            "The Crust",
+            "Upper Mantle",
+            "Deep Mantle",
+            "Outer Core",
+            "The Core",
+        ][self.index()]
     }
 
     /// First row of the layer.
@@ -48,7 +60,11 @@ impl Layer {
     }
 
     pub fn at_depth(y: i32) -> Layer {
-        Layer::ALL.into_iter().rev().find(|l| y >= l.top()).unwrap_or(Layer::Crust)
+        Layer::ALL
+            .into_iter()
+            .rev()
+            .find(|l| y >= l.top())
+            .unwrap_or(Layer::Crust)
     }
 }
 
@@ -110,7 +126,11 @@ impl Grid {
         (y * self.w + x) as usize
     }
     fn get(&self, x: i32, y: i32) -> Material {
-        if self.in_bounds(x, y) { self.m[self.i(x, y)] } else { Material::CoreShell }
+        if self.in_bounds(x, y) {
+            self.m[self.i(x, y)]
+        } else {
+            Material::CoreShell
+        }
     }
     fn set(&mut self, x: i32, y: i32, mat: Material) {
         if self.in_bounds(x, y) {
@@ -131,7 +151,14 @@ impl Grid {
             }
         }
     }
-    fn fill_ellipse(&mut self, cx: i32, cy: i32, rx: i32, ry: i32, mut f: impl FnMut(i32, i32, f32) -> Option<Material>) {
+    fn fill_ellipse(
+        &mut self,
+        cx: i32,
+        cy: i32,
+        rx: i32,
+        ry: i32,
+        mut f: impl FnMut(i32, i32, f32) -> Option<Material>,
+    ) {
         for y in cy - ry..=cy + ry {
             for x in cx - rx..=cx + rx {
                 let (dx, dy) = ((x - cx) as f32 / rx as f32, (y - cy) as f32 / ry as f32);
@@ -153,12 +180,18 @@ impl Grid {
 
 pub fn generate_descent(seed: u64) -> Descent {
     let (w, h) = (DESCENT_WIDTH as i32, DESCENT_HEIGHT as i32);
-    let mut g = Grid { w, h, m: vec![Material::Empty; (w * h) as usize], cave: vec![SOLID; (w * h) as usize] };
+    let mut g = Grid {
+        w,
+        h,
+        m: vec![Material::Empty; (w * h) as usize],
+        cave: vec![SOLID; (w * h) as usize],
+    };
     let mut rng = Rng::new(seed ^ 0xD35C_E417);
     let mut spawns = Vec::new();
 
-    let surface: Vec<i32> =
-        (0..w).map(|x| 70 + (fbm(seed ^ 11, x as f32 / 90.0, 0.0, 3) * 40.0) as i32).collect();
+    let surface: Vec<i32> = (0..w)
+        .map(|x| 70 + (fbm(seed ^ 11, x as f32 / 90.0, 0.0, 3) * 40.0) as i32)
+        .collect();
 
     carve_caves(&mut g, seed, &surface);
     carve_worms(&mut g, &mut rng, &surface);
@@ -174,7 +207,10 @@ pub fn generate_descent(seed: u64) -> Descent {
     scatter_creatures(&g, &mut rng, &mut spawns);
 
     let sx = w / 2;
-    let sy = (0..h).find(|&y| g.is_ground(sx, y)).unwrap_or(surface[sx as usize]) - 1;
+    let sy = (0..h)
+        .find(|&y| g.is_ground(sx, y))
+        .unwrap_or(surface[sx as usize])
+        - 1;
     // Clear a little landing spot in case a tree grew there.
     for y in sy - 16..=sy {
         for x in sx - 4..=sx + 4 {
@@ -201,7 +237,12 @@ pub fn generate_descent(seed: u64) -> Descent {
     world.settle_gravel();
     world.take_events();
 
-    Descent { world, spawns, start: (sx, sy), core }
+    Descent {
+        world,
+        spawns,
+        start: (sx, sy),
+        core,
+    }
 }
 
 fn cave_threshold(layer: Layer) -> f32 {
@@ -237,7 +278,12 @@ fn carve_caves(g: &mut Grid, seed: u64, surface: &[i32]) {
 /// Meandering tunnels from the top of each layer to the bottom. Some stretches
 /// are plugged so they read as solid until dug.
 fn carve_worms(g: &mut Grid, rng: &mut Rng, surface: &[i32]) {
-    for layer in [Layer::Crust, Layer::UpperMantle, Layer::DeepMantle, Layer::OuterCore] {
+    for layer in [
+        Layer::Crust,
+        Layer::UpperMantle,
+        Layer::DeepMantle,
+        Layer::OuterCore,
+    ] {
         for _ in 0..2 {
             let mut x = 40.0 + rng.next_f32() * (g.w as f32 - 80.0);
             let mut y = layer.top().max(surface[x as usize] + 25) as f32;
@@ -260,7 +306,11 @@ fn carve_worms(g: &mut Grid, rng: &mut Rng, surface: &[i32]) {
                 for (cx, cy) in disc(x as i32, y as i32, r) {
                     if g.in_bounds(cx, cy) {
                         let i = g.i(cx, cy);
-                        g.cave[i] = if plug && g.cave[i] == SOLID { PLUG } else { OPEN.max(g.cave[i]) };
+                        g.cave[i] = if plug && g.cave[i] == SOLID {
+                            PLUG
+                        } else {
+                            OPEN.max(g.cave[i])
+                        };
                     }
                 }
             }
@@ -373,7 +423,11 @@ fn fill_pockets(g: &mut Grid, seed: u64) {
                 above_floor = i32::MAX;
                 continue;
             }
-            above_floor = if g.is_ground(x, y + 1) { 0 } else { above_floor.saturating_add(1) };
+            above_floor = if g.is_ground(x, y + 1) {
+                0
+            } else {
+                above_floor.saturating_add(1)
+            };
             let layer = Layer::at_depth(y);
             let (fx, fy) = (x as f32, y as f32);
             let pool = fbm(seed ^ 20, fx / 70.0, fy / 50.0, 2);
@@ -530,7 +584,13 @@ fn plant_trees(g: &mut Grid, rng: &mut Rng, surface: &[i32]) {
 // ---- set pieces ----------------------------------------------------------
 
 /// Finds a free rectangle inside a layer, away from other set pieces.
-fn find_spot(rng: &mut Rng, layer: Layer, w: i32, h: i32, taken: &mut Vec<(i32, i32, i32, i32)>) -> Option<(i32, i32)> {
+fn find_spot(
+    rng: &mut Rng,
+    layer: Layer,
+    w: i32,
+    h: i32,
+    taken: &mut Vec<(i32, i32, i32, i32)>,
+) -> Option<(i32, i32)> {
     let (top, bottom) = (layer.top().max(200) + 40, layer.bottom() - h - 40);
     for _ in 0..80 {
         let x = 12 + (rng.next_u64() % (DESCENT_WIDTH as u64 - w as u64 - 24)) as i32;
@@ -547,9 +607,17 @@ fn find_spot(rng: &mut Rng, layer: Layer, w: i32, h: i32, taken: &mut Vec<(i32, 
     None
 }
 
-fn stamp_set_pieces(g: &mut Grid, rng: &mut Rng, taken: &mut Vec<(i32, i32, i32, i32)>, spawns: &mut Vec<Spawn>) {
+/// Draws a set piece with its top-left corner at (x, y).
+type Stamp = fn(&mut Grid, &mut Rng, i32, i32, &mut Vec<Spawn>);
+
+fn stamp_set_pieces(
+    g: &mut Grid,
+    rng: &mut Rng,
+    taken: &mut Vec<(i32, i32, i32, i32)>,
+    spawns: &mut Vec<Spawn>,
+) {
     use Layer::*;
-    let plan: [(Layer, fn(&mut Grid, &mut Rng, i32, i32, &mut Vec<Spawn>), i32, i32); 11] = [
+    let plan: [(Layer, Stamp, i32, i32); 11] = [
         (Crust, flooded_ruin, 64, 40),
         (Crust, abandoned_mine, 110, 18),
         (Crust, flooded_ruin, 64, 40),
@@ -591,7 +659,11 @@ fn flooded_ruin(g: &mut Grid, rng: &mut Rng, x: i32, y: i32, spawns: &mut Vec<Sp
     // Cracked wall: water will burst out when dug.
     let side = if rng.coin() { x } else { x + w - 3 };
     g.fill_rect(side, y + h - 14, 3, 6, Material::Gravel);
-    spawns.push(Spawn { kind: SpawnKind::Chest, x: x + w / 2, y: y + h - 4 });
+    spawns.push(Spawn {
+        kind: SpawnKind::Chest,
+        x: x + w / 2,
+        y: y + h - 4,
+    });
 }
 
 /// Horizontal timbered tunnel with explosive crates, a hanging rope and an altar.
@@ -613,15 +685,25 @@ fn abandoned_mine(g: &mut Grid, rng: &mut Rng, x: i32, y: i32, spawns: &mut Vec<
     g.fill_rect(rx, y - 20, 1, 30, Material::Rope);
     let altar_left = rng.coin();
     let ax = if altar_left { x + 8 } else { x + w - 9 };
-    spawns.push(Spawn { kind: SpawnKind::Altar, x: ax, y: y + h - 3 });
-    spawns.push(Spawn { kind: SpawnKind::Chest, x: if altar_left { x + w - 10 } else { x + 10 }, y: y + h - 3 });
+    spawns.push(Spawn {
+        kind: SpawnKind::Altar,
+        x: ax,
+        y: y + h - 3,
+    });
+    spawns.push(Spawn {
+        kind: SpawnKind::Chest,
+        x: if altar_left { x + w - 10 } else { x + 10 },
+        y: y + h - 3,
+    });
 }
 
 /// Sealed pocket of explosive gas around a chest. One spark and it goes up.
 fn gas_chamber(g: &mut Grid, rng: &mut Rng, x: i32, y: i32, spawns: &mut Vec<Spawn>) {
     let (w, h) = (56, 34);
     let (cx, cy) = (x + w / 2, y + h / 2);
-    g.fill_ellipse(cx, cy, w / 2, h / 2, |_, _, d| Some(if d > 0.78 { Material::Stone } else { Material::Gas }));
+    g.fill_ellipse(cx, cy, w / 2, h / 2, |_, _, d| {
+        Some(if d > 0.78 { Material::Stone } else { Material::Gas })
+    });
     // Flat floor for the chest.
     let floor = cy + h / 2 - 6;
     g.fill_rect(cx - 10, floor + 1, 20, 3, Material::Stone);
@@ -638,7 +720,11 @@ fn gas_chamber(g: &mut Grid, rng: &mut Rng, x: i32, y: i32, spawns: &mut Vec<Spa
     if rng.coin() {
         g.fill_rect(cx + 12, floor - 5, 5, 6, Material::Explosive);
     }
-    spawns.push(Spawn { kind: SpawnKind::Chest, x: cx, y: floor });
+    spawns.push(Spawn {
+        kind: SpawnKind::Chest,
+        x: cx,
+        y: floor,
+    });
 }
 
 /// Huge cavern over a lava lake, crossed by a rickety bridge, altar on a ledge.
@@ -659,7 +745,11 @@ fn magma_chamber(g: &mut Grid, rng: &mut Rng, x: i32, y: i32, spawns: &mut Vec<S
     let by = cy - 2;
     for xx in x + 4..x + w - 4 {
         if g.get(xx, by) == Material::Empty || g.get(xx, by) == Material::Basalt {
-            let m = if rng.chance(50) { Material::Gravel } else { Material::Wood };
+            let m = if rng.chance(50) {
+                Material::Gravel
+            } else {
+                Material::Wood
+            };
             g.set(xx, by, m);
             g.set(xx, by + 1, Material::Wood);
         }
@@ -673,7 +763,11 @@ fn magma_chamber(g: &mut Grid, rng: &mut Rng, x: i32, y: i32, spawns: &mut Vec<S
             g.set(xx, yy, Material::Empty);
         }
     }
-    spawns.push(Spawn { kind: SpawnKind::Altar, x: lx + 10, y: by - 2 });
+    spawns.push(Spawn {
+        kind: SpawnKind::Altar,
+        x: lx + 10,
+        y: by - 2,
+    });
     // Vents puff steam from the lake shore.
     for vx in [x + 20, x + w - 20] {
         g.set(vx, lava_line, Material::Vent);
@@ -684,7 +778,13 @@ fn magma_chamber(g: &mut Grid, rng: &mut Rng, x: i32, y: i32, spawns: &mut Vec<S
 fn crystal_cavern(g: &mut Grid, rng: &mut Rng, x: i32, y: i32, spawns: &mut Vec<Spawn>) {
     let (w, h) = (110, 60);
     let (cx, cy) = (x + w / 2, y + h / 2);
-    g.fill_ellipse(cx, cy, w / 2, h / 2, |_, _, d| Some(if d > 0.85 { Material::Stone } else { Material::Empty }));
+    g.fill_ellipse(cx, cy, w / 2, h / 2, |_, _, d| {
+        Some(if d > 0.85 {
+            Material::Stone
+        } else {
+            Material::Empty
+        })
+    });
     let floor = cy + h / 2 - 8;
     g.fill_rect(x + 8, floor + 1, w - 16, 6, Material::Stone);
     for xx in x + 8..x + w - 8 {
@@ -701,7 +801,8 @@ fn crystal_cavern(g: &mut Grid, rng: &mut Rng, x: i32, y: i32, spawns: &mut Vec<
     for _ in 0..40 {
         let px = x + 6 + (rng.next_u64() % (w as u64 - 12)) as i32;
         let py = y + 4 + (rng.next_u64() % (h as u64 - 8)) as i32;
-        if g.is_air(px, py) && (g.is_ground(px, py - 1) || g.is_ground(px - 1, py) || g.is_ground(px + 1, py)) {
+        if g.is_air(px, py) && (g.is_ground(px, py - 1) || g.is_ground(px - 1, py) || g.is_ground(px + 1, py))
+        {
             grow_crystal(g, rng, px, py);
         }
     }
@@ -712,8 +813,16 @@ fn crystal_cavern(g: &mut Grid, rng: &mut Rng, x: i32, y: i32, spawns: &mut Vec<
             }
         }
     }
-    spawns.push(Spawn { kind: SpawnKind::Shrine, x: cx - 14, y: floor });
-    spawns.push(Spawn { kind: SpawnKind::Altar, x: cx + 14, y: floor });
+    spawns.push(Spawn {
+        kind: SpawnKind::Shrine,
+        x: cx - 14,
+        y: floor,
+    });
+    spawns.push(Spawn {
+        kind: SpawnKind::Altar,
+        x: cx + 14,
+        y: floor,
+    });
 }
 
 /// Small carved room holding a shrine.
@@ -722,7 +831,11 @@ fn shrine_room(g: &mut Grid, _rng: &mut Rng, x: i32, y: i32, spawns: &mut Vec<Sp
     g.fill_rect(x, y, w, h, Material::Brick);
     g.fill_rect(x + 3, y + 3, w - 6, h - 6, Material::Empty);
     g.fill_rect(x + 3, y + h - 6, w - 6, 3, Material::Brick);
-    spawns.push(Spawn { kind: SpawnKind::Shrine, x: x + w / 2, y: y + h - 7 });
+    spawns.push(Spawn {
+        kind: SpawnKind::Shrine,
+        x: x + w / 2,
+        y: y + h - 7,
+    });
 }
 
 /// Ferrite halls with molten metal channels, a shrine and an altar.
@@ -743,8 +856,16 @@ fn foundry(g: &mut Grid, rng: &mut Rng, x: i32, y: i32, spawns: &mut Vec<Spawn>)
     if rng.coin() {
         g.fill_rect(x + w - 20, floor - 6, 6, 6, Material::Explosive);
     }
-    spawns.push(Spawn { kind: SpawnKind::Shrine, x: x + 22, y: floor });
-    spawns.push(Spawn { kind: SpawnKind::Altar, x: x + w - 34, y: floor });
+    spawns.push(Spawn {
+        kind: SpawnKind::Shrine,
+        x: x + 22,
+        y: floor,
+    });
+    spawns.push(Spawn {
+        kind: SpawnKind::Altar,
+        x: x + w - 34,
+        y: floor,
+    });
 }
 
 /// The final chamber: a core-shell sphere with a single opening on top.
@@ -772,13 +893,22 @@ fn build_core_chamber(g: &mut Grid, rng: &mut Rng, spawns: &mut Vec<Spawn>) -> (
     // Bedrock floor across the bottom of the world.
     g.fill_rect(0, g.h - 6, g.w, 6, Material::CoreShell);
     let core = (cx, floor - 3);
-    spawns.push(Spawn { kind: SpawnKind::Core, x: core.0, y: core.1 });
+    spawns.push(Spawn {
+        kind: SpawnKind::Core,
+        x: core.0,
+        y: core.1,
+    });
     core
 }
 
 fn scatter_chests(g: &mut Grid, rng: &mut Rng, taken: &[(i32, i32, i32, i32)], spawns: &mut Vec<Spawn>) {
     const PER_LAYER: usize = 5;
-    for layer in [Layer::Crust, Layer::UpperMantle, Layer::DeepMantle, Layer::OuterCore] {
+    for layer in [
+        Layer::Crust,
+        Layer::UpperMantle,
+        Layer::DeepMantle,
+        Layer::OuterCore,
+    ] {
         let top = layer.top().max(150);
         let mut placed = 0;
         for attempt in 0..6000 {
@@ -787,18 +917,31 @@ fn scatter_chests(g: &mut Grid, rng: &mut Rng, taken: &[(i32, i32, i32, i32)], s
             }
             let x = 12 + (rng.next_u64() % (g.w as u64 - 24)) as i32;
             let y = top + (rng.next_u64() % (layer.bottom() - top - 20) as u64) as i32;
-            let inside = taken.iter().any(|&(tx, ty, tw, th)| x >= tx - 8 && x < tx + tw + 8 && y >= ty - 8 && y < ty + th + 8);
+            let inside = taken
+                .iter()
+                .any(|&(tx, ty, tw, th)| x >= tx - 8 && x < tx + tw + 8 && y >= ty - 8 && y < ty + th + 8);
             if inside {
                 continue;
             }
             if g.is_floor_spot(x, y, 9, 3) {
-                spawns.push(Spawn { kind: SpawnKind::Chest, x, y });
+                spawns.push(Spawn {
+                    kind: SpawnKind::Chest,
+                    x,
+                    y,
+                });
                 placed += 1;
-            } else if attempt > 3000 && g.get(x, y).is_solid_for_player() && g.get(x, y) != Material::CoreShell {
+            } else if attempt > 3000
+                && g.get(x, y).is_solid_for_player()
+                && g.get(x, y) != Material::CoreShell
+            {
                 // Not enough natural ledges: hollow out a buried niche instead.
                 g.fill_rect(x - 7, y - 9, 15, 10, Material::Empty);
                 g.fill_rect(x - 7, y + 1, 15, 2, Material::Stone);
-                spawns.push(Spawn { kind: SpawnKind::Chest, x, y });
+                spawns.push(Spawn {
+                    kind: SpawnKind::Chest,
+                    x,
+                    y,
+                });
                 placed += 1;
             }
         }
@@ -819,13 +962,18 @@ fn scatter_creatures(g: &Grid, rng: &mut Rng, spawns: &mut Vec<Spawn>) {
                 break;
             }
             let x = 10 + (rng.next_u64() % (g.w as u64 - 20)) as i32;
-            let y = layer.top().max(200) + (rng.next_u64() % (layer.bottom() - layer.top().max(200)) as u64) as i32;
+            let y = layer.top().max(200)
+                + (rng.next_u64() % (layer.bottom() - layer.top().max(200)) as u64) as i32;
             let ok = match kind {
                 CreatureKind::SporeDrifter => (-4..=4).all(|d| g.is_air(x + d, y) && g.is_air(x, y + d)),
                 _ => g.is_floor_spot(x, y, 8, 5),
             };
             if ok {
-                spawns.push(Spawn { kind: SpawnKind::Creature(kind), x, y });
+                spawns.push(Spawn {
+                    kind: SpawnKind::Creature(kind),
+                    x,
+                    y,
+                });
                 placed += 1;
             }
         }
@@ -860,9 +1008,21 @@ mod tests {
 
         let count = |k: SpawnKind| a.spawns.iter().filter(|s| s.kind == k).count();
         assert_eq!(count(SpawnKind::Core), 1);
-        assert!(count(SpawnKind::Altar) >= 4, "altars: {}", count(SpawnKind::Altar));
-        assert!(count(SpawnKind::Shrine) >= 3, "shrines: {}", count(SpawnKind::Shrine));
-        assert!(count(SpawnKind::Chest) >= 12, "chests: {}", count(SpawnKind::Chest));
+        assert!(
+            count(SpawnKind::Altar) >= 4,
+            "altars: {}",
+            count(SpawnKind::Altar)
+        );
+        assert!(
+            count(SpawnKind::Shrine) >= 3,
+            "shrines: {}",
+            count(SpawnKind::Shrine)
+        );
+        assert!(
+            count(SpawnKind::Chest) >= 12,
+            "chests: {}",
+            count(SpawnKind::Chest)
+        );
 
         let w = &a.world;
         let has = |layer: Layer, m: Material| {

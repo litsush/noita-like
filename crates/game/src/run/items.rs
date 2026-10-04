@@ -37,6 +37,8 @@ pub enum Active {
 }
 
 pub struct ItemDef {
+    /// Must match the table position; checked in tests.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub id: ItemId,
     pub name: &'static str,
     pub desc: &'static str,
@@ -59,7 +61,16 @@ const fn def(
     active: Option<Active>,
     unlock: Option<AchievementId>,
 ) -> ItemDef {
-    ItemDef { id, name, desc, flavor, icon, active, unlock, is_pick: false }
+    ItemDef {
+        id,
+        name,
+        desc,
+        flavor,
+        icon,
+        active,
+        unlock,
+        is_pick: false,
+    }
 }
 
 use AchievementId as A;
@@ -117,7 +128,10 @@ pub static ITEMS: [ItemDef; 17] = [
         "Throw a flask of acid that eats through rock (but not obsidian or crystal).",
         "Do not drink. Do not hold for long.",
         4,
-        Some(Active::Charges { max: 3, recharge: 22.0 }),
+        Some(Active::Charges {
+            max: 3,
+            recharge: 22.0,
+        }),
         Some(A::Alchemist),
     ),
     def(
@@ -126,7 +140,10 @@ pub static ITEMS: [ItemDef; 17] = [
         "Place a charge that detonates after a short fuse, blasting a crater.",
         "Mining, but faster and louder.",
         5,
-        Some(Active::Charges { max: 3, recharge: 28.0 }),
+        Some(Active::Charges {
+            max: 3,
+            recharge: 28.0,
+        }),
         Some(A::Pyromaniac),
     ),
     def(
@@ -171,7 +188,10 @@ pub static ITEMS: [ItemDef; 17] = [
         "Throw a seed that grows ice through water and turns lava into obsidian.",
         "Cold enough to freeze a river mid-sentence.",
         10,
-        Some(Active::Charges { max: 2, recharge: 18.0 }),
+        Some(Active::Charges {
+            max: 2,
+            recharge: 18.0,
+        }),
         None,
     ),
     def(
@@ -180,7 +200,10 @@ pub static ITEMS: [ItemDef; 17] = [
         "Throw spores that grow glowing, flammable fungus over rock.",
         "Light for the dark. Fuel for the fire.",
         11,
-        Some(Active::Charges { max: 3, recharge: 14.0 }),
+        Some(Active::Charges {
+            max: 3,
+            recharge: 14.0,
+        }),
         None,
     ),
     def(
@@ -189,7 +212,10 @@ pub static ITEMS: [ItemDef; 17] = [
         "Place a tiny sun that cooks lava into obsidian, boils water and lights the dark.",
         "Handle by the corona.",
         12,
-        Some(Active::Charges { max: 1, recharge: 30.0 }),
+        Some(Active::Charges {
+            max: 1,
+            recharge: 30.0,
+        }),
         Some(A::ObsidianBridge),
     ),
     def(
@@ -216,7 +242,10 @@ pub static ITEMS: [ItemDef; 17] = [
         "Shoot sparks that electrify water and metal and ignite gas.",
         "Point away from face.",
         15,
-        Some(Active::Charges { max: 1, recharge: 1.2 }),
+        Some(Active::Charges {
+            max: 1,
+            recharge: 1.2,
+        }),
         Some(A::Conductor),
     ),
     def(
@@ -258,7 +287,6 @@ impl ItemId {
 
 /// Icon indices for non-item things in the item sheet.
 pub mod icon {
-    pub const CHEST_CLOSED: usize = 17;
     pub const ROPE: usize = 21;
     pub const TORCH: usize = 22;
     pub const ORE: usize = 23;
@@ -273,7 +301,6 @@ pub mod icon {
     pub const SKULL: usize = 32;
     pub const TROPHY: usize = 33;
     pub const PICKAXE: usize = 34;
-    pub const UNKNOWN: usize = 35;
     pub const COMPASS: usize = 36;
     pub const HOURGLASS: usize = 37;
 }

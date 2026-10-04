@@ -63,10 +63,15 @@ pub fn spawn_entities(
         let pos = Vec2::new(s.x as f32 + 0.5, s.y as f32 + 1.0);
         let kind = match s.kind {
             SpawnKind::Chest => PropKind::Chest { opened: false },
-            SpawnKind::Altar => PropKind::Altar { item: run.roll_item(&save) },
+            SpawnKind::Altar => PropKind::Altar {
+                item: run.roll_item(&save),
+            },
             SpawnKind::Shrine => {
                 let layer = Layer::at_depth(s.y);
-                PropKind::Shrine { item: run.roll_item(&save), price: 30 + layer.index() as u32 * 30 }
+                PropKind::Shrine {
+                    item: run.roll_item(&save),
+                    price: 30 + layer.index() as u32 * 30,
+                }
             }
             SpawnKind::Core => PropKind::Core,
             SpawnKind::Creature(_) => continue,
@@ -137,14 +142,21 @@ pub fn interact(
     let c = player.body.center();
     let nearest = props
         .iter_mut()
-        .filter(|(_, p, _)| p.center().distance(c) < INTERACT_RANGE + if p.kind == PropKind::Core { 14.0 } else { 0.0 })
+        .filter(|(_, p, _)| {
+            p.center().distance(c) < INTERACT_RANGE + if p.kind == PropKind::Core { 14.0 } else { 0.0 }
+        })
         .min_by(|a, b| a.1.center().distance(c).total_cmp(&b.1.center().distance(c)));
-    let Some((entity, mut prop, mut sprite)) = nearest else { return };
+    let Some((entity, mut prop, mut sprite)) = nearest else {
+        return;
+    };
 
     let text = match prop.kind {
         PropKind::Chest { opened: false } => Some("F  Open chest".to_string()),
         PropKind::Altar { item: Some(item) } => Some(format!("F  Take {}", item.def().name)),
-        PropKind::Shrine { item: Some(item), price } => Some(format!("F  Buy {} for {price} ore", item.def().name)),
+        PropKind::Shrine {
+            item: Some(item),
+            price,
+        } => Some(format!("F  Buy {} for {price} ore", item.def().name)),
         PropKind::Core => Some("F  Touch the core".to_string()),
         _ => None,
     };
@@ -169,7 +181,12 @@ pub fn interact(
                 atlas.index = props_frame::CHEST_OPEN;
             }
             sfx.write(Sfx::at("chest_open", at));
-            bursts.write(Burst::new(at, Color::srgb(1.0, 0.85, 0.3)).count(16).speed(50.0).gravity(-20.0));
+            bursts.write(
+                Burst::new(at, Color::srgb(1.0, 0.85, 0.3))
+                    .count(16)
+                    .speed(50.0)
+                    .gravity(-20.0),
+            );
             let roll = run.rng.next_u8();
             match (roll, run.roll_item(&save)) {
                 (0..150, Some(item)) => {
@@ -189,9 +206,17 @@ pub fn interact(
             remove_display(&mut commands);
             run.give(item);
             sfx.write(Sfx::ui("item_get"));
-            bursts.write(Burst::new(at, Color::srgb(0.6, 0.9, 1.0)).count(20).speed(40.0).gravity(-30.0));
+            bursts.write(
+                Burst::new(at, Color::srgb(0.6, 0.9, 1.0))
+                    .count(20)
+                    .speed(40.0)
+                    .gravity(-30.0),
+            );
         }
-        PropKind::Shrine { item: Some(item), price } => {
+        PropKind::Shrine {
+            item: Some(item),
+            price,
+        } => {
             if run.ore >= price {
                 run.ore -= price;
                 prop.kind = PropKind::Shrine { item: None, price };
@@ -205,7 +230,13 @@ pub fn interact(
         }
         PropKind::Core => {
             run.phase = Phase::Won(0.0);
-            bursts.write(Burst::new(at, Color::srgb(1.0, 0.9, 0.6)).count(80).speed(120.0).gravity(0.0).life(1.5));
+            bursts.write(
+                Burst::new(at, Color::srgb(1.0, 0.9, 0.6))
+                    .count(80)
+                    .speed(120.0)
+                    .gravity(0.0)
+                    .life(1.5),
+            );
         }
         _ => {}
     }
@@ -244,7 +275,17 @@ impl Projectile {
                 s
             }
         };
-        (Projectile { kind, pos, vel, age: 0.0 }, InGameEntity, sprite, Transform::from_translation(to_world(pos, 5.5)))
+        (
+            Projectile {
+                kind,
+                pos,
+                vel,
+                age: 0.0,
+            },
+            InGameEntity,
+            sprite,
+            Transform::from_translation(to_world(pos, 5.5)),
+        )
     }
 }
 
@@ -260,7 +301,16 @@ impl Bomb {
     pub fn bundle(pos: Vec2, assets: &GameAssets) -> impl Bundle {
         let mut s = assets.items.sprite(ItemId::BlastCharges.def().icon);
         s.custom_size = Some(Vec2::splat(8.0));
-        (Bomb { pos, fuse: 2.5, vy: 0.0 }, InGameEntity, s, Transform::from_translation(to_world(pos, 5.0)))
+        (
+            Bomb {
+                pos,
+                fuse: 2.5,
+                vy: 0.0,
+            },
+            InGameEntity,
+            s,
+            Transform::from_translation(to_world(pos, 5.0)),
+        )
     }
 }
 
@@ -276,7 +326,16 @@ impl Sun {
     pub fn bundle(pos: Vec2, assets: &GameAssets) -> impl Bundle {
         let mut s = assets.items.sprite(ItemId::PocketSun.def().icon);
         s.custom_size = Some(Vec2::splat(12.0));
-        (Sun { pos, life: 10.0, timer: 0.0 }, InGameEntity, s, Transform::from_translation(to_world(pos, 5.0)))
+        (
+            Sun {
+                pos,
+                life: 10.0,
+                timer: 0.0,
+            },
+            InGameEntity,
+            s,
+            Transform::from_translation(to_world(pos, 5.0)),
+        )
     }
 }
 
@@ -298,11 +357,17 @@ pub fn update_projectiles(
     mut sfx: MessageWriter<Sfx>,
     mut bursts: MessageWriter<Burst>,
 ) {
-    let Some(world) = session.world.as_mut() else { return };
+    let Some(world) = session.world.as_mut() else {
+        return;
+    };
     let dt = time.delta_secs();
     for (entity, mut p, mut tf) in &mut q {
         p.age += dt;
-        let gravity = if p.kind == ProjectileKind::SparkBolt { 0.0 } else { 260.0 };
+        let gravity = if p.kind == ProjectileKind::SparkBolt {
+            0.0
+        } else {
+            260.0
+        };
         p.vel.y += gravity * dt;
         let delta = p.vel * dt;
         let steps = delta.length().ceil().max(1.0) as i32;
@@ -333,7 +398,11 @@ pub fn update_projectiles(
                 } else {
                     sfx.write(Sfx::at("torch_ignite", at));
                     commands.spawn((
-                        Torch { pos: p.pos, life: 150.0, timer: 0.0 },
+                        Torch {
+                            pos: p.pos,
+                            life: 150.0,
+                            timer: 0.0,
+                        },
                         InGameEntity,
                         assets.props.sprite(props_frame::TORCH),
                         Transform::from_translation(to_world(p.pos - Vec2::Y * 6.0, 4.5)),
@@ -348,7 +417,13 @@ pub fn update_projectiles(
                 }
                 for i in 0..20 {
                     let a = i as f32 / 20.0 * std::f32::consts::TAU;
-                    world.spawn_particle(p.pos.x, p.pos.y - 1.0, a.cos() * 1.5, a.sin() * 1.5 - 1.0, Material::Acid);
+                    world.spawn_particle(
+                        p.pos.x,
+                        p.pos.y - 1.0,
+                        a.cos() * 1.5,
+                        a.sin() * 1.5 - 1.0,
+                        Material::Acid,
+                    );
                 }
                 sfx.write(Sfx::at("acid_hiss", at));
                 bursts.write(Burst::new(at, Color::srgb(0.85, 0.95, 0.9)).count(10).speed(60.0));
@@ -362,7 +437,12 @@ pub fn update_projectiles(
                     }
                 }
                 sfx.write(Sfx::at("freeze", at));
-                bursts.write(Burst::new(at, Color::srgb(0.8, 0.95, 1.0)).count(16).speed(50.0).gravity(20.0));
+                bursts.write(
+                    Burst::new(at, Color::srgb(0.8, 0.95, 1.0))
+                        .count(16)
+                        .speed(50.0)
+                        .gravity(20.0),
+                );
             }
             ProjectileKind::Spores => {
                 for (cx, cy) in disc(x, y, 7) {
@@ -371,7 +451,12 @@ pub fn update_projectiles(
                     }
                 }
                 sfx.write(Sfx::at("plant", at));
-                bursts.write(Burst::new(at, Color::srgb(0.5, 0.9, 0.5)).count(14).speed(30.0).gravity(-10.0));
+                bursts.write(
+                    Burst::new(at, Color::srgb(0.5, 0.9, 0.5))
+                        .count(14)
+                        .speed(30.0)
+                        .gravity(-10.0),
+                );
             }
             ProjectileKind::SparkBolt => {
                 world.electrify(at.x.floor() as i32, at.y.floor() as i32, MAX_CHARGE);
@@ -381,19 +466,33 @@ pub fn update_projectiles(
                     }
                 }
                 sfx.write(Sfx::at("spark", at));
-                bursts.write(Burst::new(at, Color::srgb(0.7, 0.9, 1.0)).count(12).speed(80.0).gravity(0.0));
+                bursts.write(
+                    Burst::new(at, Color::srgb(0.7, 0.9, 1.0))
+                        .count(12)
+                        .speed(80.0)
+                        .gravity(0.0),
+                );
             }
         }
     }
 }
 
 fn anchored(world: &World, x: i32, y: i32) -> bool {
-    [(0, 1), (0, -1), (1, 0), (-1, 0)].iter().any(|(dx, dy)| world.material(x + dx, y + dy).kind() == Kind::Solid)
+    [(0, 1), (0, -1), (1, 0), (-1, 0)]
+        .iter()
+        .any(|(dx, dy)| world.material(x + dx, y + dy).kind() == Kind::Solid)
 }
 
 /// A ring of flame (Thermal Suit vent).
 pub fn fire_burst(bursts: &mut MessageWriter<Burst>, at: Vec2) {
-    bursts.write(Burst::new(at, Color::srgb(1.0, 0.6, 0.15)).count(40).speed(110.0).gravity(-40.0).life(0.6).size(1.5));
+    bursts.write(
+        Burst::new(at, Color::srgb(1.0, 0.6, 0.15))
+            .count(40)
+            .speed(110.0)
+            .gravity(-40.0)
+            .life(0.6)
+            .size(1.5),
+    );
 }
 
 pub fn update_bombs(
@@ -406,7 +505,9 @@ pub fn update_bombs(
     mut shake: ResMut<Shake>,
     mut stop: ResMut<HitStop>,
 ) {
-    let Some(world) = session.world.as_mut() else { return };
+    let Some(world) = session.world.as_mut() else {
+        return;
+    };
     let dt = time.delta_secs();
 
     if let Some(at) = run.pending_fire_burst.take() {
@@ -429,7 +530,11 @@ pub fn update_bombs(
         }
         tf.translation = to_world(bomb.pos - Vec2::Y * 3.0, 5.0);
         let blink = (bomb.fuse * if bomb.fuse < 0.8 { 16.0 } else { 6.0 }) as i32 % 2 == 0;
-        sprite.color = if blink { Color::srgb(1.0, 0.4, 0.4) } else { Color::WHITE };
+        sprite.color = if blink {
+            Color::srgb(1.0, 0.4, 0.4)
+        } else {
+            Color::WHITE
+        };
         if bomb.fuse <= 0.0 {
             commands.entity(entity).despawn();
             let (x, y) = (bomb.pos.x as i32, bomb.pos.y as i32 - 2);
@@ -452,7 +557,9 @@ pub fn update_suns(
     mut q: Query<(Entity, &mut Sun, &mut Transform)>,
     mut bursts: MessageWriter<Burst>,
 ) {
-    let Some(world) = session.world.as_mut() else { return };
+    let Some(world) = session.world.as_mut() else {
+        return;
+    };
     let dt = time.delta_secs();
     for (entity, mut sun, mut tf) in &mut q {
         sun.life -= dt;
@@ -463,7 +570,13 @@ pub fn update_suns(
         if sun.timer <= 0.0 {
             sun.timer = 0.2;
             world.cook(sun.pos.x as i32, sun.pos.y as i32, 9);
-            bursts.write(Burst::new(sun.pos, Color::srgb(1.0, 0.9, 0.5)).count(2).speed(30.0).gravity(-20.0).life(0.4));
+            bursts.write(
+                Burst::new(sun.pos, Color::srgb(1.0, 0.9, 0.5))
+                    .count(2)
+                    .speed(30.0)
+                    .gravity(-20.0)
+                    .life(0.4),
+            );
         }
         if sun.life <= 0.0 {
             commands.entity(entity).despawn();
@@ -479,7 +592,9 @@ pub fn update_torches(
     mut q: Query<(Entity, &mut Torch)>,
     mut sfx: MessageWriter<Sfx>,
 ) {
-    let Some(world) = session.world.as_mut() else { return };
+    let Some(world) = session.world.as_mut() else {
+        return;
+    };
     let dt = time.delta_secs();
     for (entity, mut torch) in &mut q {
         torch.life -= dt;
@@ -495,7 +610,10 @@ pub fn update_torches(
         }
         if torch.timer <= 0.0 {
             torch.timer = 0.4;
-            let (dx, dy) = ((run.rng.next_u8() % 5) as i32 - 2, (run.rng.next_u8() % 5) as i32 - 3);
+            let (dx, dy) = (
+                (run.rng.next_u8() % 5) as i32 - 2,
+                (run.rng.next_u8() % 5) as i32 - 3,
+            );
             if world.material(x + dx, y + dy).props().flammability > 0 {
                 world.ignite(x + dx, y + dy);
             }

@@ -74,7 +74,11 @@ pub struct RunPlayer {
 
 impl RunPlayer {
     pub fn solid_fn(run: &Run) -> SolidFn {
-        if run.has(ItemId::HeavyBoots) { boots_solid } else { default_solid }
+        if run.has(ItemId::HeavyBoots) {
+            boots_solid
+        } else {
+            default_solid
+        }
     }
 
     /// Where held items and projectiles come from.
@@ -98,8 +102,14 @@ pub fn spawn_player(
     session: Res<Session>,
     start_layer: Option<Res<crate::dev::StartLayer>>,
 ) {
-    let start = match (start_layer, &session.world) {
-        (Some(layer), Some(world)) => dev_start(world, layer.0).unwrap_or(setup.start),
+    let core = setup
+        .spawns
+        .iter()
+        .find(|s| s.kind == sbct_sim::descent::SpawnKind::Core);
+    let start = match (start_layer, &session.world, core) {
+        // `--layer 5`: right next to the core, for testing the ending.
+        (Some(layer), _, Some(core)) if layer.0 == 5 => Vec2::new(core.x as f32 - 12.0, core.y as f32 + 1.0),
+        (Some(layer), Some(world), _) => dev_start(world, layer.0).unwrap_or(setup.start),
         _ => setup.start,
     };
     commands.insert_resource(RunPlayer {
@@ -148,14 +158,19 @@ fn dev_start(world: &World, layer: usize) -> Option<Vec2> {
             && (-3..=3).all(|dx| world.is_solid(x + dx, y + 1))
     };
     (layer.top() + 20..layer.bottom()).find_map(|y| {
-        (40..world.width() as i32 - 40).step_by(3).find(|&x| clear(x, y)).map(|x| Vec2::new(x as f32 + 0.5, y as f32 + 1.0))
+        (40..world.width() as i32 - 40)
+            .step_by(3)
+            .find(|&x| clear(x, y))
+            .map(|x| Vec2::new(x as f32 + 0.5, y as f32 + 1.0))
     })
 }
 
 fn on_rope(world: &World, body: &Body) -> bool {
     let x = body.pos.x.floor() as i32;
     let c = body.center();
-    [c.y, c.y + 3.0, c.y - 3.0].iter().any(|&y| world.material(x, y.floor() as i32).props().climbable)
+    [c.y, c.y + 3.0, c.y - 3.0]
+        .iter()
+        .any(|&y| world.material(x, y.floor() as i32).props().climbable)
 }
 
 /// Footstep sound family for the material underfoot.
@@ -163,16 +178,32 @@ fn step_sound(m: Material, n: u32) -> &'static str {
     let even = n.is_multiple_of(2);
     match m {
         Material::Sand | Material::Gravel | Material::Ash => {
-            if even { "step_gravel_1" } else { "step_gravel_2" }
+            if even {
+                "step_gravel_1"
+            } else {
+                "step_gravel_2"
+            }
         }
         Material::Ferrite | Material::Metal | Material::Explosive => {
-            if even { "step_metal_1" } else { "step_metal_2" }
+            if even {
+                "step_metal_1"
+            } else {
+                "step_metal_2"
+            }
         }
         Material::Stone | Material::Basalt | Material::Obsidian | Material::Brick | Material::Crystal => {
-            if even { "step_hard_1" } else { "step_hard_2" }
+            if even {
+                "step_hard_1"
+            } else {
+                "step_hard_2"
+            }
         }
         _ => {
-            if even { "step_soft_1" } else { "step_soft_2" }
+            if even {
+                "step_soft_1"
+            } else {
+                "step_soft_2"
+            }
         }
     }
 }
@@ -189,7 +220,9 @@ pub fn player_move(
     mut listener: ResMut<Listener>,
     paused: Res<super::hud::Paused>,
 ) {
-    let Some(world) = session.world.as_mut() else { return };
+    let Some(world) = session.world.as_mut() else {
+        return;
+    };
     let dt = time.delta_secs().min(1.0 / 30.0);
     if dt <= 0.0 {
         return;
@@ -204,8 +237,16 @@ pub fn player_move(
 
     p.stun = (p.stun - dt).max(0.0);
     p.dash_cd = (p.dash_cd - dt).max(0.0);
-    p.coyote = if p.body.on_ground { 0.1 } else { (p.coyote - dt).max(0.0) };
-    p.jump_buffer = if jump_pressed { 0.12 } else { (p.jump_buffer - dt).max(0.0) };
+    p.coyote = if p.body.on_ground {
+        0.1
+    } else {
+        (p.coyote - dt).max(0.0)
+    };
+    p.jump_buffer = if jump_pressed {
+        0.12
+    } else {
+        (p.jump_buffer - dt).max(0.0)
+    };
     if dir != 0 && p.dig_anim.is_none() {
         p.facing = dir as f32;
     }
@@ -302,7 +343,30 @@ pub fn player_move(
     if p.body.on_ground {
         p.climb_stamina = CLIMB_STAMINA;
     }
-    p.crushed = !p.body.escape_overlap(world, solid);
+    p.crushed = false;
+    if !p.body.escape_overlap(world, solid) {
+        // Buried: shove loose material out of the way rather than pinning
+        // the player; only real weight (or solid rock) crushes.
+        let mut cells = Vec::new();
+        p.body.for_each_cell(|x, y| cells.push((x, y)));
+        let (mut powder, mut hard) = (0, 0);
+        let top = p.body.pos.y - p.body.height - 1.0;
+        for (x, y) in cells {
+            let m = world.material(x, y);
+            if !solid(m) {
+                continue;
+            }
+            if m.kind() == Kind::Powder {
+                powder += 1;
+                let side = if x as f32 >= p.body.pos.x { 1.0 } else { -1.0 };
+                world.set(x, y, Material::Empty);
+                world.spawn_particle(x as f32 + 0.5, top, side * 0.8, -1.2, m);
+            } else {
+                hard += 1;
+            }
+        }
+        p.crushed = hard > 0 || powder > 10;
+    }
 
     if let Some(speed) = result.landed
         && speed > 120.0
@@ -354,7 +418,11 @@ pub fn player_move(
 fn aim(player: &RunPlayer, cursor: Vec2) -> Vec2 {
     let c = player.body.center();
     let d = cursor - c;
-    if d.length() > REACH { c + d.normalize() * REACH } else { cursor }
+    if d.length() > REACH {
+        c + d.normalize() * REACH
+    } else {
+        cursor
+    }
 }
 
 fn dig_sound(m: Material) -> &'static str {
@@ -383,7 +451,9 @@ pub fn player_dig(
     if !run.is_playing() || paused.0 || !input.dig || player.stun > 0.0 {
         return;
     }
-    let Some(world) = session.world.as_mut() else { return };
+    let Some(world) = session.world.as_mut() else {
+        return;
+    };
     let Some(cursor) = input.aim else { return };
     let target = aim(&player, cursor);
     let dir = (target - player.body.center()).normalize_or_zero();
@@ -397,7 +467,11 @@ pub fn player_dig(
         return;
     }
     player.dig_timer = DIG_INTERVAL;
-    let power = if run.has(ItemId::GlassCannonPick) { 235 } else { BASE_PICK_POWER };
+    let power = if run.has(ItemId::GlassCannonPick) {
+        235
+    } else {
+        BASE_PICK_POWER
+    };
     let (tx, ty) = (target.x.floor() as i32, target.y.floor() as i32);
     let dug = world.dig(tx, ty, DIG_RADIUS, power);
     let Some(&(_, _, first)) = dug.first() else { return };
@@ -408,7 +482,12 @@ pub fn player_dig(
         if m.props().value > 0 {
             run.ore += m.props().value as u32;
             sfx.write(Sfx::at("pickup", target).volume(0.5).pitch(0.15));
-            bursts.write(Burst::new(target, Color::srgb(1.0, 0.85, 0.3)).count(2).speed(20.0).gravity(-20.0));
+            bursts.write(
+                Burst::new(target, Color::srgb(1.0, 0.85, 0.3))
+                    .count(2)
+                    .speed(20.0)
+                    .gravity(-20.0),
+            );
             continue;
         }
         let rocky = matches!(
@@ -416,7 +495,11 @@ pub fn player_dig(
             Material::Stone | Material::Basalt | Material::Brick | Material::Obsidian | Material::Ferrite
         );
         if rocky && run.has(ItemId::CrumblingPick) && run.rng.chance(180) {
-            let rubble = if run.rng.coin() { Material::Gravel } else { Material::Sand };
+            let rubble = if run.rng.coin() {
+                Material::Gravel
+            } else {
+                Material::Sand
+            };
             world.set_with_life(x, y, rubble, 0);
         } else if rocky && run.has(ItemId::MagmaPick) && run.rng.chance(60) {
             world.set(x, y, Material::Lava);
@@ -447,7 +530,9 @@ pub fn player_actions(
     if !run.is_playing() || paused.0 || player.stun > 0.0 {
         return;
     }
-    let Some(world) = session.world.as_mut() else { return };
+    let Some(world) = session.world.as_mut() else {
+        return;
+    };
     let dt = time.delta_secs();
 
     // Cycle actives.
@@ -476,7 +561,12 @@ pub fn player_actions(
 
     if input.torch && run.torches > 0 {
         run.torches -= 1;
-        commands.spawn(Projectile::bundle(ProjectileKind::Torch, hand, toward * 170.0 + Vec2::Y * -40.0, &assets));
+        commands.spawn(Projectile::bundle(
+            ProjectileKind::Torch,
+            hand,
+            toward * 170.0 + Vec2::Y * -40.0,
+            &assets,
+        ));
         sfx.write(Sfx::at("throw", hand));
     }
 
@@ -499,7 +589,9 @@ pub fn player_actions(
             if !input.use_pressed {
                 return;
             }
-            let Some(entry) = run.charges.get_mut(&item) else { return };
+            let Some(entry) = run.charges.get_mut(&item) else {
+                return;
+            };
             if entry.0 == 0 {
                 return;
             }
@@ -508,19 +600,39 @@ pub fn player_actions(
             run.influence(target);
             match item {
                 ItemId::AcidFlask => {
-                    commands.spawn(Projectile::bundle(ProjectileKind::AcidFlask, hand, toward * 180.0, &assets));
+                    commands.spawn(Projectile::bundle(
+                        ProjectileKind::AcidFlask,
+                        hand,
+                        toward * 180.0,
+                        &assets,
+                    ));
                     sfx.write(Sfx::at("throw", hand));
                 }
                 ItemId::FrostSeed => {
-                    commands.spawn(Projectile::bundle(ProjectileKind::FrostSeed, hand, toward * 170.0, &assets));
+                    commands.spawn(Projectile::bundle(
+                        ProjectileKind::FrostSeed,
+                        hand,
+                        toward * 170.0,
+                        &assets,
+                    ));
                     sfx.write(Sfx::at("throw", hand));
                 }
                 ItemId::FungalSpores => {
-                    commands.spawn(Projectile::bundle(ProjectileKind::Spores, hand, toward * 150.0, &assets));
+                    commands.spawn(Projectile::bundle(
+                        ProjectileKind::Spores,
+                        hand,
+                        toward * 150.0,
+                        &assets,
+                    ));
                     sfx.write(Sfx::at("throw", hand));
                 }
                 ItemId::SparkRod => {
-                    commands.spawn(Projectile::bundle(ProjectileKind::SparkBolt, hand, toward * 360.0, &assets));
+                    commands.spawn(Projectile::bundle(
+                        ProjectileKind::SparkBolt,
+                        hand,
+                        toward * 360.0,
+                        &assets,
+                    ));
                     sfx.write(Sfx::at("spark", hand));
                 }
                 ItemId::BlastCharges => {
@@ -562,7 +674,9 @@ pub fn animate_player(
     run: Res<Run>,
     mut q: Query<(&mut Sprite, &mut Transform), With<PlayerSprite>>,
 ) {
-    let Ok((mut sprite, mut tf)) = q.single_mut() else { return };
+    let Ok((mut sprite, mut tf)) = q.single_mut() else {
+        return;
+    };
     let dt = time.delta_secs();
     player.anim_time += dt;
     player.hurt_flash = (player.hurt_flash - dt).max(0.0);
@@ -584,7 +698,12 @@ pub fn animate_player(
         (anim.0, anim.1, 16.0, true)
     } else if p.climbing {
         let moving = p.body.vel.y.abs() > 5.0;
-        (player_anim::CLIMB.0, player_anim::CLIMB.1, if moving { 10.0 } else { 0.0 }, true)
+        (
+            player_anim::CLIMB.0,
+            player_anim::CLIMB.1,
+            if moving { 10.0 } else { 0.0 },
+            true,
+        )
     } else if !p.body.on_ground && p.body.vel.y < 0.0 {
         (player_anim::JUMP.0, player_anim::JUMP.1, 10.0, false)
     } else if !p.body.on_ground {
@@ -594,9 +713,17 @@ pub fn animate_player(
     } else {
         (player_anim::IDLE.0, player_anim::IDLE.1, 6.0, true)
     };
-    let t = if dead { run_time_since_death(&run) } else { p.anim_time };
+    let t = if dead {
+        run_time_since_death(&run)
+    } else {
+        p.anim_time
+    };
     let mut frame = (t * fps) as usize;
-    frame = if looping { frame % frames } else { frame.min(frames - 1) };
+    frame = if looping {
+        frame % frames
+    } else {
+        frame.min(frames - 1)
+    };
     if let Some(atlas) = &mut sprite.texture_atlas {
         atlas.index = row * player_anim::COLUMNS + frame;
     }
@@ -649,14 +776,15 @@ pub fn follow_camera(
 
     let half = Vec2::new(window.width(), window.height()) * scale / 2.0;
     let (w, h) = (world.width() as f32, world.height() as f32);
-    let clamp = |v: f32, half: f32, max: f32| if half * 2.0 >= max { max / 2.0 } else { v.clamp(half, max - half) };
+    let clamp = |v: f32, half: f32, max: f32| {
+        if half * 2.0 >= max {
+            max / 2.0
+        } else {
+            v.clamp(half, max - half)
+        }
+    };
     let pos = Vec2::new(clamp(current.x, half.x, w), clamp(current.y, half.y, h))
         + shake.offset(time.elapsed_secs());
     tf.translation.x = pos.x;
     tf.translation.y = -pos.y;
-}
-
-/// Whether a material hurts on contact (used for creatures too).
-pub fn is_hot(m: Material) -> bool {
-    matches!(m.kind(), Kind::Fire) || matches!(m, Material::Lava | Material::Metal)
 }

@@ -25,7 +25,16 @@ pub struct Burst {
 
 impl Burst {
     pub fn new(pos: Vec2, color: Color) -> Burst {
-        Burst { pos, color, count: 8, speed: 40.0, gravity: 160.0, life: 0.5, dir: Vec2::ZERO, size: 1.0 }
+        Burst {
+            pos,
+            color,
+            count: 8,
+            speed: 40.0,
+            gravity: 160.0,
+            life: 0.5,
+            dir: Vec2::ZERO,
+            size: 1.0,
+        }
     }
     pub fn count(mut self, n: u32) -> Self {
         self.count = n;
@@ -79,7 +88,10 @@ impl Shake {
             return Vec2::ZERO;
         }
         let s = self.trauma * self.trauma * 6.0;
-        Vec2::new((t * 61.0).sin() + (t * 23.0).cos() * 0.5, (t * 53.0).cos() + (t * 37.0).sin() * 0.5) * s
+        Vec2::new(
+            (t * 61.0).sin() + (t * 23.0).cos() * 0.5,
+            (t * 53.0).cos() + (t * 37.0).sin() * 0.5,
+        ) * s
     }
 }
 
@@ -97,7 +109,10 @@ pub struct FxPlugin;
 impl Plugin for FxPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<Burst>()
-            .insert_resource(Shake { trauma: 0.0, enabled: true })
+            .insert_resource(Shake {
+                trauma: 0.0,
+                enabled: true,
+            })
             .init_resource::<HitStop>()
             .insert_resource(FxRng(Rng::new(7)))
             .add_systems(Update, (spawn_bursts, update_particles, decay_shake));
@@ -128,7 +143,12 @@ fn spawn_bursts(
             let life = b.life * (0.6 + r.next_f32() * 0.7);
             let jitter = Vec2::new(r.next_f32() - 0.5, r.next_f32() - 0.5) * 2.0;
             commands.spawn((
-                FxParticle { vel, gravity: b.gravity, life, max_life: life },
+                FxParticle {
+                    vel,
+                    gravity: b.gravity,
+                    life,
+                    max_life: life,
+                },
                 InGameEntity,
                 Sprite::from_color(b.color, Vec2::splat(b.size)),
                 Transform::from_xyz(b.pos.x + jitter.x, -(b.pos.y + jitter.y), 6.0),

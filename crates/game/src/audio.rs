@@ -22,10 +22,20 @@ pub struct Sfx {
 
 impl Sfx {
     pub fn ui(name: &'static str) -> Sfx {
-        Sfx { name, pos: None, volume: 1.0, pitch_var: 0.0 }
+        Sfx {
+            name,
+            pos: None,
+            volume: 1.0,
+            pitch_var: 0.0,
+        }
     }
     pub fn at(name: &'static str, pos: Vec2) -> Sfx {
-        Sfx { name, pos: Some(pos), volume: 1.0, pitch_var: 0.08 }
+        Sfx {
+            name,
+            pos: Some(pos),
+            volume: 1.0,
+            pitch_var: 0.08,
+        }
     }
     pub fn volume(mut self, v: f32) -> Self {
         self.volume = v;

@@ -27,10 +27,20 @@ pub struct Cell {
 }
 
 impl Cell {
-    pub const EMPTY: Cell = Cell { mat: Material::Empty, shade: 0, life: 0, clock: 0 };
+    pub const EMPTY: Cell = Cell {
+        mat: Material::Empty,
+        shade: 0,
+        life: 0,
+        clock: 0,
+    };
 
     pub fn new(mat: Material, shade: u8) -> Cell {
-        Cell { mat, shade, life: mat.initial_life(), clock: 0 }
+        Cell {
+            mat,
+            shade,
+            life: mat.initial_life(),
+            clock: 0,
+        }
     }
 }
 
@@ -38,19 +48,45 @@ impl Cell {
 /// these for sound, particles, damage and achievements.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SimEvent {
-    Explosion { x: i32, y: i32, radius: i32, destroyed: u32 },
+    Explosion {
+        x: i32,
+        y: i32,
+        radius: i32,
+        destroyed: u32,
+    },
     /// Water hit lava or molten metal.
-    Sizzle { x: i32, y: i32 },
+    Sizzle {
+        x: i32,
+        y: i32,
+    },
     /// Acid ate a cell.
-    Dissolve { x: i32, y: i32 },
-    ObsidianFormed { x: i32, y: i32 },
-    GasIgnited { x: i32, y: i32 },
+    Dissolve {
+        x: i32,
+        y: i32,
+    },
+    ObsidianFormed {
+        x: i32,
+        y: i32,
+    },
+    GasIgnited {
+        x: i32,
+        y: i32,
+    },
     /// Settled gravel was disturbed and will fall shortly.
-    CollapseStarted { x: i32, y: i32 },
+    CollapseStarted {
+        x: i32,
+        y: i32,
+    },
     /// A conductive cell became charged.
-    Electrified { x: i32, y: i32 },
+    Electrified {
+        x: i32,
+        y: i32,
+    },
     /// Something caught fire.
-    Ignited { x: i32, y: i32 },
+    Ignited {
+        x: i32,
+        y: i32,
+    },
 }
 
 /// A cell in ballistic flight (explosion debris, sprays). It lands back into
@@ -97,7 +133,16 @@ pub struct World {
     region: Option<(usize, usize, usize, usize)>,
 }
 
-const NEIGHBOURS: [(i32, i32); 8] = [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)];
+const NEIGHBOURS: [(i32, i32); 8] = [
+    (-1, -1),
+    (0, -1),
+    (1, -1),
+    (-1, 0),
+    (1, 0),
+    (-1, 1),
+    (0, 1),
+    (1, 1),
+];
 const ADJACENT: [(i32, i32); 4] = [(0, -1), (-1, 0), (1, 0), (0, 1)];
 
 impl World {
@@ -113,7 +158,12 @@ impl World {
             chunks_y,
             cells: vec![Cell::EMPTY; width * height],
             chunks: vec![
-                ChunkState { active: false, active_next: true, render_dirty: true, net_dirty: true };
+                ChunkState {
+                    active: false,
+                    active_next: true,
+                    render_dirty: true,
+                    net_dirty: true
+                };
                 chunks_x * chunks_y
             ],
             rng: Rng::new(seed),
@@ -133,8 +183,12 @@ impl World {
     pub fn set_active_region(&mut self, centers: Option<&[(i32, i32)]>, radius: usize) {
         self.region = centers.and_then(|c| {
             let cs = CHUNK_SIZE as i32;
-            let xs = c.iter().map(|p| (p.0 / cs).clamp(0, self.chunks_x as i32 - 1) as usize);
-            let ys = c.iter().map(|p| (p.1 / cs).clamp(0, self.chunks_y as i32 - 1) as usize);
+            let xs = c
+                .iter()
+                .map(|p| (p.0 / cs).clamp(0, self.chunks_x as i32 - 1) as usize);
+            let ys = c
+                .iter()
+                .map(|p| (p.1 / cs).clamp(0, self.chunks_y as i32 - 1) as usize);
             let (x0, x1) = (xs.clone().min()?, xs.max()?);
             let (y0, y1) = (ys.clone().min()?, ys.max()?);
             Some((
@@ -148,7 +202,8 @@ impl World {
 
     #[inline]
     fn in_region(&self, cx: usize, cy: usize) -> bool {
-        self.region.is_none_or(|(x0, y0, x1, y1)| cx >= x0 && cx <= x1 && cy >= y0 && cy <= y1)
+        self.region
+            .is_none_or(|(x0, y0, x1, y1)| cx >= x0 && cx <= x1 && cy >= y0 && cy <= y1)
     }
 
     pub fn width(&self) -> usize {
@@ -216,7 +271,12 @@ impl World {
         }
         let shade = self.rng.next_u8();
         let i = self.idx(x, y);
-        self.cells[i] = Cell { mat, shade, life, clock: self.clock };
+        self.cells[i] = Cell {
+            mat,
+            shade,
+            life,
+            clock: self.clock,
+        };
         self.mark_changed(x, y);
     }
 
@@ -322,7 +382,9 @@ impl World {
 
     /// Total heat of materials within `radius` (negative near ice).
     pub fn heat_near(&self, cx: i32, cy: i32, radius: i32) -> i32 {
-        disc(cx, cy, radius).map(|(x, y)| self.get(x, y).map_or(0, |c| c.mat.props().heat as i32)).sum()
+        disc(cx, cy, radius)
+            .map(|(x, y)| self.get(x, y).map_or(0, |c| c.mat.props().heat as i32))
+            .sum()
     }
 
     /// Wakes and flags the chunk for a change that doesn't alter the material
@@ -400,7 +462,11 @@ impl World {
                 }
                 let x0 = (cx * CHUNK_SIZE) as i32;
                 for j in 0..CHUNK_SIZE as i32 {
-                    let x = if ltr { x0 + j } else { x0 + CHUNK_SIZE as i32 - 1 - j };
+                    let x = if ltr {
+                        x0 + j
+                    } else {
+                        x0 + CHUNK_SIZE as i32 - 1 - j
+                    };
                     self.update_cell(x, y);
                 }
             }
@@ -436,9 +502,7 @@ impl World {
     fn can_displace(src: Material, dst: Material) -> bool {
         match dst.kind() {
             Kind::Empty => true,
-            Kind::Liquid | Kind::Gas | Kind::Fire | Kind::Energy => {
-                dst.props().density < src.props().density
-            }
+            Kind::Liquid | Kind::Gas | Kind::Fire | Kind::Energy => dst.props().density < src.props().density,
             Kind::Solid | Kind::Powder => false,
         }
     }
@@ -576,7 +640,9 @@ impl World {
             return;
         }
         // Fire with nothing left to burn drifts upward and dies; fire on fuel stays put.
-        let fuelled = NEIGHBOURS.iter().any(|(dx, dy)| self.material(x + dx, y + dy).props().flammability > 0);
+        let fuelled = NEIGHBOURS
+            .iter()
+            .any(|(dx, dy)| self.material(x + dx, y + dy).props().flammability > 0);
         if !fuelled && self.rng.chance(120) {
             let d = (self.rng.next_u8() % 3) as i32 - 1;
             if self.material(x + d, y - 1) == Material::Empty {
@@ -784,7 +850,11 @@ impl World {
             }
             let p = strength as u32 * (300 - props.hardness as u32) / 300;
             if self.rng.chance(p.min(255) as u8) {
-                let fumes = if self.rng.chance(50) { Material::Smoke } else { Material::Empty };
+                let fumes = if self.rng.chance(50) {
+                    Material::Smoke
+                } else {
+                    Material::Empty
+                };
                 self.set(nx, ny, fumes);
                 self.events.push(SimEvent::Dissolve { x: nx, y: ny });
                 if self.rng.coin() {
@@ -829,7 +899,10 @@ impl World {
                 }
             }
             Material::Ice => {
-                if ADJACENT.iter().any(|(dx, dy)| self.material(x + dx, y + dy).props().heat > 0) {
+                if ADJACENT
+                    .iter()
+                    .any(|(dx, dy)| self.material(x + dx, y + dy).props().heat > 0)
+                {
                     self.set(x, y, Material::Water);
                 }
             }
@@ -846,10 +919,8 @@ impl World {
                     self.touch(x, y);
                 }
             }
-            Material::Metal => {
-                if self.material(x, y - 1) == Material::Empty && self.rng.chance(40) {
-                    self.set(x, y - 1, Material::Spark);
-                }
+            Material::Metal if self.material(x, y - 1) == Material::Empty && self.rng.chance(40) => {
+                self.set(x, y - 1, Material::Spark);
             }
             _ => {}
         }
@@ -864,7 +935,10 @@ impl World {
     }
 
     fn count_adjacent(&self, x: i32, y: i32, mat: Material) -> usize {
-        ADJACENT.iter().filter(|(dx, dy)| self.material(x + dx, y + dy) == mat).count()
+        ADJACENT
+            .iter()
+            .filter(|(dx, dy)| self.material(x + dx, y + dy) == mat)
+            .count()
     }
 
     // ---- particles -------------------------------------------------------
@@ -945,7 +1019,11 @@ impl World {
             }
             let (dx, dy) = ((x - cx) as f32, (y - cy) as f32);
             let d = (dx * dx + dy * dy).sqrt() / rf;
-            let (nx, ny) = if d > 0.0 { (dx / (d * rf), dy / (d * rf)) } else { (0.0, -1.0) };
+            let (nx, ny) = if d > 0.0 {
+                (dx / (d * rf), dy / (d * rf))
+            } else {
+                (0.0, -1.0)
+            };
             let speed = 1.2 + self.rng.next_f32() * 2.5;
             let fling = |w: &mut World, mat| {
                 w.spawn_particle(x as f32 + 0.5, y as f32 + 0.5, nx * speed, ny * speed - 0.8, mat)
@@ -995,9 +1073,20 @@ impl World {
         for _ in 0..r * 2 {
             let a = self.rng.next_f32() * std::f32::consts::TAU;
             let s = 1.0 + self.rng.next_f32() * 2.5;
-            self.spawn_particle(cx as f32, cy as f32, a.cos() * s, a.sin() * s - 1.0, Material::Fire);
+            self.spawn_particle(
+                cx as f32,
+                cy as f32,
+                a.cos() * s,
+                a.sin() * s - 1.0,
+                Material::Fire,
+            );
         }
-        self.events.push(SimEvent::Explosion { x: cx, y: cy, radius: r, destroyed });
+        self.events.push(SimEvent::Explosion {
+            x: cx,
+            y: cy,
+            radius: r,
+            destroyed,
+        });
     }
 
     // ---- change tracking -------------------------------------------------
@@ -1186,8 +1275,13 @@ mod tests {
         w.set(40, 40, Material::Oil);
         w.set(40, 63, Material::Oil);
         run(&mut w, 200);
-        assert_eq!(w.material(20, 63), Material::Sand, "sand should sink to the bottom");
-        let oil_on_top = (0..64).any(|x| w.material(x, 49) == Material::Oil || w.material(x, 50) == Material::Oil);
+        assert_eq!(
+            w.material(20, 63),
+            Material::Sand,
+            "sand should sink to the bottom"
+        );
+        let oil_on_top =
+            (0..64).any(|x| w.material(x, 49) == Material::Oil || w.material(x, 50) == Material::Oil);
         assert!(oil_on_top, "oil should float on water");
     }
 
@@ -1200,7 +1294,11 @@ mod tests {
         let events = w.take_events();
         assert!(count(&w, Material::Obsidian) > 0);
         assert!(events.iter().any(|e| matches!(e, SimEvent::Sizzle { .. })));
-        assert!(events.iter().any(|e| matches!(e, SimEvent::ObsidianFormed { .. })));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, SimEvent::ObsidianFormed { .. }))
+        );
     }
 
     #[test]
@@ -1227,7 +1325,10 @@ mod tests {
         run(&mut w, 200);
         let events = w.take_events();
         assert!(events.iter().any(|e| matches!(e, SimEvent::GasIgnited { .. })));
-        assert!(events.iter().any(|e| matches!(e, SimEvent::Explosion { .. })), "gas should blast");
+        assert!(
+            events.iter().any(|e| matches!(e, SimEvent::Explosion { .. })),
+            "gas should blast"
+        );
         assert!(count(&w, Material::Gas) < 100);
     }
 
@@ -1256,7 +1357,11 @@ mod tests {
         w.set(20, 54, Material::Fire);
         run(&mut w, 120);
         assert_eq!(count(&w, Material::Explosive), 0);
-        let blasts = w.take_events().iter().filter(|e| matches!(e, SimEvent::Explosion { .. })).count();
+        let blasts = w
+            .take_events()
+            .iter()
+            .filter(|e| matches!(e, SimEvent::Explosion { .. }))
+            .count();
         assert!(blasts >= 2);
     }
 
@@ -1268,9 +1373,17 @@ mod tests {
         fill(&mut w, 25, 30, 35, 39, Material::Acid);
         run(&mut w, 600);
         assert!(count(&w, Material::Stone) < 21 * 11, "acid should eat stone");
-        assert_eq!(count(&w, Material::Obsidian), 64 * 24 - 21 * 11, "obsidian is acid-proof");
+        assert_eq!(
+            count(&w, Material::Obsidian),
+            64 * 24 - 21 * 11,
+            "obsidian is acid-proof"
+        );
         assert!(count(&w, Material::Acid) < 110, "acid is consumed");
-        assert!(w.take_events().iter().any(|e| matches!(e, SimEvent::Dissolve { .. })));
+        assert!(
+            w.take_events()
+                .iter()
+                .any(|e| matches!(e, SimEvent::Dissolve { .. }))
+        );
     }
 
     #[test]
@@ -1282,7 +1395,9 @@ mod tests {
         fill(&mut w, 31, 58, 33, 61, Material::Lava);
         run(&mut w, 200);
         assert!(count(&w, Material::Ice) < 77);
-        assert!(count(&w, Material::Water) + count(&w, Material::Steam) > 0 || count(&w, Material::Obsidian) > 0);
+        assert!(
+            count(&w, Material::Water) + count(&w, Material::Steam) > 0 || count(&w, Material::Obsidian) > 0
+        );
     }
 
     #[test]
@@ -1298,7 +1413,11 @@ mod tests {
         assert!(charged > 10, "charge should spread through water, got {charged}");
         run(&mut w, 80);
         assert!((0..64).all(|x| w.get(x, 55).unwrap().life == 0), "charge decays");
-        assert!(w.take_events().iter().any(|e| matches!(e, SimEvent::Electrified { .. })));
+        assert!(
+            w.take_events()
+                .iter()
+                .any(|e| matches!(e, SimEvent::Electrified { .. }))
+        );
     }
 
     #[test]
@@ -1313,7 +1432,11 @@ mod tests {
 
         w.set(30, 29, Material::Empty);
         run(&mut w, 1500);
-        assert!(w.take_events().iter().any(|e| matches!(e, SimEvent::CollapseStarted { .. })));
+        assert!(
+            w.take_events()
+                .iter()
+                .any(|e| matches!(e, SimEvent::CollapseStarted { .. }))
+        );
         assert!(
             (0..64).filter(|&x| w.material(x, 63) == Material::Gravel).count() > 40,
             "disturbed gravel should collapse to the floor"
@@ -1354,7 +1477,11 @@ mod tests {
             w.set(x, 59, Material::Fungus);
         }
         run(&mut w, 4000);
-        assert!(count(&w, Material::Fungus) > 6, "got {}", count(&w, Material::Fungus));
+        assert!(
+            count(&w, Material::Fungus) > 6,
+            "got {}",
+            count(&w, Material::Fungus)
+        );
     }
 
     #[test]
@@ -1378,7 +1505,11 @@ mod tests {
         assert_ne!(w.material(10, 10), Material::Sand, "near sand fell");
         w.set_active_region(Some(&[(10, 400)]), 1);
         run(&mut w, 200);
-        assert_eq!(w.material(10, 511), Material::Sand, "far sand resumes when the region arrives");
+        assert_eq!(
+            w.material(10, 511),
+            Material::Sand,
+            "far sand resumes when the region arrives"
+        );
     }
 
     #[test]

@@ -67,6 +67,8 @@ impl Loadout {
 }
 
 pub struct AchievementDef {
+    /// Must match the table position; checked in tests.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub id: AchievementId,
     pub name: &'static str,
     /// Shown when locked.
@@ -152,7 +154,7 @@ pub static ACHIEVEMENTS: [AchievementDef; 13] = [
     AchievementDef {
         id: A::CaveIn,
         name: "Cave-In",
-        hint: "Bring down 300 cells of gravel in one run.",
+        hint: "Bring down 1000 cells of gravel in one run.",
         reward: Reward::Item(ItemId::SeismicStomp),
     },
 ];

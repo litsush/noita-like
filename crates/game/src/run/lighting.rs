@@ -48,14 +48,23 @@ pub fn setup_lighting(mut commands: Commands, session: Res<Session>, mut images:
     let surface = (0..world.width() as i32)
         .map(|x| {
             (0..world.height() as i32)
-                .find(|&y| matches!(world.material(x, y), Material::Dirt | Material::Stone | Material::Sand | Material::Gravel))
+                .find(|&y| {
+                    matches!(
+                        world.material(x, y),
+                        Material::Dirt | Material::Stone | Material::Sand | Material::Gravel
+                    )
+                })
                 .unwrap_or(0)
         })
         .collect();
     commands.insert_resource(SurfaceLine(surface));
 
     let mut image = Image::new_fill(
-        Extent3d { width: W as u32, height: H as u32, depth_or_array_layers: 1 },
+        Extent3d {
+            width: W as u32,
+            height: H as u32,
+            depth_or_array_layers: 1,
+        },
         TextureDimension::D2,
         &[0, 0, 0, 255],
         TextureFormat::Rgba8UnormSrgb,
@@ -66,10 +75,18 @@ pub fn setup_lighting(mut commands: Commands, session: Res<Session>, mut images:
     commands.spawn((
         LightOverlay,
         InGameEntity,
-        Sprite { image: handle.clone(), custom_size: Some(Vec2::new((W as i32 * SCALE) as f32, (H as i32 * SCALE) as f32)), ..default() },
+        Sprite {
+            image: handle.clone(),
+            custom_size: Some(Vec2::new((W as i32 * SCALE) as f32, (H as i32 * SCALE) as f32)),
+            ..default()
+        },
         Transform::from_xyz(0.0, 0.0, 8.0),
     ));
-    commands.insert_resource(LightMap { image: handle, light: vec![[0.0; 3]; W * H], decay: vec![AIR; W * H] });
+    commands.insert_resource(LightMap {
+        image: handle,
+        light: vec![[0.0; 3]; W * H],
+        decay: vec![AIR; W * H],
+    });
 }
 
 fn ambient(layer: Layer) -> f32 {
@@ -151,15 +168,18 @@ pub fn update_lighting(
     let flicker = 1.0 + (time.elapsed_secs() * 13.0).sin() * 0.05 + (time.elapsed_secs() * 7.3).cos() * 0.04;
     let mut add = |p: Vec2, c: [f32; 3]| {
         if let Some(i) = to_texel(p) {
-            for k in 0..3 {
-                map.light[i][k] = map.light[i][k].max(c[k]);
+            for (l, c) in map.light[i].iter_mut().zip(c) {
+                *l = l.max(c);
             }
         }
     };
     let dying = matches!(run.phase, Phase::Dying(_)) || (run.phase == Phase::Over && !run.won);
     if !dying {
         let lamp = if run.has(ItemId::BeaconHeart) { 7.0 } else { 2.4 };
-        add(player.body.head() + Vec2::new(player.facing * 2.0, 0.0), [lamp, lamp * 0.95, lamp * 0.82]);
+        add(
+            player.body.head() + Vec2::new(player.facing * 2.0, 0.0),
+            [lamp, lamp * 0.95, lamp * 0.82],
+        );
         add(player.body.center(), [0.9, 0.85, 0.75]);
     }
     for t in &torches {
@@ -214,12 +234,18 @@ pub fn update_lighting(
 
     // Write the overlay.
     let amb = ambient(run.layer);
-    let Some(mut image) = images.get_mut(&map.image) else { return };
+    let Some(mut image) = images.get_mut(&map.image) else {
+        return;
+    };
     let Some(data) = image.data.as_mut() else { return };
     for (i, l) in map.light.iter().enumerate() {
         let lum = l[0].max(l[1]).max(l[2]).max(amb);
         let dark = (1.0 - lum.min(1.0)).powf(1.25);
-        let tint = if lum > 0.01 { [l[0] / lum, l[1] / lum, l[2] / lum] } else { [0.0; 3] };
+        let tint = if lum > 0.01 {
+            [l[0] / lum, l[1] / lum, l[2] / lum]
+        } else {
+            [0.0; 3]
+        };
         let k = 0.18 * (1.0 - dark);
         data[i * 4] = (tint[0] * k * 255.0) as u8;
         data[i * 4 + 1] = (tint[1] * k * 255.0) as u8;

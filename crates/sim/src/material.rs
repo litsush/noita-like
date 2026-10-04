@@ -111,32 +111,85 @@ const BASE: Props = Props {
 };
 
 const fn solid(name: &'static str, color: [u8; 3], variance: u8, hardness: u8) -> Props {
-    Props { name, color, variance, hardness, ..BASE }
+    Props {
+        name,
+        color,
+        variance,
+        hardness,
+        ..BASE
+    }
 }
 
 const fn powder(name: &'static str, color: [u8; 3], variance: u8, density: u8, hardness: u8) -> Props {
-    Props { name, kind: Kind::Powder, color, variance, density, hardness, ..BASE }
+    Props {
+        name,
+        kind: Kind::Powder,
+        color,
+        variance,
+        density,
+        hardness,
+        ..BASE
+    }
 }
 
 const fn liquid(name: &'static str, color: [u8; 3], variance: u8, density: u8, dispersion: u8) -> Props {
-    Props { name, kind: Kind::Liquid, color, variance, density, dispersion, hardness: 0, ..BASE }
+    Props {
+        name,
+        kind: Kind::Liquid,
+        color,
+        variance,
+        density,
+        dispersion,
+        hardness: 0,
+        ..BASE
+    }
 }
 
 const fn gas(name: &'static str, color: [u8; 3], variance: u8, density: u8) -> Props {
-    Props { name, kind: Kind::Gas, color, variance, density, hardness: 0, ..BASE }
+    Props {
+        name,
+        kind: Kind::Gas,
+        color,
+        variance,
+        density,
+        hardness: 0,
+        ..BASE
+    }
 }
 
 static PROPS: [Props; Material::COUNT] = [
-    Props { name: "Empty", kind: Kind::Empty, density: 0, hardness: 0, ..BASE },
+    Props {
+        name: "Empty",
+        kind: Kind::Empty,
+        density: 0,
+        hardness: 0,
+        ..BASE
+    },
     solid("Stone", [110, 108, 116], 18, 40),
     solid("Dirt", [112, 78, 52], 16, 14),
-    Props { flammability: 12, ..solid("Grass", [70, 140, 58], 20, 10) },
-    Props { flammability: 20, ..solid("Wood", [120, 84, 46], 14, 24) },
+    Props {
+        flammability: 12,
+        ..solid("Grass", [70, 140, 58], 20, 10)
+    },
+    Props {
+        flammability: 20,
+        ..solid("Wood", [120, 84, 46], 14, 24)
+    },
     powder("Sand", [214, 190, 120], 22, 150, 6),
     powder("Ash", [90, 88, 86], 16, 90, 3),
-    Props { conductive: true, ..liquid("Water", [48, 110, 210], 10, 100, 6) },
-    Props { flammability: 60, ..liquid("Oil", [60, 44, 30], 8, 80, 4) },
-    Props { heat: 4, light: [255, 120, 30], ..liquid("Lava", [230, 90, 20], 30, 140, 2) },
+    Props {
+        conductive: true,
+        ..liquid("Water", [48, 110, 210], 10, 100, 6)
+    },
+    Props {
+        flammability: 60,
+        ..liquid("Oil", [60, 44, 30], 8, 80, 4)
+    },
+    Props {
+        heat: 4,
+        light: [255, 120, 30],
+        ..liquid("Lava", [230, 90, 20], 30, 140, 2)
+    },
     Props {
         kind: Kind::Fire,
         density: 1,
@@ -146,29 +199,63 @@ static PROPS: [Props; Material::COUNT] = [
         ..solid("Fire", [255, 140, 30], 60, 0)
     },
     gas("Smoke", [60, 60, 64], 12, 2),
-    Props { heat: 1, ..gas("Steam", [200, 210, 220], 12, 3) },
+    Props {
+        heat: 1,
+        ..gas("Steam", [200, 210, 220], 12, 3)
+    },
     powder("Gravel", [118, 110, 102], 34, 160, 10),
-    Props { acid_resistant: true, light: [120, 60, 200], ..solid("Crystal", [170, 96, 230], 40, 70) },
+    Props {
+        acid_resistant: true,
+        light: [120, 60, 200],
+        ..solid("Crystal", [170, 96, 230], 40, 70)
+    },
     Props {
         flammability: 50,
         growth: 120,
         light: [40, 160, 80],
         ..solid("Fungus", [90, 200, 120], 30, 6)
     },
-    Props { corrosive: 50, light: [30, 70, 10], ..liquid("Acid", [120, 230, 60], 20, 105, 4) },
-    Props { flammability: 255, ..gas("Gas", [150, 170, 90], 16, 1) },
-    Props { acid_resistant: true, ..solid("Obsidian", [40, 28, 54], 12, 120) },
-    Props { heat: -2, ..solid("Ice", [170, 215, 240], 14, 20) },
+    Props {
+        corrosive: 50,
+        light: [30, 70, 10],
+        ..liquid("Acid", [120, 230, 60], 20, 105, 4)
+    },
+    Props {
+        flammability: 255,
+        ..gas("Gas", [150, 170, 90], 16, 1)
+    },
+    Props {
+        acid_resistant: true,
+        ..solid("Obsidian", [40, 28, 54], 12, 120)
+    },
+    Props {
+        heat: -2,
+        ..solid("Ice", [170, 215, 240], 14, 20)
+    },
     Props {
         heat: 4,
         conductive: true,
         light: [160, 90, 40],
         ..liquid("Metal", [244, 178, 96], 24, 200, 1)
     },
-    Props { flammability: 200, explosive: 9, ..solid("Explosive", [180, 46, 38], 20, 18) },
-    Props { flammability: 90, climbable: true, ..solid("Rope", [176, 142, 92], 18, 1) },
-    Props { value: 1, ..solid("Ore", [128, 112, 98], 30, 45) },
-    Props { acid_resistant: true, ..solid("Core Shell", [70, 22, 26], 12, INDESTRUCTIBLE) },
+    Props {
+        flammability: 200,
+        explosive: 9,
+        ..solid("Explosive", [180, 46, 38], 20, 18)
+    },
+    Props {
+        flammability: 90,
+        climbable: true,
+        ..solid("Rope", [176, 142, 92], 18, 1)
+    },
+    Props {
+        value: 1,
+        ..solid("Ore", [128, 112, 98], 30, 45)
+    },
+    Props {
+        acid_resistant: true,
+        ..solid("Core Shell", [70, 22, 26], 12, INDESTRUCTIBLE)
+    },
     Props {
         kind: Kind::Energy,
         density: 0,
@@ -176,11 +263,25 @@ static PROPS: [Props; Material::COUNT] = [
         light: [140, 200, 255],
         ..solid("Spark", [190, 225, 255], 40, 0)
     },
-    Props { heat: 1, ..solid("Basalt", [72, 58, 56], 14, 55) },
-    Props { heat: 1, conductive: true, ..solid("Ferrite", [92, 92, 104], 20, 80) },
+    Props {
+        heat: 1,
+        ..solid("Basalt", [72, 58, 56], 14, 55)
+    },
+    Props {
+        heat: 1,
+        conductive: true,
+        ..solid("Ferrite", [92, 92, 104], 20, 80)
+    },
     solid("Brick", [138, 82, 62], 14, 45),
-    Props { heat: 1, ..solid("Vent", [84, 72, 70], 10, 60) },
-    Props { heat: -3, light: [60, 110, 140], ..solid("Frost", [210, 242, 255], 10, 20) },
+    Props {
+        heat: 1,
+        ..solid("Vent", [84, 72, 70], 10, 60)
+    },
+    Props {
+        heat: -3,
+        light: [60, 110, 140],
+        ..solid("Frost", [210, 242, 255], 10, 20)
+    },
 ];
 
 impl Material {

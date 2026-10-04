@@ -15,10 +15,18 @@ pub fn assets_dir() -> PathBuf {
     let base = std::env::var_os("BEVY_ASSET_ROOT")
         .or_else(|| std::env::var_os("CARGO_MANIFEST_DIR"))
         .map(PathBuf::from)
-        .or_else(|| std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)))
+        .or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(PathBuf::from))
+        })
         .unwrap_or_default();
     let dir = base.join(ASSET_ROOT);
-    if dir.exists() { dir } else { PathBuf::from("assets") }
+    if dir.exists() {
+        dir
+    } else {
+        PathBuf::from("assets")
+    }
 }
 
 #[derive(Clone)]
@@ -29,7 +37,13 @@ pub struct Sheet {
 
 impl Sheet {
     pub fn sprite(&self, index: usize) -> Sprite {
-        Sprite::from_atlas_image(self.image.clone(), TextureAtlas { layout: self.layout.clone(), index })
+        Sprite::from_atlas_image(
+            self.image.clone(),
+            TextureAtlas {
+                layout: self.layout.clone(),
+                index,
+            },
+        )
     }
 }
 
@@ -88,7 +102,12 @@ pub fn load_assets(
         core: sheet("sprites/core.png", UVec2::splat(48), 8, 1),
         creatures: sheet("sprites/creatures.png", UVec2::splat(16), 4, 3),
         backgrounds: (0..5)
-            .map(|i| (repeating(&server, format!("backgrounds/layer{i}_far.png")), repeating(&server, format!("backgrounds/layer{i}_near.png"))))
+            .map(|i| {
+                (
+                    repeating(&server, format!("backgrounds/layer{i}_far.png")),
+                    repeating(&server, format!("backgrounds/layer{i}_near.png")),
+                )
+            })
             .collect(),
     };
     commands.insert_resource(assets);
@@ -97,11 +116,14 @@ pub fn load_assets(
 /// Loads a texture that tiles (repeat addressing) for the parallax layers.
 fn repeating(server: &AssetServer, path: String) -> Handle<Image> {
     use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
-    server.load_with_settings(path, |s: &mut ImageLoaderSettings| {
-        s.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
-            address_mode_u: ImageAddressMode::Repeat,
-            address_mode_v: ImageAddressMode::Repeat,
-            ..ImageSamplerDescriptor::nearest()
-        });
-    })
+    server
+        .load_builder()
+        .with_settings(|s: &mut ImageLoaderSettings| {
+            s.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+                address_mode_u: ImageAddressMode::Repeat,
+                address_mode_v: ImageAddressMode::Repeat,
+                ..ImageSamplerDescriptor::nearest()
+            });
+        })
+        .load(path)
 }
