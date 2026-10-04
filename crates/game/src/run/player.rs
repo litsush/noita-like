@@ -351,7 +351,7 @@ pub fn player_move(
             p.climbing = true;
         } else if against_wall && earthen {
             // Cling without sliding.
-            p.body.vel.y = p.body.vel.y.min(0.0).max(-CLIMB_SPEED);
+            p.body.vel.y = p.body.vel.y.clamp(-CLIMB_SPEED, 0.0);
             p.climbing = true;
         } else if against_wall && p.body.vel.y > 50.0 {
             p.body.vel.y = 50.0;

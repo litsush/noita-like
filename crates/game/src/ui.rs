@@ -8,12 +8,15 @@ use bevy_egui::{EguiContexts, EguiTextureHandle, egui};
 
 use crate::assets::{GameAssets, assets_dir};
 
-pub const ACCENT: egui::Color32 = egui::Color32::from_rgb(240, 168, 64);
-pub const ACCENT_DIM: egui::Color32 = egui::Color32::from_rgb(150, 96, 40);
-pub const TEXT: egui::Color32 = egui::Color32::from_rgb(232, 224, 214);
-pub const TEXT_DIM: egui::Color32 = egui::Color32::from_rgb(150, 140, 150);
-pub const PANEL: egui::Color32 = egui::Color32::from_rgba_premultiplied(18, 14, 24, 236);
-pub const BORDER: egui::Color32 = egui::Color32::from_rgb(78, 60, 92);
+// The grimoire palette: near-black violet vellum, parchment ink, rune gold.
+pub const ACCENT: egui::Color32 = egui::Color32::from_rgb(232, 192, 108);
+pub const ACCENT_DIM: egui::Color32 = egui::Color32::from_rgb(132, 98, 52);
+pub const TEXT: egui::Color32 = egui::Color32::from_rgb(228, 214, 186);
+pub const TEXT_DIM: egui::Color32 = egui::Color32::from_rgb(148, 132, 124);
+pub const PANEL: egui::Color32 = egui::Color32::from_rgba_premultiplied(14, 9, 20, 238);
+pub const BORDER: egui::Color32 = egui::Color32::from_rgb(98, 74, 52);
+/// The inner rule of the double border.
+pub const RULE: egui::Color32 = egui::Color32::from_rgb(64, 46, 70);
 pub const DANGER: egui::Color32 = egui::Color32::from_rgb(232, 80, 72);
 pub const GOOD: egui::Color32 = egui::Color32::from_rgb(120, 220, 140);
 
@@ -25,6 +28,25 @@ pub struct UiIcons {
     pub core: egui::TextureId,
 }
 
+/// The ornate display face for titles and headings (falls back to the
+/// pixel font if the file is missing).
+pub fn title_font(size: f32) -> egui::FontId {
+    // `set_fonts` only applies from the next frame, so the first frame
+    // must not name the custom family yet.
+    if TITLE_FONT_READY.load(std::sync::atomic::Ordering::Relaxed) {
+        egui::FontId::new(size, egui::FontFamily::Name("title".into()))
+    } else {
+        egui::FontId::proportional(size)
+    }
+}
+
+static TITLE_FONT_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// A heading in the title face.
+pub fn title(text: impl Into<String>, size: f32) -> egui::RichText {
+    egui::RichText::new(text).font(title_font(size))
+}
+
 /// Sets up fonts, theme and icon textures once.
 pub fn setup_ui(
     mut contexts: EguiContexts,
@@ -33,13 +55,17 @@ pub fn setup_ui(
     mut done: Local<bool>,
 ) -> Result {
     if *done {
+        // Fonts installed last frame are live now.
+        TITLE_FONT_READY.store(true, std::sync::atomic::Ordering::Relaxed);
         return Ok(());
     }
     let items = contexts.add_image(EguiTextureHandle::Strong(assets.items.image.clone()));
     let core = contexts.add_image(EguiTextureHandle::Strong(assets.core.image.clone()));
+    let ornaments = contexts.add_image(EguiTextureHandle::Strong(assets.ui.clone()));
     let ctx = contexts.ctx_mut()?;
     install_font(ctx);
     ctx.all_styles_mut(apply_theme);
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new("ornaments"), ornaments));
     commands.insert_resource(UiIcons { items, core });
     *done = true;
     Ok(())
@@ -62,6 +88,18 @@ fn install_font(ctx: &egui::Context) {
             .or_default()
             .insert(0, "pixel".into());
     }
+    // The ornate title face, with the pixel font as fallback for missing glyphs.
+    let title = assets_dir().join("fonts/title.ttf");
+    let mut title_family = vec!["pixel".to_string()];
+    if let Ok(bytes) = std::fs::read(&title) {
+        fonts
+            .font_data
+            .insert("title".into(), Arc::new(egui::FontData::from_owned(bytes)));
+        title_family.insert(0, "title".into());
+    }
+    fonts
+        .families
+        .insert(egui::FontFamily::Name("title".into()), title_family);
     ctx.set_fonts(fonts);
 }
 
@@ -102,23 +140,23 @@ fn apply_theme(style: &mut egui::Style) {
     for (w, fill, stroke) in [
         (
             &mut v.widgets.noninteractive,
-            egui::Color32::from_rgb(28, 22, 36),
-            BORDER,
+            egui::Color32::from_rgb(24, 16, 30),
+            RULE,
         ),
         (
             &mut v.widgets.inactive,
-            egui::Color32::from_rgb(44, 34, 56),
+            egui::Color32::from_rgb(34, 22, 40),
             BORDER,
         ),
         (
             &mut v.widgets.hovered,
-            egui::Color32::from_rgb(74, 54, 86),
-            ACCENT_DIM,
+            egui::Color32::from_rgb(58, 36, 60),
+            ACCENT,
         ),
         (&mut v.widgets.active, ACCENT_DIM, ACCENT),
         (
             &mut v.widgets.open,
-            egui::Color32::from_rgb(60, 44, 72),
+            egui::Color32::from_rgb(48, 30, 52),
             ACCENT_DIM,
         ),
     ] {
@@ -172,6 +210,12 @@ pub fn menu_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
         egui::Button::new(egui::RichText::new(text).size(16.0)),
     );
     if r.hovered() {
+        // A rune-gold underline on hover.
+        let rule = r.rect.shrink2(egui::vec2(40.0, 6.0));
+        ui.painter().line_segment(
+            [rule.left_bottom(), rule.right_bottom()],
+            egui::Stroke::new(1.0, ACCENT),
+        );
         ui.ctx()
             .data_mut(|d| d.insert_temp(egui::Id::new("ui_hovered"), Some(r.id)));
     }
@@ -226,6 +270,68 @@ pub fn ui_sounds_and_fade(
         *fade = (*fade - time.delta_secs() * 2.5).max(0.0);
     }
     Ok(())
+}
+
+/// A grimoire panel: double border and ornate corners.
+pub fn ornate<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<R> {
+    let r = panel_frame().show(ui, add);
+    decorate(ui.painter(), ui.ctx(), r.response.rect);
+    r
+}
+
+/// Paints the inner rule and corner ornaments around a panel rectangle.
+pub fn decorate(painter: &egui::Painter, ctx: &egui::Context, rect: egui::Rect) {
+    painter.rect_stroke(
+        rect.shrink(4.0),
+        0.0,
+        egui::Stroke::new(1.0, RULE),
+        egui::StrokeKind::Inside,
+    );
+    let Some(tex) = ctx.data(|d| d.get_temp::<egui::TextureId>(egui::Id::new("ornaments"))) else {
+        return;
+    };
+    // The corner piece is the top-left 16x16 of a 64x32 sheet; mirror it.
+    let (u, v) = (16.0 / 64.0, 16.0 / 32.0);
+    let size = egui::vec2(12.0, 12.0);
+    let corners = [
+        (
+            rect.left_top(),
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(u, v)),
+        ),
+        (
+            rect.right_top() - egui::vec2(size.x, 0.0),
+            egui::Rect::from_min_max(egui::pos2(u, 0.0), egui::pos2(0.0, v)),
+        ),
+        (
+            rect.left_bottom() - egui::vec2(0.0, size.y),
+            egui::Rect::from_min_max(egui::pos2(0.0, v), egui::pos2(u, 0.0)),
+        ),
+        (
+            rect.right_bottom() - size,
+            egui::Rect::from_min_max(egui::pos2(u, v), egui::pos2(0.0, 0.0)),
+        ),
+    ];
+    for (at, uv) in corners {
+        painter.image(tex, egui::Rect::from_min_size(at, size), uv, egui::Color32::WHITE);
+    }
+}
+
+/// A divider flourish, centred in the available width.
+pub fn flourish(ui: &mut egui::Ui) {
+    let Some(tex) = ui
+        .ctx()
+        .data(|d| d.get_temp::<egui::TextureId>(egui::Id::new("ornaments")))
+    else {
+        ui.separator();
+        return;
+    };
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width().min(256.0), 16.0),
+        egui::Sense::hover(),
+    );
+    let uv = egui::Rect::from_min_max(egui::pos2(0.5, 0.0), egui::pos2(1.0, 8.0 / 32.0));
+    let r = egui::Rect::from_center_size(rect.center(), egui::vec2(96.0, 24.0));
+    ui.painter().image(tex, r, uv, egui::Color32::WHITE);
 }
 
 /// A framed panel in the theme's style.

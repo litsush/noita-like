@@ -112,7 +112,7 @@ pub fn run_hud(
     egui::Area::new("vitals".into())
         .anchor(egui::Align2::LEFT_TOP, [12.0, 12.0])
         .show(ctx, |ui| {
-            ui::panel_frame().show(ui, |ui| {
+            ui::ornate(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
                     let hearts = (player.max_hp / 20.0) as usize;
@@ -215,7 +215,7 @@ pub fn run_hud(
     egui::Area::new("spells".into())
         .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -12.0])
         .show(ctx, |ui| {
-            ui::panel_frame().show(ui, |ui| {
+            ui::ornate(ui, |ui| {
                 ui.horizontal(|ui| {
                     for school in run.schools() {
                         ui::icon(ui, &icons, school.sigil(), 32.0).on_hover_text(school.name());
@@ -324,13 +324,13 @@ pub fn run_hud(
     let depth_bottom = egui::Area::new("depth".into())
         .anchor(egui::Align2::RIGHT_TOP, [-12.0, 12.0])
         .show(ctx, |ui| {
-            ui::panel_frame().show(ui, |ui| {
+            ui::ornate(ui, |ui| {
                 ui.label(egui::RichText::new(run.layer.name()).color(ACCENT));
                 let depth = player.body.pos.y.max(0.0);
                 let to_core = (run.core.y - depth).max(0.0);
                 ui.label(format!("Depth {} m", depth as i32 / 4));
                 ui.label(egui::RichText::new(format!("Core in {} m", to_core as i32 / 4)).color(TEXT_DIM));
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(150.0, 180.0), egui::Sense::hover());
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(230.0, 180.0), egui::Sense::hover());
                 let p = ui.painter();
                 let colors = [
                     egui::Color32::from_rgb(112, 82, 56),
@@ -397,7 +397,7 @@ pub fn run_hud(
             .fixed_pos(egui::pos2(pos.x, pos.y))
             .pivot(egui::Align2::CENTER_BOTTOM)
             .show(ctx, |ui| {
-                ui::panel_frame().show(ui, |ui| {
+                ui::ornate(ui, |ui| {
                     ui.label(egui::RichText::new(text).color(ACCENT));
                 });
             });
@@ -418,18 +418,19 @@ pub fn run_hud(
             .interactable(false)
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
-                    let sub =
-                        ["Layer I", "Layer II", "Layer III", "Layer IV", "Journey's end"][layer.index()];
+                    let sub = [
+                        "The first descent",
+                        "The second descent",
+                        "The third descent",
+                        "The fourth descent",
+                        "The final trial",
+                    ][layer.index()];
                     ui.label(
                         egui::RichText::new(sub)
                             .size(16.0)
                             .color(TEXT_DIM.gamma_multiply(alpha)),
                     );
-                    ui.label(
-                        egui::RichText::new(layer.name())
-                            .size(48.0)
-                            .color(ACCENT.gamma_multiply(alpha)),
-                    );
+                    ui.label(ui::title(layer.name(), 48.0).color(ACCENT.gamma_multiply(alpha)));
                 });
             });
         run.banner = (t < 3.8).then_some((layer, t + dt));
@@ -474,12 +475,12 @@ pub fn run_hud(
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 120.0])
             .interactable(false)
             .show(ctx, |ui| {
-                ui::panel_frame().show(ui, |ui| {
+                ui::ornate(ui, |ui| {
                     ui.set_max_width(440.0);
                     ui.horizontal(|ui| {
                         ui::icon(ui, &icons, icon_index, 48.0);
                         ui.vertical(|ui| {
-                            ui.label(egui::RichText::new(title).size(24.0).color(ACCENT));
+                            ui.label(ui::title(title, 24.0).color(ACCENT));
                             ui.label(body);
                             if !flavor.is_empty() {
                                 ui.label(egui::RichText::new(flavor).italics().color(TEXT_DIM));
@@ -554,7 +555,7 @@ pub fn run_hud(
         egui::Area::new("attune".into()).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).order(egui::Order::Foreground).show(ctx, |ui| {
             ui::panel_frame().stroke(egui::Stroke::new(2.0, ACCENT)).show(ui, |ui| {
                 ui.vertical_centered(|ui| {
-                    ui.label(egui::RichText::new("The altar offers a second attunement").size(24.0).color(ACCENT));
+                    ui.label(ui::title("The altar offers a second attunement", 24.0).color(ACCENT));
                     ui.label(egui::RichText::new(format!("You are a student of {}. Choose one scroll; its school binds to your staff for this descent.", run.first_school.name())).color(TEXT_DIM));
                 });
                 ui.add_space(8.0);
@@ -724,9 +725,9 @@ pub fn run_hud(
         egui::Area::new("pause".into())
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui::panel_frame().show(ui, |ui| {
+                ui::ornate(ui, |ui| {
                     ui.vertical_centered(|ui| {
-                        ui.label(egui::RichText::new("Paused").size(32.0).color(ACCENT));
+                        ui.label(ui::title("Paused", 32.0).color(ACCENT));
                         ui.add_space(8.0);
                         if pause_menu.settings_open {
                             ui.set_max_width(560.0);
@@ -781,17 +782,17 @@ fn summary(
     egui::Area::new("summary".into())
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
-            ui::panel_frame().show(ui, |ui| {
+            ui::ornate(ui, |ui| {
                 ui.set_width(520.0);
                 ui.vertical_centered(|ui| {
                     let (title, color) = if run.won {
-                        ("You reached the core", ACCENT)
+                        ("The rite is complete", ACCENT)
                     } else {
-                        ("Your descent has ended", DANGER)
+                        ("Another apprentice lost", DANGER)
                     };
-                    ui.label(egui::RichText::new(title).size(32.0).color(color));
+                    ui.label(ui::title(title, 32.0).color(color));
                     let cause = if run.won {
-                        "The planet's heart is yours.".to_string()
+                        "The heart of the world has heard you. Your training is done.".to_string()
                     } else {
                         run.cause
                             .map_or("Abandoned the run".to_string(), |c| c.death_text().to_string())

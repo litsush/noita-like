@@ -36,7 +36,7 @@ fn main() {
             DefaultPlugins
                 .set(WindowPlugin {
                     primary_window: Some(Window {
-                        title: "Descent to the Core".into(),
+                        title: "The Last Apprentice".into(),
                         resolution: dev::window_size().unwrap_or((1280, 800)).into(),
                         ..default()
                     }),

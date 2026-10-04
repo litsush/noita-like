@@ -133,7 +133,6 @@ pub fn update_lighting(
     props: Query<&Prop>,
     projectiles: Query<&Projectile>,
     creatures: Query<&Creature>,
-    time: Res<Time<Real>>,
 ) {
     let Some(world) = &session.world else { return };
     let cam = Vec2::new(camera.translation.x, -camera.translation.y);

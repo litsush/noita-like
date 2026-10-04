@@ -1,4 +1,4 @@
-//! "Descent to the Core": the singleplayer roguelike mode.
+//! "The Last Apprentice": the singleplayer roguelike mode.
 //!
 //! A run is a [`Session`] with no network plus the resources here. The world
 //! is generated on a background thread while a loading screen shows; then the
@@ -516,7 +516,6 @@ pub struct PendingRun {
 pub struct RunSetup {
     pub spawns: Vec<Spawn>,
     pub start: Vec2,
-    pub config: RunConfig,
 }
 
 /// Starts generating a run; the loading screen shows until it's ready.
@@ -562,7 +561,6 @@ fn finish_loading(
     commands.insert_resource(RunSetup {
         spawns: descent.spawns,
         start,
-        config: c,
     });
     commands.insert_resource(Run::new(c.seed, c.choice, c.first, c.second, &save, core));
     commands.remove_resource::<PendingRun>();

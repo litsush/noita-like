@@ -67,6 +67,8 @@ pub struct GameAssets {
     pub core: Sheet,
     /// 16×16 frames, 8 per row: a row per creature (see `run::creatures`).
     pub creatures: Sheet,
+    /// UI ornaments (64×32): corner, badge frame, dividers, vellum tile.
+    pub ui: Handle<Image>,
     /// Per layer: (far, near) tileable 256×256 backgrounds.
     pub backgrounds: Vec<(Handle<Image>, Handle<Image>)>,
 }
@@ -87,6 +89,8 @@ pub mod player_anim {
     pub const COLUMNS: usize = 8;
 }
 
+/// The full layout is listed even where nothing draws a frame yet.
+#[allow(dead_code)]
 pub mod props_frame {
     pub const LIGHT_ORB: usize = 0;
     pub const CHEST_CLOSED: usize = 4;
@@ -130,6 +134,7 @@ impl GameAssets {
             core: p(),
             creatures: p(),
             backgrounds: Vec::new(),
+            ui: Handle::default(),
         }
     }
 }
@@ -149,6 +154,7 @@ pub fn load_assets(
         wizard_trim: sheet("sprites/wizard_trim.png", UVec2::splat(16), 8, 11),
         spells: sheet("sprites/spells.png", UVec2::splat(8), 8, 10),
         stalker: sheet("sprites/stalker.png", UVec2::new(16, 32), 8, 1),
+        ui: server.load("sprites/ui.png"),
         items: sheet("sprites/icons.png", UVec2::splat(16), 16, 8),
         props: sheet("sprites/props.png", UVec2::new(16, 24), 8, 2),
         core: sheet("sprites/core.png", UVec2::splat(48), 8, 1),

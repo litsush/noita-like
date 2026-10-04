@@ -251,13 +251,17 @@ pub fn menu_ui(
             ui.vertical_centered(|ui| {
                 let main = menu.screen == Screen::Main;
                 ui.add_space(if main { 36.0 } else { 16.0 });
-                ui.label(
-                    egui::RichText::new("DESCENT")
-                        .size(if main { 64.0 } else { 40.0 })
-                        .color(ui::ACCENT),
-                );
                 if main {
-                    ui.label(egui::RichText::new("to the core").size(32.0).color(ui::TEXT_DIM));
+                    ui.label(ui::title("THE LAST", 32.0).color(ui::TEXT_DIM));
+                    ui.label(ui::title("APPRENTICE", 64.0).color(ui::ACCENT));
+                    ui::flourish(ui);
+                    ui.label(
+                        egui::RichText::new("a descent to the heart of the world")
+                            .italics()
+                            .color(ui::TEXT_DIM),
+                    );
+                } else {
+                    ui.label(ui::title("THE LAST APPRENTICE", 32.0).color(ui::ACCENT));
                 }
                 ui.add_space(6.0);
                 let stats = &save.stats;
@@ -385,7 +389,7 @@ fn new_run_screen(
     ui.add_space(8.0);
     ui.label(egui::RichText::new("How you begin").size(24.0));
     ui.horizontal_top(|ui| {
-        ui.add_space(((ui.available_width() - 5.0 * 128.0) / 2.0).max(0.0));
+        ui.add_space(((ui.available_width() - 5.0 * 156.0) / 2.0).max(0.0));
         for c in StartChoice::ALL {
             let unlocked = save.start_unlocked(c);
             let selected = menu.choice == c;
@@ -395,7 +399,7 @@ fn new_run_screen(
                     if selected { ui::ACCENT } else { ui::BORDER },
                 ))
                 .show(ui, |ui| {
-                    ui.set_width(100.0);
+                    ui.set_width(128.0);
                     ui.set_height(96.0);
                     ui.vertical_centered(|ui| {
                         if unlocked {
@@ -646,7 +650,7 @@ fn unlocks_screen(ui: &mut egui::Ui, menu: &mut MenuState, save: &SaveData, icon
                 ui.horizontal_top(|ui| {
                     ui.add_space(margin);
                     for (icon, got, title, line1, line2) in pair {
-                        ui::panel_frame().show(ui, |ui| {
+                        ui::ornate(ui, |ui| {
                             ui.set_min_size(CARD - egui::vec2(20.0, 20.0));
                             ui.set_max_width(CARD.x - 20.0);
                             ui.horizontal_top(|ui| {
@@ -689,7 +693,7 @@ fn settings_screen(
     rebind: &mut crate::controls::Rebind,
 ) {
     let height = ui.available_height() - 80.0;
-    ui::panel_frame().show(ui, |ui| {
+    ui::ornate(ui, |ui| {
         ui.set_width(560.0);
         ui.set_max_height(height);
         let tab = &mut menu.settings_tab;

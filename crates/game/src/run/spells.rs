@@ -452,7 +452,7 @@ fn fusion(f: FusionId, c: &mut Ctx, tip: Vec2, dir: Vec2, target: Vec2) {
                 )
             });
             for _ in 0..n.min(60) / 2 {
-                let v = Vec2::new(dir.x * 2.0 + (c.rng() - 0.5), c.rng() * -1.0);
+                let v = Vec2::new(dir.x * 2.0 + (c.rng() - 0.5), -c.rng());
                 c.world
                     .spawn_particle(target.x, target.y, v.x, v.y, Material::Water);
             }

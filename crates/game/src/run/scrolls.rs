@@ -948,6 +948,8 @@ mod tests {
 }
 
 /// Indices of non-scroll icons in the icon sheet (16 columns × 8 rows).
+/// The full layout is listed even where nothing draws an icon yet.
+#[allow(dead_code)]
 pub mod icon {
     pub const SHARD: usize = 73;
     pub const LIGHT_ORB: usize = 74;
