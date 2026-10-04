@@ -88,13 +88,20 @@ pub fn load_assets(
         core: sheet("sprites/core.png", UVec2::splat(48), 8, 1),
         creatures: sheet("sprites/creatures.png", UVec2::splat(16), 4, 3),
         backgrounds: (0..5)
-            .map(|i| {
-                (
-                    server.load(format!("backgrounds/layer{i}_far.png")),
-                    server.load(format!("backgrounds/layer{i}_near.png")),
-                )
-            })
+            .map(|i| (repeating(&server, format!("backgrounds/layer{i}_far.png")), repeating(&server, format!("backgrounds/layer{i}_near.png"))))
             .collect(),
     };
     commands.insert_resource(assets);
+}
+
+/// Loads a texture that tiles (repeat addressing) for the parallax layers.
+fn repeating(server: &AssetServer, path: String) -> Handle<Image> {
+    use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
+    server.load_with_settings(path, |s: &mut ImageLoaderSettings| {
+        s.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+            address_mode_u: ImageAddressMode::Repeat,
+            address_mode_v: ImageAddressMode::Repeat,
+            ..ImageSamplerDescriptor::nearest()
+        });
+    })
 }

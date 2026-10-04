@@ -173,3 +173,45 @@ pub fn cleanup_world_view(mut commands: Commands, entities: Query<Entity, With<I
     }
     commands.remove_resource::<WorldTiles>();
 }
+
+/// Sprite pool for cells in flight (explosion debris, sprays).
+#[derive(Resource, Default)]
+pub struct ParticlePool(Vec<Entity>);
+
+#[derive(Component)]
+pub struct SimParticleSprite;
+
+pub fn draw_sim_particles(
+    mut commands: Commands,
+    session: Res<Session>,
+    mut pool: ResMut<ParticlePool>,
+    mut sprites: Query<(&mut Transform, &mut Sprite, &mut Visibility), With<SimParticleSprite>>,
+) {
+    let Some(world) = &session.world else { return };
+    let particles = world.particles();
+    while pool.0.len() < particles.len().min(4000) {
+        let e = commands
+            .spawn((SimParticleSprite, InGameEntity, Sprite::from_color(Color::WHITE, Vec2::ONE), Transform::default(), Visibility::Hidden))
+            .id();
+        pool.0.push(e);
+    }
+    let mut used = 0;
+    for (p, &e) in particles.iter().zip(pool.0.iter()) {
+        let Ok((mut tf, mut sprite, mut vis)) = sprites.get_mut(e) else { continue };
+        let cell = sbct_sim::Cell::new(p.mat, 128);
+        let [r, g, b, a] = sbct_sim::color::cell_rgba(cell, p.x as i32, p.y as i32, 0);
+        sprite.color = Color::srgba_u8(r, g, b, a.max(200));
+        tf.translation = Vec3::new(p.x, -p.y, 1.0);
+        *vis = Visibility::Visible;
+        used += 1;
+    }
+    for &e in pool.0.iter().skip(used) {
+        if let Ok((_, _, mut vis)) = sprites.get_mut(e) {
+            *vis = Visibility::Hidden;
+        }
+    }
+}
+
+pub fn reset_particle_pool(mut pool: ResMut<ParticlePool>) {
+    pool.0.clear();
+}

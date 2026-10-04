@@ -47,11 +47,14 @@ fn main() {
         .add_plugins(steam::SteamPlugin)
         .add_plugins((run::RunPlugin, fx::FxPlugin, audio::AudioPlugin, dev::DevPlugin))
         .add_systems(Startup, assets::load_assets)
+        .add_systems(OnEnter(AppState::Menu), |mut m: ResMut<audio::MusicTrack>| *m = audio::MusicTrack::Menu)
+        .add_systems(OnEnter(AppState::InGame), |mut m: ResMut<audio::MusicTrack>| *m = audio::MusicTrack::None)
         .add_systems(EguiPrimaryContextPass, ui::setup_ui.before(menu::menu_ui))
         .init_state::<AppState>()
         .insert_resource(ClearColor(Color::srgb(0.45, 0.62, 0.85)))
         .insert_resource(Time::<Fixed>::from_hz(60.0))
         .init_resource::<render::UiHasPointer>()
+        .init_resource::<render::ParticlePool>()
         .init_resource::<hud::EscMenuOpen>()
         .add_systems(Startup, (render::spawn_camera, menu::setup_menu))
         // Session lifecycle, in any state.
@@ -85,7 +88,7 @@ fn main() {
             OnEnter(AppState::InGame),
             (player::spawn_local_player, render::spawn_world_view),
         )
-        .add_systems(OnExit(AppState::InGame), render::cleanup_world_view)
+        .add_systems(OnExit(AppState::InGame), (render::cleanup_world_view, render::reset_particle_pool))
         .add_systems(
             FixedUpdate,
             (session::step_world, session::drain_events)
@@ -103,6 +106,7 @@ fn main() {
                 player::sync_avatars,
                 player::follow_camera,
                 render::upload_dirty_chunks,
+                render::draw_sim_particles,
             )
                 .chain()
                 .after(session::receive)

@@ -6,12 +6,15 @@
 //! digs down until they touch the core or die.
 
 pub mod achievements;
+pub mod background;
 pub mod creatures;
 pub mod entities;
 pub mod hazards;
 pub mod hud;
 pub mod input;
 pub mod items;
+pub mod juice;
+pub mod lighting;
 pub mod physics;
 pub mod player;
 pub mod save;
@@ -449,13 +452,18 @@ impl Plugin for RunPlugin {
                 (
                     on_enter_run,
                     crate::render::spawn_world_view,
+                    lighting::setup_lighting,
+                    background::spawn_backgrounds,
                     player::spawn_player,
                     entities::spawn_entities,
                     creatures::spawn_creatures,
                 )
                     .chain(),
             )
-            .add_systems(OnExit(AppState::Run), (crate::render::cleanup_world_view, on_exit_run))
+            .add_systems(
+                OnExit(AppState::Run),
+                (crate::render::cleanup_world_view, crate::render::reset_particle_pool, on_exit_run),
+            )
             .add_systems(
                 FixedUpdate,
                 crate::session::step_world.run_if(in_state(AppState::Run).and_then(resource_exists::<Session>)),
@@ -493,6 +501,10 @@ impl Plugin for RunPlugin {
                     creatures::animate_creatures,
                     player::follow_camera,
                     crate::render::upload_dirty_chunks,
+                    crate::render::draw_sim_particles,
+                    background::update_backgrounds,
+                    lighting::update_lighting,
+                    juice::ambient_effects,
                 )
                     .chain()
                     .after(apply_time_scale)
