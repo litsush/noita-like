@@ -185,6 +185,65 @@ pub fn present_events(
                     Fx::FlowerPop => {
                         sfx.write(Sfx::at("flower_pop", at).volume(0.7));
                     }
+                    Fx::RobotOk => {
+                        sfx.write(Sfx::at("robot_ok", at));
+                    }
+                    Fx::Splice => {
+                        sfx.write(Sfx::at("splicer_run", at));
+                        bursts.write(
+                            Burst::new(at - Vec2::Y * 14.0, Color::srgb(0.75, 0.5, 0.95))
+                                .count(18)
+                                .speed(50.0)
+                                .life(0.8),
+                        );
+                    }
+                    Fx::ModCraft => {
+                        sfx.write(Sfx::at("craft_big", at));
+                        bursts.write(
+                            Burst::new(at, Color::srgb(0.55, 0.95, 0.7))
+                                .count(24)
+                                .speed(70.0)
+                                .life(0.7),
+                        );
+                    }
+                    Fx::ModEquip => {
+                        sfx.write(Sfx::at("machine_on", at));
+                    }
+                    Fx::Stomp => {
+                        sfx.write(Sfx::at("stomp", at));
+                        if me.is_some_and(|m| m.distance(pos) < 90.0) {
+                            shake.add(0.45);
+                        }
+                        bursts.write(
+                            Burst::new(at, Color::srgb(0.75, 0.7, 0.62))
+                                .count(22)
+                                .speed(90.0)
+                                .gravity(200.0)
+                                .life(0.6),
+                        );
+                    }
+                    Fx::Teleport => {
+                        sfx.write(Sfx::at("teleport", at));
+                        bursts.write(
+                            Burst::new(at, Color::srgb(0.95, 0.5, 0.9))
+                                .count(26)
+                                .speed(80.0)
+                                .life(0.5),
+                        );
+                    }
+                    Fx::Heal => {
+                        sfx.write(Sfx::at("heal", at));
+                        bursts.write(
+                            Burst::new(at, Color::srgb(0.5, 1.0, 0.6))
+                                .count(12)
+                                .speed(30.0)
+                                .gravity(-40.0)
+                                .life(0.8),
+                        );
+                    }
+                    Fx::Ping => {
+                        sfx.write(Sfx::ui("battery_ready"));
+                    }
                     Fx::PipePlace => {
                         sfx.write(Sfx::at("pipe_place", at));
                     }

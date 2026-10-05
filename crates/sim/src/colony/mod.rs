@@ -16,11 +16,13 @@ pub mod farming;
 pub mod geom;
 pub mod inventory;
 pub mod items;
+pub mod modfx;
 pub mod mods;
 pub mod plants;
 pub mod power;
 pub mod readiness;
 pub mod recipes;
+pub mod robots;
 pub mod save;
 pub mod water;
 
@@ -185,6 +187,8 @@ pub struct Player {
     /// Bumped whenever the host moves the player (respawn, recall); the
     /// client then jumps to `pose.pos`.
     pub warp: u32,
+    /// Shields, cooldowns and arm tasks of the player's mods.
+    pub gear: modfx::Gear,
     /// Cells dug per material that haven't added up to an item yet.
     #[serde(skip)]
     pub dig_tally: BTreeMap<u8, f32>,
@@ -230,6 +234,7 @@ impl Player {
             spawn: None,
             sleeping: false,
             warp: 0,
+            gear: modfx::Gear::default(),
             dig_tally: BTreeMap::new(),
             dig_wait: 0.0,
             rev: 1,
@@ -239,7 +244,7 @@ impl Player {
 
     /// The player's stats with their equipped mods applied.
     pub fn stats(&self) -> ModStats {
-        ModStats::default()
+        mods::stats_for(&self.equipped, &self.mods)
     }
 
     pub fn body(&self) -> Body {
@@ -285,6 +290,7 @@ impl Player {
                 .equipped
                 .map(|set| set.map(|s| (s, self.mods.get(&s).copied().unwrap_or(1)))),
             held: self.held().map(|s| s.item),
+            arm: self.gear.free_arm,
         }
     }
 }
@@ -299,6 +305,23 @@ pub struct PublicPlayer {
     /// Per body slot: the equipped set and its tier.
     pub mods: [Option<(u8, u8)>; 8],
     pub held: Option<Item>,
+    /// Where their free-flying arm is working, if it is out.
+    pub arm: Option<V2>,
+}
+
+impl PublicPlayer {
+    /// The stats their visible mods give them.
+    pub fn stats(&self) -> ModStats {
+        let mut owned = BTreeMap::new();
+        let mut equipped = [None; 8];
+        for (slot, m) in self.mods.iter().enumerate() {
+            if let Some((set, tier)) = m {
+                owned.insert(*set, *tier);
+                equipped[slot] = Some(*set);
+            }
+        }
+        mods::stats_for(&equipped, &owned)
+    }
 }
 
 /// Fast-changing numbers, sent to their owner several times a second.
@@ -412,6 +435,7 @@ pub enum EntKind {
     Creature(Creature),
     Drop(Drop),
     Bolt(Bolt),
+    Robot(robots::Robot),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -427,7 +451,7 @@ impl Ent {
     pub fn moves(&self) -> bool {
         matches!(
             self.kind,
-            EntKind::Creature(_) | EntKind::Drop(_) | EntKind::Bolt(_)
+            EntKind::Creature(_) | EntKind::Drop(_) | EntKind::Bolt(_) | EntKind::Robot(_)
         )
     }
 
@@ -436,6 +460,7 @@ impl Ent {
             EntKind::Creature(c) => c.vel,
             EntKind::Drop(d) => d.vel,
             EntKind::Bolt(b) => b.vel,
+            EntKind::Robot(r) => r.vel,
             _ => V2::ZERO,
         }
     }
@@ -480,6 +505,14 @@ pub enum Fx {
     /// A new codex entry.
     Discover,
     FlowerPop,
+    Stomp,
+    Teleport,
+    Heal,
+    Ping,
+    RobotOk,
+    Splice,
+    ModCraft,
+    ModEquip,
     PipePlace,
     /// A readiness target was met for the first time.
     TargetMet,
@@ -534,6 +567,8 @@ pub struct Meta {
     pub workers: Vec<economy::Worker>,
     pub stats: Stats,
     pub codex: Codex,
+    pub areas: Vec<robots::Area>,
+    pub pins: Vec<modfx::Pin>,
 }
 
 /// Small, frequently sent colony-wide state.
@@ -577,6 +612,9 @@ pub struct Colony {
     pub ship: readiness::Ship,
     /// Copper pipe, as tiles of 4×4 cells.
     pub pipes: BTreeSet<water::Tile>,
+    /// Named boxes robots can be sent to.
+    pub areas: Vec<robots::Area>,
+    pub pins: Vec<modfx::Pin>,
     #[serde(skip)]
     pipe_changes: Vec<(water::Tile, bool)>,
     /// Bumped when species, blueprints or workers change; clients are sent
@@ -636,6 +674,8 @@ impl Colony {
             announced: [false; 4],
             ship: readiness::Ship::Away,
             pipes: BTreeSet::new(),
+            areas: Vec::new(),
+            pins: Vec::new(),
             pipe_changes: Vec::new(),
             meta_rev: 1,
             rng: Rng::new(seed ^ 0xC0107),
@@ -852,10 +892,32 @@ impl Colony {
         if !p.alive() || amount <= 0.0 {
             return;
         }
-        p.hp -= amount * p.stats().damage_taken;
+        let stats = p.stats();
+        // Phase Dash and Unbothered shrug the hit off entirely.
+        if (stats.dash_phase && p.pose.flags & pose_flag::DASH != 0)
+            || (stats.still_immune && p.pose.vel.length() < 2.0)
+        {
+            return;
+        }
         let pos = p.center();
+        let shielded = self
+            .online()
+            .any(|o| o.key != key && o.alive() && o.stats().shield_aura && o.center().distance(pos) < 56.0);
+        let p = self.players.get_mut(&key).unwrap();
+        let mut amount = amount * stats.damage_taken * if shielded { 0.5 } else { 1.0 };
+        // A Shield Arm soaks what it can first.
+        if stats.shield > 0.0 {
+            let soaked = p.gear.shield.min(amount);
+            p.gear.shield -= soaked;
+            p.gear.shield_wait = 5.0;
+            amount -= soaked;
+        }
+        p.hp -= amount;
         if amount >= 4.0 {
             self.events.push(Event::Fx { fx: Fx::Hurt, pos });
+        }
+        if stats.thorns > 0.0 {
+            creatures::damage_at(self, pos, 18.0, stats.thorns, Some(key));
         }
     }
 
@@ -923,6 +985,7 @@ impl Colony {
                 vel: e.velocity(),
                 anim: match &e.kind {
                     EntKind::Creature(c) => c.anim(),
+                    EntKind::Robot(r) => r.anim_byte(),
                     _ => 0,
                 },
             })
@@ -940,6 +1003,10 @@ impl Colony {
                     }
                     EntKind::Drop(d) => d.vel = m.vel,
                     EntKind::Bolt(b) => b.vel = m.vel,
+                    EntKind::Robot(r) => {
+                        r.vel = m.vel;
+                        r.set_anim_byte(m.anim);
+                    }
                     _ => {}
                 }
             }
@@ -953,6 +1020,8 @@ impl Colony {
             workers: self.workers.clone(),
             stats: self.stats.clone(),
             codex: self.codex.clone(),
+            areas: self.areas.clone(),
+            pins: self.pins.clone(),
         }
     }
 
@@ -962,6 +1031,8 @@ impl Colony {
         self.workers = m.workers;
         self.stats = m.stats;
         self.codex = m.codex;
+        self.areas = m.areas;
+        self.pins = m.pins;
     }
 
     pub fn take_events(&mut self) -> Vec<Event> {
@@ -991,9 +1062,11 @@ impl Colony {
             }
         }
         self.step_players(world, dt);
+        self.step_mods(world, dt);
         self.step_bolts(world, dt);
         self.step_drops(world, dt);
         creatures::step(self, world, dt);
+        self.step_robots(world, dt);
         self.step_deliveries(world, dt);
 
         self.timers.second += dt;
@@ -1049,11 +1122,15 @@ impl Colony {
 
     fn step_players(&mut self, world: &World, dt: f32) {
         let breathable_air = self.atmosphere.o2 >= O2_BREATHABLE;
+        let mut stack_here = Vec::new();
         // The air thickens as the planet greens, so suits last longer.
         let thin = 1.0 - 0.8 * ((self.atmosphere.o2 - O2_START) / (O2_BREATHABLE - O2_START)).clamp(0.0, 1.0);
         let night = self.clock.is_night();
+        let raining = self.weather.kind == WeatherKind::Rain;
+        let aid = self.aid();
         let keys: Vec<PlayerKey> = self.online().map(|p| p.key).collect();
         for key in keys {
+            let aid = aid.get(&key).copied().unwrap_or_default();
             let (center, head) = {
                 let p = &self.players[&key];
                 (p.center(), p.body().head())
@@ -1089,6 +1166,9 @@ impl Colony {
             }
             if p.in_dome != in_dome {
                 p.in_dome = in_dome;
+                if in_dome.is_some() && stats.dome_quick_stack {
+                    stack_here.push(key);
+                }
             }
             let suit = in_dome.is_none() && !breathable_air;
             if p.suit != suit {
@@ -1098,10 +1178,25 @@ impl Colony {
 
             // Oxygen.
             let underwater = head_in.kind() == Kind::Liquid;
-            if in_dome.is_some() || (breathable_air && !underwater) {
+            let free_air = aid.air >= 3
+                || (stats.gills && underwater)
+                || (stats.no_drain_daylight && !night && outdoors && !underwater);
+            if in_dome.is_some() || (breathable_air && !underwater) || aid.air >= 4 {
                 p.o2 = (p.o2 + 25.0 * stats.o2_refill * dt).min(stats.o2_capacity);
-            } else {
-                let rate = 100.0 / 180.0 * thin * stats.o2_drain * if underwater { 1.6 } else { 1.0 };
+            } else if aid.air == 3 {
+                p.o2 = (p.o2 + 8.0 * dt).min(stats.o2_capacity);
+            } else if !free_air {
+                let wet = if underwater && !stats.water_o2_free {
+                    1.6
+                } else {
+                    1.0
+                };
+                let shared = match aid.air {
+                    0 => 1.0,
+                    1 => 0.5,
+                    _ => 0.0,
+                };
+                let rate = 100.0 / 180.0 * thin * stats.o2_drain * wet * shared;
                 p.o2 = (p.o2 - rate * dt).max(0.0);
             }
             let mut damage = 0.0;
@@ -1110,7 +1205,7 @@ impl Colony {
             }
 
             // Cold: nights under open sky, and frost caves.
-            let cold = (outdoors && night) || frost;
+            let cold = ((outdoors && night) || frost) && !aid.warm;
             if cold {
                 p.warmth = (p.warmth - 100.0 / 150.0 * (1.0 - stats.cold_resist) * dt).max(0.0);
             } else {
@@ -1129,7 +1224,7 @@ impl Colony {
             }
 
             // Health.
-            let regen = stats.regen + if in_dome.is_some() { 4.0 } else { 0.0 };
+            let regen = stats.regen + aid.heal + if in_dome.is_some() { 4.0 } else { 0.0 };
             p.hp = (p.hp + regen * dt).min(stats.max_hp);
             p.slowed = (p.slowed - dt).max(0.0);
 
@@ -1137,16 +1232,20 @@ impl Colony {
             p.battery_wait = (p.battery_wait - dt).max(0.0);
             if p.battery_wait <= 0.0 {
                 p.lockout = false;
-                p.battery = (p.battery + 30.0 * stats.battery_regen * dt).min(stats.battery_capacity);
+                let storm = if raining && stats.rain_boost { 2.0 } else { 1.0 };
+                p.battery = (p.battery + 30.0 * stats.battery_regen * storm * dt).min(stats.battery_capacity);
             }
             p.dig_wait = (p.dig_wait - dt).max(0.0);
 
-            if damage > 0.0 {
+            if damage > 0.0 && !(stats.still_immune && p.pose.vel.length() < 2.0) {
                 p.hp -= damage * stats.damage_taken;
             }
             if p.hp <= 0.0 {
                 self.black_out(key);
             }
+        }
+        for key in stack_here {
+            let _ = self.apply_inv(key, actions::InvOp::QuickStackNearby);
         }
     }
 
@@ -1224,11 +1323,44 @@ impl Colony {
             bolt.life -= dt;
             let travel = bolt.vel.length() * dt;
             let steps = (travel / 2.0).ceil().max(1.0) as i32;
+            let owner = bolt
+                .owner
+                .and_then(|k| self.players.get(&k))
+                .map(|p| p.stats())
+                .unwrap_or_default();
+            // Aimbot (Legal): bend toward the nearest predator ahead.
+            if owner.homing && !bolt.web {
+                let target = self
+                    .ents
+                    .values()
+                    .filter_map(|e| match &e.kind {
+                        EntKind::Creature(c)
+                            if c.kind.predator()
+                                && !matches!(c.state, creatures::State::Dying | creatures::State::Hidden) =>
+                        {
+                            Some(v2(e.pos.x, e.pos.y - c.kind.size().1 / 2.0))
+                        }
+                        _ => None,
+                    })
+                    .filter(|t| t.distance(pos) < 110.0)
+                    .min_by(|a, b| a.distance(pos).total_cmp(&b.distance(pos)));
+                if let Some(t) = target {
+                    let speed = bolt.vel.length();
+                    let want = (t - pos).normalized() * speed;
+                    bolt.vel = (bolt.vel.lerp(want, (9.0 * dt).min(1.0))).normalized() * speed;
+                }
+            }
             let step = bolt.vel * (dt / steps as f32);
             let mut hit = bolt.life <= 0.0;
             for _ in 0..steps {
                 pos += step;
                 let (x, y) = pos.cell();
+                // Brain Freeze: water turns to ice where the bolt strikes it.
+                if owner.cryo >= 2 && !bolt.web && world.material(x, y) == Material::Water {
+                    world.paint_over(x, y, 4, Material::Water, Material::Ice);
+                    hit = true;
+                    break;
+                }
                 if world.material(x, y).is_solid_for_creature() {
                     hit = true;
                     if !bolt.web {
@@ -1263,6 +1395,30 @@ impl Colony {
             if hit {
                 if !bolt.web {
                     self.fx(Fx::BoltHit, pos);
+                    // Boom Mitts: the bolt bursts.
+                    if owner.boom > 0 && bolt.life > 0.0 {
+                        let (x, y) = pos.cell();
+                        for _ in 0..3 {
+                            let dug = world.dig(x, y, owner.boom, 200);
+                            if let Some(key) = bolt.owner {
+                                self.collect_dug(key, &dug, pos);
+                            }
+                        }
+                        let near: Vec<V2> = self
+                            .ents
+                            .values()
+                            .filter(|e| matches!(e.kind, EntKind::Creature(_)))
+                            .map(|e| v2(e.pos.x, e.pos.y - 4.0))
+                            .filter(|p| p.distance(pos) < owner.boom as f32 * 2.0)
+                            .collect();
+                        for p in near {
+                            creatures::damage_at(self, p, 2.0, bolt.damage * 0.5, bolt.owner);
+                        }
+                        if owner.boom_fire {
+                            world.paint_over(x, y, 2, Material::Empty, Material::Fire);
+                        }
+                        self.fx(Fx::Stomp, pos);
+                    }
                 }
                 self.despawn(id);
             } else if let Some(e) = self.ents.get_mut(&id) {
@@ -1277,12 +1433,30 @@ impl Colony {
         let Some(p) = self.players.get_mut(&key) else {
             return;
         };
-        let ore_yield = p.stats().ore_yield;
+        let (ore_yield, lucky) = (p.stats().ore_yield, p.stats().lucky_stone);
         let mut ready: Vec<(Item, u32)> = Vec::new();
-        for &(_, _, m) in dug {
-            let Some((item, per)) = items::drop_for(m) else {
+        for &(x, y, m) in dug {
+            let Some((mut item, per)) = items::drop_for(m) else {
                 continue;
             };
+            // Midas Mitts: a little of the stone turns out to be ore.
+            if lucky > 0 && item == Item::Stone {
+                let h = crate::rng::hash2(self.seed ^ 0x601D, x, y) % 100;
+                if h < 6 {
+                    item = if lucky >= 2 {
+                        [
+                            Item::Iron,
+                            Item::Copper,
+                            Item::Silicon,
+                            Item::Gold,
+                            Item::Titanium,
+                            Item::Xenite,
+                        ][(h as usize + x.unsigned_abs() as usize) % 6]
+                    } else {
+                        Item::Gold
+                    };
+                }
+            }
             let gain = if m.is_ore() { ore_yield } else { 1.0 } / per as f32;
             let t = p.dig_tally.entry(m as u8).or_insert(0.0);
             *t += gain;
@@ -1416,6 +1590,7 @@ impl Colony {
         // The greener the air, the faster grass creeps over bare dirt.
         let t = ((self.atmosphere.o2 - O2_START) / (O2_BREATHABLE - O2_START)).clamp(0.0, 1.0);
         world.set_fertility((6.0 + t * 200.0) as u8);
+        self.step_mods_second(world);
         self.step_water(1.0);
         self.step_production(world, 1.0);
         self.step_readiness(1.0);

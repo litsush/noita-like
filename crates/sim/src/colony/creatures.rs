@@ -132,6 +132,8 @@ pub struct Creature {
     /// Flashes briefly when hit.
     pub hit_flash: f32,
     pub on_ground: bool,
+    /// Seconds of cold left: it moves and thinks at half speed.
+    pub chilled: f32,
 }
 
 impl Creature {
@@ -151,6 +153,7 @@ impl Creature {
             target: None,
             hit_flash: 0.0,
             on_ground: false,
+            chilled: 0.0,
         }
     }
 
@@ -186,6 +189,9 @@ const DESPAWN_RANGE: f32 = 460.0;
 
 /// Damages the first creature within `radius` of `at`. Returns true on a hit.
 pub fn damage_at(colony: &mut Colony, at: V2, radius: f32, damage: f32, by: Option<PlayerKey>) -> bool {
+    let cryo = by
+        .and_then(|k| colony.players.get(&k))
+        .map_or(0, |p| p.stats().cryo);
     let hit = colony.ents.values_mut().find_map(|e| {
         let EntKind::Creature(c) = &mut e.kind else {
             return None;
@@ -196,7 +202,11 @@ pub fn damage_at(colony: &mut Colony, at: V2, radius: f32, damage: f32, by: Opti
         let (hw, h) = c.kind.size();
         let center = v2(e.pos.x, e.pos.y - h / 2.0);
         (center.distance(at) < radius + hw.max(h / 2.0)).then(|| {
-            c.hp -= damage;
+            // Cryo Palms: chilled creatures are brittle, and hits chill.
+            c.hp -= damage * if cryo >= 3 && c.chilled > 0.0 { 1.5 } else { 1.0 };
+            if cryo >= 1 {
+                c.chilled = 4.0;
+            }
             c.hit_flash = 0.15;
             if c.target.is_none() {
                 c.target = by;
@@ -211,12 +221,12 @@ pub fn damage_at(colony: &mut Colony, at: V2, radius: f32, damage: f32, by: Opti
     };
     colony.fx(Fx::CreatureHit, center);
     if dead {
-        kill(colony, id, center, kind);
+        kill(colony, id, center, kind, by);
     }
     true
 }
 
-fn kill(colony: &mut Colony, id: Id, at: V2, kind: CreatureKind) {
+fn kill(colony: &mut Colony, id: Id, at: V2, kind: CreatureKind, by: Option<PlayerKey>) {
     if let Some(Ent {
         kind: EntKind::Creature(c),
         ..
@@ -239,16 +249,35 @@ fn kill(colony: &mut Colony, id: Id, at: V2, kind: CreatureKind) {
         CreatureKind::BurrowMaw => &[(Item::Chitin, 4), (Item::Xenite, 2)],
         CreatureKind::BroodMother => &[(Item::Aurorium, 6), (Item::Chitin, 8), (Item::Silk, 6)],
     };
+    // Appraisal Monocle: the killer's eye for loot.
+    let (loot, rare) = by
+        .and_then(|k| colony.players.get(&k))
+        .map_or((1.0, false), |p| (p.stats().loot, p.stats().rare_loot));
     for &(item, count) in drops {
-        colony.drop_item(at, item, count);
+        let n = count as f32 * loot;
+        let extra = (colony.rng.next_f32() < n.fract()) as u32;
+        colony.drop_item(at, item, n as u32 + extra);
+    }
+    if rare && kind.predator() && colony.rng.next_f32() < 0.25 {
+        let item = if colony.rng.next_f32() < 0.5 {
+            Item::Gold
+        } else {
+            Item::Xenite
+        };
+        colony.drop_item(at, item, 1);
     }
 }
 
 pub fn step(colony: &mut Colony, world: &mut World, dt: f32) {
-    let players: Vec<(PlayerKey, V2, bool)> = colony
+    // Camo Skin: (key, where, can't be hunted, noticed from half as far).
+    let players: Vec<(PlayerKey, V2, bool, bool)> = colony
         .online()
         .filter(|p| p.alive())
-        .map(|p| (p.key, p.center(), p.in_dome.is_some()))
+        .map(|p| {
+            let stealth = p.stats().stealth;
+            let unseen = stealth >= 3 || (stealth == 2 && p.pose.vel.length() < 2.0);
+            (p.key, p.center(), p.in_dome.is_some() || unseen, stealth >= 1)
+        })
         .collect();
     let ids: Vec<Id> = colony
         .ents
@@ -267,7 +296,10 @@ pub fn step(colony: &mut Colony, world: &mut World, dt: f32) {
         };
         let nearest = players
             .iter()
-            .map(|&(k, p, safe)| (k, p, safe, p.distance(pos)))
+            .map(|&(k, p, safe, half)| {
+                let d = p.distance(pos);
+                (k, p, safe || (half && d > 75.0), d)
+            })
             .min_by(|a, b| a.3.total_cmp(&b.3));
         let dist = nearest.map_or(f32::MAX, |n| n.3);
         if dist > DESPAWN_RANGE && c.kind != CreatureKind::BroodMother {
@@ -280,6 +312,8 @@ pub fn step(colony: &mut Colony, world: &mut World, dt: f32) {
         let mut c = c;
         let mut pos = pos;
         let before = (c.state, c.facing, c.hit_flash > 0.0);
+        c.chilled = (c.chilled - dt).max(0.0);
+        let dt = if c.chilled > 0.0 { dt * 0.5 } else { dt };
         let alive = think(colony, world, id, &mut c, &mut pos, nearest, dt);
         if !alive {
             colony.despawn(id);

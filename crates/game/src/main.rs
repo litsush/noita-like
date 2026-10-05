@@ -9,6 +9,7 @@ mod events;
 mod fx;
 mod hud;
 mod lighting;
+mod map;
 mod menu;
 mod overlays;
 mod panels;
@@ -80,6 +81,7 @@ fn main() {
         .init_resource::<placement::Placement>()
         .init_resource::<overlays::Overlays>()
         .init_resource::<ending::Ending>()
+        .init_resource::<map::MapView>()
         .add_systems(
             Startup,
             (assets::load_assets, render::spawn_camera, menu::setup_menu).chain(),
@@ -147,6 +149,7 @@ fn main() {
                 plants::reset_plants,
                 pipes::reset_pipes,
                 ending::reset_ending,
+                map::reset_map,
                 |mut commands: Commands| commands.remove_resource::<player::LocalPlayer>(),
             ),
         )
@@ -167,6 +170,8 @@ fn main() {
                     entities::extrapolate,
                     events::present_events,
                     events::soundscape,
+                    map::explore,
+                    map::refresh,
                 )
                     .chain(),
                 (
@@ -198,6 +203,7 @@ fn main() {
             (
                 overlays::overlay_labels,
                 hud::hud_ui,
+                map::prepare,
                 panels::panels_ui,
                 ending::ending_banner,
             )

@@ -272,6 +272,15 @@ impl World {
         self.mark_changed(x, y);
     }
 
+    /// Turns every `from` cell in a disc into `to`.
+    pub fn paint_over(&mut self, cx: i32, cy: i32, radius: i32, from: Material, to: Material) {
+        for (x, y) in disc(cx, cy, radius) {
+            if self.in_bounds(x, y) && self.material(x, y) == from {
+                self.set(x, y, to);
+            }
+        }
+    }
+
     /// Fills a disc. `Material::Empty` digs everything; other materials only
     /// fill open cells so painting doesn't overwrite terrain.
     /// Returns true if anything changed.

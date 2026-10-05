@@ -4,6 +4,9 @@
 
 mod dome;
 mod inventory;
+pub mod lab;
+mod modbay;
+pub mod robot;
 mod synth;
 mod terminal;
 
@@ -14,11 +17,12 @@ use sbct_sim::colony::domes::{Fixture, fixture_pos};
 use sbct_sim::colony::farming::PlanterOp;
 use sbct_sim::colony::geom::V2;
 use sbct_sim::colony::items::MachineKind;
+use sbct_sim::colony::mods::Slot;
+use sbct_sim::colony::plants::SpeciesId;
 use sbct_sim::colony::{Colony, CrateKind, EntKind, Id, PLAYER_HEIGHT, Player};
 
 use crate::audio::Sfx;
 use crate::controls::{Action, Rebind};
-use crate::hud::Toasts;
 use crate::player::LocalPlayer;
 use crate::render::{UiHasPointer, WorldCamera};
 use crate::session::Session;
@@ -38,6 +42,12 @@ pub enum Open {
     Dome(Id),
     /// A machine without an inventory of its own.
     Machine(Id),
+    /// A robot and its program.
+    Robot(Id),
+    Splicer(Id),
+    ModBay,
+    Map,
+    Codex,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -51,7 +61,7 @@ pub enum TerminalTab {
 }
 
 /// Which windows are open over the game, and their transient state.
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct Panels {
     pub pause: bool,
     pub settings: bool,
@@ -67,6 +77,35 @@ pub struct Panels {
     pub terminal_tab: TerminalTab,
     /// The name being typed in a rename box, and for which entity.
     pub rename: Option<(Id, String)>,
+    /// The robot program being edited.
+    pub robot_draft: Option<robot::Draft>,
+    /// The two parents chosen in the Gene Splicer.
+    pub splice: (Option<SpeciesId>, Option<SpeciesId>),
+    pub codex_tab: lab::CodexTab,
+    pub codex_plant: Option<SpeciesId>,
+    pub mod_slot: Slot,
+}
+
+impl Default for Panels {
+    fn default() -> Panels {
+        Panels {
+            pause: false,
+            settings: false,
+            settings_tab: SettingsTab::default(),
+            typing: false,
+            open: None,
+            dragging: None,
+            search: String::new(),
+            synth_filter: String::new(),
+            terminal_tab: TerminalTab::default(),
+            rename: None,
+            robot_draft: None,
+            splice: (None, None),
+            codex_tab: lab::CodexTab::default(),
+            codex_plant: None,
+            mod_slot: Slot::Feet,
+        }
+    }
 }
 
 impl Panels {
@@ -88,6 +127,9 @@ pub enum Target {
     Crate(Id, CrateKind),
     /// A plant growing outside a planter.
     Plant(Id),
+    Robot(Id),
+    /// A teammate Healing Hands can help.
+    Teammate(sbct_sim::colony::PlayerKey),
 }
 
 /// The thing the Interact key would use right now, and where it is.
@@ -111,12 +153,15 @@ impl Target {
                             "Set your spawn here".into()
                         }
                     }
-                    Fixture::SuitRack => "Suit rack".into(),
+                    Fixture::SuitRack => "Suit rack: your suit seals by itself outside".into(),
                     Fixture::Synthesizer => "Synthesizer".into(),
                     Fixture::Terminal => "Comm. Terminal".into(),
                     Fixture::ModBay => "Mod Bay".into(),
                     Fixture::Planter(i) => match planter_action(colony, me, dome, i) {
                         Some((_, label)) => label,
+                        None if can_tickle(colony, me, dome, i) => {
+                            format!("Tickle: {}", planter_status(colony, dome, i))
+                        }
                         None => planter_status(colony, dome, i),
                     },
                     Fixture::Cooker => "Cooker".into(),
@@ -132,6 +177,15 @@ impl Target {
             Target::Crate(_, CrateKind::Pack) => "Lost pack".into(),
             Target::Crate(_, CrateKind::Cache) => "Salvage cache".into(),
             Target::Crate(_, CrateKind::Pod) => "Drop pod".into(),
+            Target::Teammate(key) => match colony.players.get(&key) {
+                Some(p) if p.dead.is_some() => format!("Revive {}", p.name),
+                Some(p) => format!("Heal {}", p.name),
+                None => String::new(),
+            },
+            Target::Robot(id) => match colony.ents.get(&id).map(|e| &e.kind) {
+                Some(EntKind::Robot(r)) => format!("{}: program", r.name),
+                _ => String::new(),
+            },
             Target::Plant(id) => {
                 let Some(EntKind::Plant(p)) = colony.ents.get(&id).map(|e| &e.kind) else {
                     return String::new();
@@ -142,6 +196,8 @@ impl Target {
                     .map_or("Plant", |s| s.name.as_str());
                 if p.growth >= 1.0 {
                     format!("Harvest {name}")
+                } else if me.stats().tickle > 0 {
+                    format!("Tickle {name} ({:.0}% grown)", p.growth * 100.0)
                 } else {
                     format!("{name}: {:.0}% grown", p.growth * 100.0)
                 }
@@ -199,6 +255,15 @@ pub fn planter_action(colony: &Colony, me: &Player, dome: Id, slot: u8) -> Optio
     }
 }
 
+/// Whether Green Fingers would do something to a planter.
+fn can_tickle(colony: &Colony, me: &Player, dome: Id, slot: u8) -> bool {
+    me.stats().tickle > 0
+        && colony
+            .dome(dome)
+            .and_then(|(_, d)| d.planters.get(slot as usize))
+            .is_some_and(|p| p.species.is_some() && p.growth < 1.0)
+}
+
 /// Everything usable within the player's reach, with its position.
 fn targets(colony: &Colony, me: &Player) -> Vec<(Target, V2)> {
     let reach = me.stats().reach;
@@ -230,6 +295,7 @@ fn targets(colony: &Colony, me: &Player) -> Vec<(Target, V2)> {
                     y: e.pos.y - 6.0,
                 },
             )),
+            EntKind::Robot(_) => out.push((Target::Robot(e.id), e.pos)),
             EntKind::Plant(_) => out.push((
                 Target::Plant(e.id),
                 V2 {
@@ -241,6 +307,17 @@ fn targets(colony: &Colony, me: &Player) -> Vec<(Target, V2)> {
         }
     }
     out.retain(|(_, p)| p.distance(at) <= reach);
+    // Healing Hands: hurt or downed teammates, further away at higher tiers.
+    let hands = me.stats().heal_touch;
+    if hands > 0 {
+        let range = if hands >= 3 { 180.0 } else { reach };
+        for p in colony.online() {
+            let needs = p.dead.is_some() && hands >= 2 || p.alive() && p.hp < p.stats().max_hp - 1.0;
+            if p.key != me.key && needs && p.center().distance(at) <= range {
+                out.push((Target::Teammate(p.key), p.center()));
+            }
+        }
+    }
     out
 }
 
@@ -277,7 +354,6 @@ pub fn interact(
     focus: Res<Focus>,
     mut session: ResMut<Session>,
     mut panels: ResMut<Panels>,
-    mut toasts: ResMut<Toasts>,
     mut sfx: MessageWriter<Sfx>,
 ) {
     if rebind.blocking() || panels.pause {
@@ -293,6 +369,10 @@ pub fn interact(
             Open::Terminal => colony.terminal_near(me.key),
             Open::Dome(id) => me.in_dome == Some(id),
             Open::Machine(id) => crate_near(colony, me, Container::Machine(id)),
+            Open::Robot(id) => me.stats().remote_robots || crate_near(colony, me, Container::Machine(id)),
+            Open::Splicer(id) => crate_near(colony, me, Container::Machine(id)),
+            Open::ModBay => colony.synthesizer_near(me.key) || me.in_dome == Some(colony.home),
+            Open::Map | Open::Codex => true,
         };
         if !still_there {
             panels.close();
@@ -311,6 +391,18 @@ pub fn interact(
             sfx.write(Sfx::ui("inv_open"));
         }
         return;
+    }
+    for (action, view) in [(Action::Map, Open::Map), (Action::Codex, Open::Codex)] {
+        if b.just_pressed(action, &keys, &mouse) {
+            if panels.open == Some(view) {
+                panels.close();
+                sfx.write(Sfx::ui("inv_close"));
+            } else {
+                panels.open = Some(view);
+                sfx.write(Sfx::ui("inv_open"));
+            }
+            return;
+        }
     }
     if b.just_pressed(Action::QuickStack, &keys, &mouse) {
         session.act(Act::Inv(sbct_sim::colony::actions::InvOp::QuickStackNearby));
@@ -333,21 +425,22 @@ pub fn interact(
         Target::Fixture(dome, Fixture::Chest(i)) => Some(Open::Container(Container::DomeChest(dome, i))),
         Target::Fixture(_, Fixture::Synthesizer) => Some(Open::Synth),
         Target::Fixture(_, Fixture::Terminal) => Some(Open::Terminal),
-        Target::Fixture(_, Fixture::SuitRack) => {
-            toasts.push("Your suit seals by itself when you step outside.", true);
-            None
-        }
+        Target::Fixture(_, Fixture::SuitRack) => None,
         Target::Fixture(_, Fixture::Bunk(_)) => {
             act = Some(Act::Sleep);
             None
         }
-        Target::Fixture(_, Fixture::ModBay) => {
-            toasts.push("The Mod Bay isn't wired up yet.", false);
-            None
-        }
+        Target::Fixture(_, Fixture::ModBay) => Some(Open::ModBay),
         Target::Fixture(dome, Fixture::Planter(i)) => match planter_action(colony, me, dome, i) {
             Some((op, _)) => {
                 act = Some(Act::Planter { dome, slot: i, op });
+                None
+            }
+            None if can_tickle(colony, me, dome, i) => {
+                act = Some(Act::Tickle {
+                    planter: Some((dome, i)),
+                    plant: None,
+                });
                 None
             }
             None => Some(Open::Dome(dome)),
@@ -357,10 +450,25 @@ pub fn interact(
             Some(Open::Container(Container::Machine(id)))
         }
         Target::Machine(_, MachineKind::Synthesizer) => Some(Open::Synth),
+        Target::Machine(id, MachineKind::Splicer) => Some(Open::Splicer(id)),
         Target::Machine(id, _) => Some(Open::Machine(id)),
         Target::Crate(id, _) => Some(Open::Container(Container::Crate(id))),
+        Target::Robot(id) => Some(Open::Robot(id)),
+        Target::Teammate(key) => {
+            act = Some(Act::Heal { target: key });
+            None
+        }
         Target::Plant(id) => {
-            act = Some(Act::Harvest { plant: id });
+            let ripe =
+                matches!(colony.ents.get(&id).map(|e| &e.kind), Some(EntKind::Plant(p)) if p.growth >= 1.0);
+            act = Some(if !ripe && me.stats().tickle > 0 {
+                Act::Tickle {
+                    planter: None,
+                    plant: Some(id),
+                }
+            } else {
+                Act::Harvest { plant: id }
+            });
             None
         }
     };
@@ -383,6 +491,7 @@ fn crate_near(colony: &Colony, me: &Player, c: Container) -> bool {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 /// Draws the interaction prompt and whichever panels are open.
 pub fn panels_ui(
     mut contexts: EguiContexts,
@@ -395,6 +504,8 @@ pub fn panels_ui(
     icons: Option<Res<UiIcons>>,
     camera: Single<(&Camera, &GlobalTransform), With<WorldCamera>>,
     keys: Res<ButtonInput<KeyCode>>,
+    local: Res<LocalPlayer>,
+    mut map: ResMut<crate::map::MapView>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     let Some(icons) = icons else { return Ok(()) };
@@ -432,6 +543,17 @@ pub fn panels_ui(
             );
             painter.galley(rect.min + egui::vec2(5.0, 2.0), galley, ACCENT);
         }
+    }
+
+    // What each robot is up to.
+    if !panels.pause {
+        let to_screen = |p: V2| {
+            cam.world_to_viewport(cam_tf, Vec3::new(p.x, -p.y, 0.0))
+                .ok()
+                .map(|s| egui::pos2(s.x / zoom, s.y / zoom))
+        };
+        robot::bubbles(ctx, colony, local.cursor, me.center(), &to_screen);
+        crate::map::ping_markers(ctx, colony, &to_screen);
     }
 
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
@@ -487,6 +609,21 @@ pub fn panels_ui(
         }
         Some(Open::Machine(id)) => {
             dome::machine_window(ctx, &icons, colony, id, &mut panels, &mut acts, &mut close);
+        }
+        Some(Open::Robot(id)) => {
+            robot::window(ctx, &icons, colony, id, &mut panels, &mut acts, &mut close);
+        }
+        Some(Open::Splicer(id)) => {
+            lab::splicer_window(ctx, &icons, colony, me, id, &mut panels, &mut acts, &mut close);
+        }
+        Some(Open::ModBay) => {
+            modbay::window(ctx, &icons, colony, me, &mut panels, &mut acts, &mut close);
+        }
+        Some(Open::Codex) => {
+            lab::codex_window(ctx, &icons, colony, me, &mut panels, &mut close);
+        }
+        Some(Open::Map) => {
+            crate::map::window(ctx, &mut map, colony, me, &mut panels, &mut acts, &mut close);
         }
         None => {}
     }

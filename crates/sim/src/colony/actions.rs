@@ -66,6 +66,8 @@ pub enum Action {
     Fire {
         from: V2,
         dir: V2,
+        /// 0–1: how long the shot was charged (Bolt Enhancements).
+        charge: f32,
     },
     /// Use the selected hotbar item at a point (place a block, …).
     Use {
@@ -122,6 +124,52 @@ pub enum Action {
     },
     /// Call the colony ship down. Needs every readiness target met.
     CallShip,
+    Robot {
+        id: Id,
+        op: super::robots::RobotOp,
+    },
+    Area(super::robots::AreaOp),
+    /// Synthesize the next tier of a body-mod set.
+    CraftMod {
+        set: u8,
+    },
+    /// Wear a set in its slot, or clear the slot. At the Mod Bay.
+    Equip {
+        slot: super::mods::Slot,
+        set: Option<u8>,
+    },
+    ArmTask {
+        arm: u8,
+        task: super::mods::ArmTask,
+    },
+    /// Send the free-flying arm somewhere, or call it back.
+    SendArm {
+        at: Option<V2>,
+    },
+    /// The player landed hard (Stompers).
+    Stomp {
+        speed: f32,
+    },
+    Teleport(super::modfx::Teleport),
+    RainDance,
+    Heal {
+        target: PlayerKey,
+    },
+    /// Green Fingers on a planter or an outdoor plant.
+    Tickle {
+        planter: Option<(Id, u8)>,
+        plant: Option<Id>,
+    },
+    /// The grapple hook landed here (Grapple Glove).
+    Yank {
+        at: V2,
+    },
+    Pin(super::modfx::PinOp),
+    Splice {
+        machine: Id,
+        a: super::plants::SpeciesId,
+        b: super::plants::SpeciesId,
+    },
 }
 
 type Outcome = Result<(), &'static str>;
@@ -137,7 +185,7 @@ impl Colony {
         }
         match action {
             Action::Dig { x, y } => self.dig(world, key, x, y),
-            Action::Fire { from, dir } => self.fire(key, from, dir),
+            Action::Fire { from, dir, charge } => self.fire(key, from, dir, charge),
             Action::Use { at } => self.use_item(world, key, at),
             Action::Inv(op) => self.inv_op(key, op),
             Action::Craft { recipe, count } => self.craft(key, recipe, count),
@@ -153,6 +201,20 @@ impl Colony {
             Action::Sleep => self.sleep(key),
             Action::Pipe { from, to, remove } => self.lay_pipe(key, from, to, remove),
             Action::CallShip => self.call_ship(key),
+            Action::Robot { id, op } => self.robot_op(key, id, op),
+            Action::Area(op) => self.area_op(op),
+            Action::CraftMod { set } => self.craft_mod(key, set),
+            Action::Equip { slot, set } => self.equip(key, slot, set),
+            Action::ArmTask { arm, task } => self.set_arm_task(key, arm, task),
+            Action::SendArm { at } => self.send_arm(key, at),
+            Action::Stomp { speed } => self.stomp(world, key, speed),
+            Action::Teleport(to) => self.teleport(key, to),
+            Action::RainDance => self.rain_dance(key),
+            Action::Heal { target } => self.heal(key, target),
+            Action::Tickle { planter, plant } => self.tickle(key, planter, plant),
+            Action::Yank { at } => self.yank(key, at),
+            Action::Pin(op) => self.pin_op(key, op),
+            Action::Splice { machine, a, b } => self.splice(key, machine, a, b),
         }
     }
 
@@ -213,9 +275,20 @@ impl Colony {
         Ok(())
     }
 
-    fn fire(&mut self, key: PlayerKey, from: V2, dir: V2) -> Outcome {
+    fn fire(&mut self, key: PlayerKey, from: V2, dir: V2, charge: f32) -> Outcome {
+        let crit_roll = self.rng.next_f32();
         let p = self.players.get_mut(&key).unwrap();
         let stats = p.stats();
+        let charge = if stats.overcharge {
+            charge.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let crit = if crit_roll < stats.crit {
+            stats.crit_mult
+        } else {
+            1.0
+        };
         let dir = dir.normalized();
         if dir == V2::ZERO || p.center().distance(from) > 30.0 {
             return Err("Bad shot");
@@ -223,7 +296,9 @@ impl Colony {
         if p.lockout {
             return Err("Battery recharging");
         }
-        let cost = BOLT_COST * stats.bolt_cost;
+        // A charged shot costs more; with too little battery it fires weaker.
+        let charge = charge.min(((p.battery / (BOLT_COST * stats.bolt_cost)) - 1.0).max(0.0) / 1.5);
+        let cost = BOLT_COST * stats.bolt_cost * (1.0 + 1.5 * charge);
         if p.battery < cost {
             return Err("Battery too low");
         }
@@ -244,8 +319,8 @@ impl Colony {
                 from,
                 EntKind::Bolt(Bolt {
                     vel: d * BOLT_SPEED,
-                    damage: 15.0 * stats.bolt_damage,
-                    size: stats.bolt_size,
+                    damage: 15.0 * stats.bolt_damage * (1.0 + 2.0 * charge) * crit,
+                    size: stats.bolt_size * (1.0 + 0.8 * charge) * if crit > 1.0 { 1.25 } else { 1.0 },
                     owner: Some(key),
                     life: 1.3,
                     web: false,
@@ -257,10 +332,10 @@ impl Colony {
     }
 
     fn use_item(&mut self, world: &mut World, key: PlayerKey, at: V2) -> Outcome {
-        if !self.in_reach(key, at, 0.0) {
+        let p = &self.players[&key];
+        if p.center().distance(at) > p.stats().place_reach {
             return Err("Out of reach");
         }
-        let p = &self.players[&key];
         let slot = p.selected as usize;
         let Some(stack) = p.held() else {
             return Ok(());
@@ -272,6 +347,7 @@ impl Colony {
             Item::Machine(kind) => self.place_machine(world, key, slot, kind, at),
             Item::Seed(species) => self.plant_outdoors(world, key, slot, species, at),
             Item::WateringCan => self.use_can(world, key, at),
+            Item::RobotKit => self.deploy_robot(world, key, slot, at),
             Item::Cluckbug | Item::MilkGrub | Item::FishFry => self.stock(key),
             _ => Err("Can't use that here"),
         }
@@ -330,7 +406,11 @@ impl Colony {
             }
             Container::Machine(id) | Container::Crate(id) => {
                 let e = self.ents.get(&id)?;
-                matches!(e.kind, EntKind::Machine(_) | EntKind::Crate(_)).then_some(e.pos)
+                matches!(
+                    e.kind,
+                    EntKind::Machine(_) | EntKind::Crate(_) | EntKind::Robot(_)
+                )
+                .then_some(e.pos)
             }
         }
     }
@@ -351,6 +431,7 @@ impl Colony {
                 match &mut self.ents.get_mut(&id)?.kind {
                     EntKind::Machine(m) => Some(&mut m.inv),
                     EntKind::Crate(c) => Some(&mut c.inv),
+                    EntKind::Robot(r) => Some(&mut r.inv),
                     _ => None,
                 }
             }
@@ -359,6 +440,10 @@ impl Colony {
 
     fn reachable(&self, key: PlayerKey, c: Container) -> Outcome {
         let pos = self.container_pos(key, c).ok_or("That container is gone")?;
+        // Mods that open the colony stockpile from anywhere.
+        if matches!(c, Container::DomeChest(..)) && self.players[&key].stats().remote_stockpile {
+            return Ok(());
+        }
         if self.in_reach(key, pos, 16.0) {
             Ok(())
         } else {
@@ -396,6 +481,10 @@ impl Colony {
         {
             self.despawn(id);
         }
+    }
+
+    pub(super) fn apply_inv(&mut self, key: PlayerKey, op: InvOp) -> Outcome {
+        self.inv_op(key, op)
     }
 
     fn inv_op(&mut self, key: PlayerKey, op: InvOp) -> Outcome {
@@ -626,6 +715,7 @@ mod tests {
                 Action::Fire {
                     from,
                     dir: v2(1.0, 0.0),
+                    charge: 0.0,
                 },
             )
         };
@@ -669,6 +759,7 @@ mod tests {
                 Action::Fire {
                     from,
                     dir: v2(1.0, 0.0),
+                    charge: 0.0,
                 },
             )
             .unwrap();
@@ -698,6 +789,7 @@ mod tests {
                     Action::Fire {
                         from: out,
                         dir: v2(0.0, 1.0),
+                        charge: 0.0,
                     },
                 )
                 .unwrap();

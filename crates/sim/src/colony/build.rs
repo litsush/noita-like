@@ -116,7 +116,8 @@ impl Colony {
         }
         let n = self.domes().filter(|(_, d)| d.kind == kind).count();
         let mut dome = Dome::new(kind, self.numbered_name(kind.name(), n));
-        dome.boost = 1.0;
+        // Big Dome Energy.
+        dome.boost = self.players[&key].stats().dome_boost;
         let id = self.spawn(pos, EntKind::Dome(dome));
         self.consume_held(key, slot);
         self.fx(Fx::DomePlaced, r.center());
@@ -138,7 +139,9 @@ impl Colony {
             .values()
             .filter(|e| matches!(&e.kind, EntKind::Machine(m) if m.kind == kind))
             .count();
-        let machine = Machine::new(kind, self.numbered_name(kind.name(), n));
+        let mut machine = Machine::new(kind, self.numbered_name(kind.name(), n));
+        // Unionized.
+        machine.boost = self.players[&key].stats().machine_boost;
         self.spawn(pos, EntKind::Machine(machine));
         self.consume_held(key, slot);
         self.fx(Fx::Place, pos);
@@ -207,8 +210,14 @@ impl Colony {
         self.workers.retain(|w| w.home != id);
         self.meta_rev += 1;
         let at = v2(pos.x, pos.y - 6.0);
+        // Hot Swap: the contents go straight into the pack.
+        let pack = self.players[&key].stats().pack_contents;
         for s in spill {
-            self.drop_item(at, s.item, s.count);
+            if pack {
+                self.give(key, s.item, s.count);
+            } else {
+                self.drop_item(at, s.item, s.count);
+            }
         }
         self.give(key, item, 1);
         self.fx(Fx::Place, at);
@@ -224,6 +233,7 @@ impl Colony {
         match self.ents.get_mut(&id).map(|e| &mut e.kind) {
             Some(EntKind::Dome(d)) => d.name = name,
             Some(EntKind::Machine(m)) => m.name = name,
+            Some(EntKind::Robot(r)) => r.name = name,
             _ => return Err("That can't be renamed"),
         }
         Ok(())

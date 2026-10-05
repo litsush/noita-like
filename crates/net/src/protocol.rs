@@ -9,7 +9,7 @@ use sbct_sim::colony::{
 };
 
 /// Bump whenever a message layout changes so mismatched builds refuse to connect.
-pub const PROTOCOL_VERSION: u32 = 22;
+pub const PROTOCOL_VERSION: u32 = 23;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum ClientMsg {
@@ -112,6 +112,31 @@ mod tests {
             Action::Fire {
                 from: v2(1.5, 2.5),
                 dir: v2(0.0, -1.0),
+                charge: 0.5,
+            },
+            Action::Robot {
+                id: 9,
+                op: sbct_sim::colony::robots::RobotOp::SetProgram(vec![sbct_sim::colony::robots::Sentence {
+                    when: Some(sbct_sim::colony::robots::Cond::Battery {
+                        below: true,
+                        percent: 20,
+                    }),
+                    steps: vec![
+                        sbct_sim::colony::robots::Step::ChargeAt(
+                            sbct_sim::colony::robots::Place::NearestPylon,
+                        )
+                        .into(),
+                    ],
+                }]),
+            },
+            Action::Equip {
+                slot: sbct_sim::colony::mods::Slot::Feet,
+                set: Some(0),
+            },
+            Action::Splice {
+                machine: 3,
+                a: 0,
+                b: 21,
             },
             Action::Inv(InvOp::Move {
                 from: (Container::DomeChest(4, 1), 3),

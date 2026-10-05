@@ -83,7 +83,7 @@ pub const DELIVERY_SECS: f32 = 20.0;
 impl Colony {
     /// Whether a player may use fixture `f` right now: they must be inside a
     /// dome that has it, close to it.
-    fn at_fixture(&self, key: PlayerKey, f: Fixture) -> bool {
+    pub(super) fn at_fixture(&self, key: PlayerKey, f: Fixture) -> bool {
         let p = &self.players[&key];
         let Some((e, d)) = p.in_dome.and_then(|id| self.dome(id)) else {
             return false;
@@ -101,6 +101,9 @@ impl Colony {
             return true;
         }
         let p = &self.players[&key];
+        if p.stats().remote_synth {
+            return true;
+        }
         self.ents.values().any(|e| {
             matches!(&e.kind, EntKind::Machine(m) if m.kind == MachineKind::Synthesizer)
                 && e.pos.distance(p.pose.pos) <= p.stats().reach + 12.0
@@ -108,7 +111,7 @@ impl Colony {
     }
 
     pub fn terminal_near(&self, key: PlayerKey) -> bool {
-        self.at_fixture(key, Fixture::Terminal)
+        self.at_fixture(key, Fixture::Terminal) || self.players[&key].stats().remote_terminal
     }
 
     /// Everything a player's synthesizing can draw on: their inventory, the
@@ -116,8 +119,11 @@ impl Colony {
     pub fn stock_containers(&self, key: PlayerKey) -> Vec<Container> {
         let mut out = vec![Container::Me];
         let here = self.players[&key].in_dome;
+        let remote = self.players[&key].stats().remote_stockpile;
         for (e, d) in self.domes() {
-            if Some(e.id) == here || d.kind == DomeKind::Storage {
+            // Storage Domes count while the player is at the base; mods
+            // that reach the stockpile from anywhere count every dome.
+            if Some(e.id) == here || (d.kind == DomeKind::Storage && (here.is_some() || remote)) || remote {
                 out.extend((0..d.chests.len() as u8).map(|i| Container::DomeChest(e.id, i)));
             }
         }
@@ -149,7 +155,7 @@ impl Colony {
 
     /// Removes `count` of an ingredient from the stockpile (the player's own
     /// inventory first). Call only after checking [`Colony::stock_count`].
-    fn stock_take(&mut self, key: PlayerKey, ing: Ingredient, count: u32) {
+    pub(super) fn stock_take(&mut self, key: PlayerKey, ing: Ingredient, count: u32) {
         let mut left = count;
         let species = self.species.clone();
         for c in self.stock_containers(key) {
@@ -191,6 +197,22 @@ impl Colony {
         }
     }
 
+    /// What a recipe costs this player, after their mods' discounts.
+    pub fn recipe_cost(&self, key: PlayerKey, recipe: usize) -> Vec<(Ingredient, u32)> {
+        let Some(r) = recipes().get(recipe) else {
+            return Vec::new();
+        };
+        let stats = self.players.get(&key).map(|p| p.stats()).unwrap_or_default();
+        let mut discount = stats.craft_discount;
+        if matches!(r.output, Item::DomeKit(_)) {
+            discount += stats.dome_discount;
+        }
+        r.inputs
+            .iter()
+            .map(|&(ing, n)| (ing, ((n as f32 * (1.0 - discount)).ceil() as u32).max(1)))
+            .collect()
+    }
+
     pub(super) fn craft(&mut self, key: PlayerKey, recipe: u16, count: u16) -> Result<(), &'static str> {
         let r = recipes().get(recipe as usize).ok_or("Unknown recipe")?;
         if r.blueprint.is_some_and(|b| !self.blueprints.contains(&b)) {
@@ -200,16 +222,20 @@ impl Colony {
             return Err("Use a Synthesizer");
         }
         let n = count.clamp(1, 99) as u32;
-        if r.inputs
+        let inputs = self.recipe_cost(key, recipe as usize);
+        if inputs
             .iter()
             .any(|&(ing, need)| self.stock_count(key, ing) < need * n)
         {
             return Err("Not enough materials");
         }
-        for &(ing, need) in &r.inputs {
+        for &(ing, need) in &inputs {
             self.stock_take(key, ing, need * n);
         }
-        self.give(key, r.output, r.count * n);
+        // Free Shipping: some batches come out doubled.
+        let double = self.players[&key].stats().craft_double;
+        let bonus = (0..n).filter(|_| self.rng.next_f32() < double).count() as u32;
+        self.give(key, r.output, r.count * (n + bonus));
         let at = self.players[&key].center();
         self.fx(Fx::Craft, at);
         Ok(())
@@ -230,8 +256,9 @@ impl Colony {
         }
         p.touch();
         let at = p.center();
-        self.credits += (value * sold) as i64;
-        self.stats.earned += (value * sold) as u64;
+        let earned = ((value * sold) as f32 * (1.0 + p.stats().sell_bonus)).round() as i64;
+        self.credits += earned;
+        self.stats.earned += earned as u64;
         self.fx(Fx::Sell, at);
         Ok(())
     }

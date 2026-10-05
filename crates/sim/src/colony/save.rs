@@ -8,7 +8,7 @@ use crate::world::World;
 
 const MAGIC: [u8; 4] = *b"SBTF";
 /// Bump when the layout changes; older files are refused with a clear error.
-pub const SAVE_VERSION: u32 = 1;
+pub const SAVE_VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 pub struct SaveFile {

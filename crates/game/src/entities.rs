@@ -24,6 +24,10 @@ pub struct EntSprite {
     born: f32,
 }
 
+/// The colour stripe drawn over a robot.
+#[derive(Component)]
+pub struct RobotAccent;
+
 /// A prop that cycles through its four frames.
 #[derive(Component)]
 pub struct PropAnim {
@@ -226,6 +230,22 @@ fn spawn_ent(commands: &mut Commands, assets: &GameAssets, e: &Ent, now: f32) ->
                 ))
                 .id()
         }
+        EntKind::Robot(r) => {
+            let [cr, cg, cb] = crate::ui::TEAM[r.color as usize % crate::ui::TEAM.len()];
+            let mut accent = assets.robot_accent.sprite(0);
+            accent.color = Color::srgb_u8(cr, cg, cb);
+            commands
+                .spawn((
+                    tag,
+                    InGameEntity,
+                    assets.robot.sprite(0),
+                    Transform::from_xyz(at.x, -at.y, z::CREATURES + 0.5),
+                ))
+                .with_children(|parent| {
+                    parent.spawn((RobotAccent, accent, Transform::from_xyz(0.0, 0.0, 0.01)));
+                })
+                .id()
+        }
         EntKind::Plant(_) => commands
             .spawn((
                 tag,
@@ -283,8 +303,14 @@ pub fn extrapolate(mut session: ResMut<Session>, time: Res<Time>) {
 pub fn animate_entities(
     session: Res<Session>,
     time: Res<Time>,
-    mut q: Query<(&mut EntSprite, &mut Transform, Option<&mut Sprite>)>,
+    mut q: Query<(
+        &mut EntSprite,
+        &mut Transform,
+        Option<&mut Sprite>,
+        Option<&Children>,
+    )>,
     mut props: Query<(&PropAnim, &mut Sprite), Without<EntSprite>>,
+    mut accents: Query<&mut Sprite, (With<RobotAccent>, Without<EntSprite>, Without<PropAnim>)>,
 ) {
     let Some(colony) = &session.colony else { return };
     let t = time.elapsed_secs();
@@ -294,7 +320,7 @@ pub fn animate_entities(
             atlas.index = anim.row * 4 + (t * anim.fps) as usize % 4;
         }
     }
-    for (mut tag, mut tf, sprite) in &mut q {
+    for (mut tag, mut tf, sprite, children) in &mut q {
         let Some(e) = colony.ents.get(&tag.id) else {
             continue;
         };
@@ -360,6 +386,36 @@ pub fn animate_entities(
                         0
                     };
                     atlas.index = base + (age * 16.0) as usize % 4;
+                }
+            }
+            EntKind::Robot(r) => {
+                use sbct_sim::colony::robots::RobotAnim;
+                let (row, first, frames, fps) = match r.anim {
+                    RobotAnim::Idle => (0, 0, 4, 6.0),
+                    RobotAnim::Work => (1, 0, 4, 12.0),
+                    RobotAnim::Carry => (2, 0, 4, 8.0),
+                    RobotAnim::Charge => (3, 0, 4, 5.0),
+                    RobotAnim::Dead => (4, 0, 2, 1.0),
+                    RobotAnim::Alarm => (4, 2, 2, 6.0),
+                };
+                let index = row * 8 + first + (age * fps) as usize % frames;
+                if let Some(atlas) = &mut sprite.texture_atlas {
+                    atlas.index = index;
+                }
+                sprite.flip_x = r.facing < 0;
+                let bob = if r.anim == RobotAnim::Dead {
+                    0.0
+                } else {
+                    (t * 2.6 + tag.id as f32).sin() * 1.2
+                };
+                tf.translation = Vec3::new(tag.shown.x, -tag.shown.y + bob, z::CREATURES + 0.5);
+                for child in children.into_iter().flatten() {
+                    if let Ok(mut accent) = accents.get_mut(*child) {
+                        if let Some(atlas) = &mut accent.texture_atlas {
+                            atlas.index = index;
+                        }
+                        accent.flip_x = r.facing < 0;
+                    }
                 }
             }
             EntKind::Machine(m) => {

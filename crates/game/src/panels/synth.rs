@@ -19,6 +19,7 @@ pub fn window(
     acts: &mut Vec<Act>,
     close: &mut bool,
 ) {
+    let mut open_mods = false;
     egui::Area::new("synth".into())
         .anchor(egui::Align2::LEFT_CENTER, [14.0, -20.0])
         .order(egui::Order::Middle)
@@ -30,6 +31,13 @@ pub fn window(
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.small_button("x").clicked() {
                             *close = true;
+                        }
+                        if ui
+                            .button("Body mods")
+                            .on_hover_text("Synthesize body-mod tiers")
+                            .clicked()
+                        {
+                            open_mods = true;
                         }
                         ui.add(
                             egui::TextEdit::singleline(&mut panels.synth_filter)
@@ -69,8 +77,8 @@ pub fn window(
                         }
                         let locked = r.blueprint.filter(|b| !colony.blueprints.contains(b));
                         // How many batches the stockpile covers.
-                        let max = r
-                            .inputs
+                        let inputs = colony.recipe_cost(me.key, id);
+                        let max = inputs
                             .iter()
                             .map(|&(ing, need)| colony.stock_count(me.key, ing) / need)
                             .min()
@@ -98,7 +106,7 @@ pub fn window(
                                         }));
                                         ui.horizontal_wrapped(|ui| {
                                             ui.spacing_mut().item_spacing.x = 4.0;
-                                            for &(ing, need) in &r.inputs {
+                                            for &(ing, need) in &inputs {
                                                 let have = colony.stock_count(me.key, ing);
                                                 ui::icon(ui, icons, ing.icon(), 16.0)
                                                     .on_hover_text(ing.name(&colony.species));
@@ -141,4 +149,7 @@ pub fn window(
                 });
             });
         });
+    if open_mods {
+        panels.open = Some(super::Open::ModBay);
+    }
 }

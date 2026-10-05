@@ -11,12 +11,16 @@
 //!   (`Iron:50,Gold:10`).
 //! * `--o2 <percent>` sets the atmosphere's oxygen.
 //! * `--credits <n>` sets the colony's credits.
-//! * `--open <inventory|chest|synth|terminal>` walks the player to that
-//!   fixture in the starter dome and opens its window.
+//! * `--open <inventory|chest|synth|terminal|modbay|map|codex|robot|splicer>`
+//!   walks the player to that fixture in the starter dome and opens its
+//!   window (`robot` and `splicer` need `--setup farm`).
+//! * `--mods <set:tier,...>` gives and equips body-mod sets by number
+//!   (`0:2,46:4`); `--mods all:3` gives every set at that tier.
 //! * `--overlay <water|power|both>` starts with overlays on; `--ship <secs>`
 //!   starts with the colony ship that many seconds into its descent.
 //! * `--setup <farm>` builds a demo base beside the starter dome (domes with
-//!   crops at every stage, a pylon) and puts the player in it.
+//!   crops at every stage, a pylon, a Gene Splicer, two robots and a robot
+//!   area) and puts the player in it.
 //!
 //! Set `SBCT_SAVE_DIR` when testing so nothing touches your real saves.
 
@@ -156,6 +160,7 @@ fn apply_world_flags(
             "chest" => (Fixture::Chest(0), Open::Container(Container::DomeChest(home, 0))),
             "synth" => (Fixture::Synthesizer, Open::Synth),
             "terminal" => (Fixture::Terminal, Open::Terminal),
+            "modbay" => (Fixture::ModBay, Open::ModBay),
             _ => (Fixture::Bunk(3), Open::Inventory),
         };
         let pos = colony.ents.get(&home).and_then(|e| {
@@ -165,7 +170,8 @@ fn apply_world_flags(
                 .find(|f| f.fixture == fixture)
                 .map(|f| fixture_pos(e.pos, f))
         });
-        if let (Some(pos), Some(p)) = (pos, colony.players.get_mut(&me)) {
+        let fixed = !matches!(what.as_str(), "map" | "codex" | "robot" | "robot1" | "splicer");
+        if let (Some(pos), Some(p), true) = (pos, colony.players.get_mut(&me), fixed) {
             p.pose.pos = pos;
             p.in_dome = Some(home);
             p.warp += 1;
@@ -179,6 +185,63 @@ fn apply_world_flags(
         && let Some(world) = world.as_mut()
     {
         setup_farm(colony, world, me);
+    }
+    if let Some(list) = arg_value("--mods")
+        && let Some(p) = colony.players.get_mut(&me)
+    {
+        use sbct_sim::colony::mods::MOD_SETS;
+        for part in list.split(',') {
+            let (set, tier) = part.split_once(':').unwrap_or((part, "1"));
+            let tier = tier.parse::<u8>().unwrap_or(1).clamp(1, 4);
+            let sets: Vec<u8> = if set == "all" {
+                (0..MOD_SETS.len() as u8).collect()
+            } else {
+                set.parse::<u8>()
+                    .ok()
+                    .filter(|s| (*s as usize) < MOD_SETS.len())
+                    .into_iter()
+                    .collect()
+            };
+            for set in sets {
+                p.mods.insert(set, tier);
+                let slot = MOD_SETS[set as usize].slot as usize;
+                if p.equipped[slot].is_none() || list != "all" && !list.starts_with("all:") {
+                    p.equipped[slot] = Some(set);
+                }
+            }
+        }
+        let extra = p.stats().extra_slots as usize;
+        p.inv.resize(sbct_sim::colony::INVENTORY + extra);
+        p.touch_public();
+    }
+    match arg_value("--open").as_deref() {
+        Some("map") => panels.open = Some(crate::panels::Open::Map),
+        Some("codex") => panels.open = Some(crate::panels::Open::Codex),
+        Some(what @ ("robot" | "robot1" | "splicer")) => {
+            use sbct_sim::colony::EntKind;
+            use sbct_sim::colony::items::MachineKind;
+            let found = colony.ents.values().find(|e| match &e.kind {
+                EntKind::Robot(r) => {
+                    (what == "robot" && r.program.is_empty()) || (what == "robot1" && !r.program.is_empty())
+                }
+                EntKind::Machine(m) => what == "splicer" && m.kind == MachineKind::Splicer,
+                _ => false,
+            });
+            if let Some(e) = found {
+                let (id, pos) = (e.id, e.pos);
+                if let Some(p) = colony.players.get_mut(&me) {
+                    p.pose.pos = v2(pos.x - 14.0, pos.y);
+                    p.in_dome = None;
+                    p.warp += 1;
+                }
+                panels.open = Some(if what != "splicer" {
+                    crate::panels::Open::Robot(id)
+                } else {
+                    crate::panels::Open::Splicer(id)
+                });
+            }
+        }
+        _ => {}
     }
     if let Some(at) = arg_value("--goto")
         && let Some((x, y)) = at.split_once(',')
@@ -272,7 +335,68 @@ fn setup_farm(
             }
         }
     }
+    // A Gene Splicer by the pylon, two robots, and an area for them.
+    if let Some((green, pos)) = first {
+        use sbct_sim::colony::geom::Rect;
+        use sbct_sim::colony::robots::{Area, Place, Robot, Sentence, Step, What, Where};
+        let ground = |world: &sbct_sim::World, x: f32| {
+            sbct_sim::colony::build::ground_below(world, x as i32, pos.y as i32 - 60, 140)
+                .unwrap_or(pos.y as i32) as f32
+        };
+        let sx = pos.x + 74.0;
+        let mut splicer = Machine::new(MachineKind::Splicer, "Gene Splicer 1".into());
+        splicer.on = true;
+        colony.spawn(v2(sx, ground(world, sx)), EntKind::Machine(splicer));
+        colony.areas.push(Area {
+            id: 0,
+            name: "East field".into(),
+            rect: Rect::new(
+                pos.x as i32 + 300,
+                pos.y as i32 - 60,
+                pos.x as i32 + 520,
+                pos.y as i32 + 60,
+            ),
+        });
+        let mut farmer = Robot::new("Robot 1".into(), 2);
+        farmer.program = vec![
+            Sentence {
+                when: Some(sbct_sim::colony::robots::Cond::Battery {
+                    below: true,
+                    percent: 20,
+                }),
+                steps: vec![Step::ChargeAt(Place::NearestPylon).into()],
+            },
+            Sentence {
+                when: None,
+                steps: vec![
+                    Step::Harvest {
+                        what: What::Anything,
+                        at: Where::Place(Place::Ent(green)),
+                    }
+                    .into(),
+                    Step::Store {
+                        what: What::Anything,
+                        at: Place::NearestStorage,
+                    }
+                    .into(),
+                ],
+            },
+        ];
+        colony.spawn(v2(pos.x + 10.0, pos.y - 30.0), EntKind::Robot(farmer));
+        colony.spawn(
+            v2(pos.x - 50.0, pos.y - 70.0),
+            EntKind::Robot(Robot::new("Robot 2".into(), 5)),
+        );
+        for s in [0, 1, 2, 6, 10, 15] {
+            colony.codex.plants.insert(s);
+        }
+        colony.meta_rev += 1;
+    }
     if let (Some((id, pos)), Some(p)) = (first, colony.players.get_mut(&me)) {
+        p.inv.add(Item::Seed(0), 4, 1.0);
+        p.inv.add(Item::Seed(1), 4, 1.0);
+        p.inv.add(Item::Seed(6), 2, 1.0);
+        p.inv.add(Item::RobotKit, 1, 1.0);
         p.pose.pos = v2(pos.x - 20.0, pos.y);
         p.in_dome = Some(id);
         p.warp += 1;

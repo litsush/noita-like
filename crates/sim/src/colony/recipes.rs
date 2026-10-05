@@ -57,7 +57,10 @@ impl Blueprint {
             Blueprint::Splicer => "Gene Splicer".into(),
             Blueprint::DomeDome => "Dome Dome".into(),
             Blueprint::Apartment => "Apartment Dome".into(),
-            Blueprint::Mod(set) => format!("Body mod set #{}", set + 1),
+            Blueprint::Mod(set) => match super::mods::MOD_SETS.get(set as usize) {
+                Some(m) => format!("{} (body mod)", m.name),
+                None => "Unknown mod".into(),
+            },
         }
     }
 
@@ -76,7 +79,7 @@ impl Blueprint {
             Blueprint::Splicer => 5000,
             Blueprint::DomeDome => 3000,
             Blueprint::Apartment => 4000,
-            Blueprint::Mod(_) => 0,
+            Blueprint::Mod(set) => super::mods::blueprint_price(set),
         }
     }
 }

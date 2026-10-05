@@ -167,6 +167,8 @@ impl Colony {
             self.stats.power_used += need;
             powered.extend(grid.consumers);
         }
+        // Whatever stands near a Reactor Heart runs off its wearer.
+        powered.extend(self.reactor_powered());
         powered
     }
 

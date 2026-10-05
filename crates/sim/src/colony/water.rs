@@ -350,14 +350,17 @@ impl Colony {
                 self.pipes.remove(t);
                 self.pipe_changes.push((*t, false));
             }
-            self.give(key, Item::Pipe, taken.len() as u32);
+            let per = self.players[&key].stats().pipe_per_item.max(1);
+            self.give(key, Item::Pipe, taken.len() as u32 / per);
         } else {
             let new: Vec<Tile> = tiles.into_iter().filter(|t| !self.pipes.contains(t)).collect();
             if new.is_empty() {
                 return Ok(());
             }
             let p = self.players.get_mut(&key).unwrap();
-            if !p.inv.remove(Item::Pipe, new.len() as u32) {
+            // Welder Arms stretch each pipe item over more tiles.
+            let per = p.stats().pipe_per_item.max(1);
+            if !p.inv.remove(Item::Pipe, (new.len() as u32).div_ceil(per)) {
                 return Err("Not enough Copper Pipe");
             }
             p.touch_public();

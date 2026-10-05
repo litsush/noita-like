@@ -21,7 +21,7 @@ pub const O2_PER_PERCENT: f32 = 450.0;
 pub const CAN_LITRES: f32 = 10.0;
 const FERTILIZER_SECS: f32 = 600.0;
 /// Growth a harvested plant restarts from.
-const REGROW: f32 = 0.35;
+pub(super) const REGROW: f32 = 0.35;
 const COOK_SECS: f32 = 40.0;
 const COMPOST_SECS: f32 = 30.0;
 const WILD_FLOWERS: usize = 46;
@@ -86,8 +86,37 @@ impl Colony {
         Ok(())
     }
 
+    /// Works a planter by hand. Farm Hands repeat the job across the dome
+    /// (or, at Legendary, every dome in view).
     pub(super) fn planter_op(&mut self, key: PlayerKey, dome: Id, slot: u8, op: PlanterOp) -> Outcome {
         self.near_fixture(key, dome, Fixture::Planter(slot))?;
+        self.planter_op_one(key, dome, slot, op)?;
+        let p = &self.players[&key];
+        let (hands, at) = (p.stats().farm_hands, p.center());
+        let needed = match op {
+            PlanterOp::Harvest => 1,
+            PlanterOp::Plant => 2,
+            PlanterOp::Water | PlanterOp::Fertilize => 3,
+            PlanterOp::Uproot => u8::MAX,
+        };
+        if hands >= needed {
+            let domes: Vec<(Id, usize)> = self
+                .domes()
+                .filter(|(e, _)| e.id == dome || (hands >= 4 && e.pos.distance(at) < 240.0))
+                .map(|(e, d)| (e.id, d.planters.len()))
+                .collect();
+            for (d, planters) in domes {
+                for s in 0..planters as u8 {
+                    if (d, s) != (dome, slot) {
+                        let _ = self.planter_op_one(key, d, s, op);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn planter_op_one(&mut self, key: PlayerKey, dome: Id, slot: u8, op: PlanterOp) -> Outcome {
         let (pos, kind) = {
             let (e, d) = self.dome(dome).unwrap();
             (e.pos, d.kind)
@@ -134,7 +163,14 @@ impl Colony {
                     return Err("Not ready yet");
                 }
                 let sp = self.species[species as usize].clone();
-                let items = harvest_items(&sp, 1.0, &mut self.rng);
+                if sp.product.is_none() {
+                    return Err("Nothing to pick");
+                }
+                let stats = self.players[&key].stats();
+                let mut items = harvest_items(&sp, stats.harvest_mult, &mut self.rng);
+                if stats.extra_seeds {
+                    items.push((Item::Seed(species), 1));
+                }
                 for (item, n) in items {
                     self.give(key, item, n);
                 }
@@ -193,19 +229,34 @@ impl Colony {
     /// Harvests a wild or outdoor plant.
     pub(super) fn harvest_plant(&mut self, key: PlayerKey, id: Id) -> Outcome {
         let e = self.ents.get(&id).ok_or("It's gone")?;
-        let EntKind::Plant(plant) = e.kind else {
-            return Err("That isn't a plant");
-        };
         let p = &self.players[&key];
         if e.pos.distance(p.pose.pos) > p.stats().reach + 10.0 {
             return Err("Too far away");
         }
+        let stats = p.stats();
+        let species = match e.kind {
+            EntKind::Plant(pl) => pl.species,
+            _ => return Err("That isn't a plant"),
+        };
+        self.harvest_plant_for(key, id, stats.harvest_mult)?;
+        if stats.extra_seeds {
+            self.give(key, Item::Seed(species), 1);
+        }
+        Ok(())
+    }
+
+    /// Harvests an outdoor plant for a player, wherever they are.
+    pub(super) fn harvest_plant_for(&mut self, key: PlayerKey, id: Id, mult: f32) -> Outcome {
+        let e = self.ents.get(&id).ok_or("It's gone")?;
+        let EntKind::Plant(plant) = e.kind else {
+            return Err("That isn't a plant");
+        };
         if plant.growth < 1.0 {
             return Err("Not ready yet");
         }
         let at = v2(e.pos.x, e.pos.y - 6.0);
         let sp = self.species[plant.species as usize].clone();
-        let mut items = harvest_items(&sp, 1.0, &mut self.rng);
+        let mut items = harvest_items(&sp, mult, &mut self.rng);
         // Wild plants always give a seed the first time the colony meets them.
         if !self.codex.plants.contains(&plant.species)
             && !items.iter().any(|(i, _)| matches!(i, Item::Seed(_)))

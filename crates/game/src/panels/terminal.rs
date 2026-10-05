@@ -232,6 +232,39 @@ fn blueprints(ui: &mut egui::Ui, icons: &UiIcons, colony: &Colony, acts: &mut Ve
             }
         });
     }
+    ui.add_space(6.0);
+    ui.label(egui::RichText::new("Body mods").color(ACCENT));
+    ui.label(
+        egui::RichText::new(
+            "A blueprint lets everyone synthesize that set's tiers at a Synthesizer or the Mod Bay. Six \
+             basic sets are already known.",
+        )
+        .color(TEXT_DIM),
+    );
+    for (id, set) in sbct_sim::colony::mods::MOD_SETS.iter().enumerate() {
+        let b = Blueprint::Mod(id as u8);
+        if b.price() == 0 {
+            continue;
+        }
+        row(ui, |ui| {
+            ui::mod_icon(ui, icons, id, 24.0, egui::Color32::WHITE);
+            ui.label(format!("{} ({})", set.name, set.slot.name()))
+                .on_hover_text(
+                    set.tiers
+                        .iter()
+                        .map(|(name, text)| format!("{name}: {text}"))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                );
+            if colony.blueprints.contains(&b) {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new("Owned").color(GOOD));
+                });
+            } else {
+                buy_button(ui, colony, Offer::Blueprint(b), acts);
+            }
+        });
+    }
 }
 
 fn workers(ui: &mut egui::Ui, icons: &UiIcons, colony: &Colony, acts: &mut Vec<Act>) {
