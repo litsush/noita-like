@@ -133,6 +133,28 @@ pub fn present_events(
                         sfx.write(Sfx::at("dome_place", at));
                         shake.add(0.25);
                     }
+                    Fx::Craft => {
+                        sfx.write(Sfx::at("craft", at));
+                    }
+                    Fx::Sell => {
+                        sfx.write(Sfx::at("sell", at));
+                    }
+                    Fx::Buy => {
+                        sfx.write(Sfx::at("buy", at));
+                    }
+                    Fx::Unlock => {
+                        sfx.write(Sfx::ui("unlock"));
+                    }
+                    Fx::PodLand => {
+                        sfx.write(Sfx::at("drop_pod_land", at));
+                        shake.add(0.2);
+                        bursts.write(
+                            Burst::new(at, Color::srgb(0.7, 0.66, 0.6))
+                                .count(20)
+                                .speed(70.0)
+                                .life(0.7),
+                        );
+                    }
                     Fx::Dawn => {
                         sfx.write(Sfx::ui("day_start"));
                     }

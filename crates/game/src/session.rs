@@ -64,6 +64,7 @@ pub struct Session {
     /// Clients: public info about everyone online, as last sent by the host.
     roster: HashMap<PlayerKey, PublicPlayer>,
     roster_stamp: u64,
+    meta_sent: u32,
     /// Events to present this frame (sounds, particles, toasts).
     pub events: Vec<Event>,
     /// Client only: chunks received during the initial download.
@@ -125,6 +126,7 @@ impl Session {
             peers: HashMap::new(),
             roster: HashMap::new(),
             roster_stamp: 0,
+            meta_sent: 0,
             events: Vec::new(),
             chunks_received: 0,
             save_name: None,
@@ -462,6 +464,14 @@ impl Session {
                 protocol::encode(&HostMsg::Roster(roster)),
             ));
         }
+        if colony.meta_rev != self.meta_sent {
+            self.meta_sent = colony.meta_rev;
+            out.push((
+                None,
+                Delivery::Reliable,
+                protocol::encode(&HostMsg::Meta(Box::new(colony.meta()))),
+            ));
+        }
         if !changes.is_empty() || !removed.is_empty() {
             let msg = HostMsg::Ents {
                 upserts: changes,
@@ -620,6 +630,7 @@ impl Session {
             }
             HostMsg::Motion(motion) => self.colony.as_mut().unwrap().apply_motion(&motion),
             HostMsg::Globals(g) => self.colony.as_mut().unwrap().apply_globals(g),
+            HostMsg::Meta(m) => self.colony.as_mut().unwrap().apply_meta(*m),
             HostMsg::Events(events) => self.events.extend(events),
         }
         Ok(())

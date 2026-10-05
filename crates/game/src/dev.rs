@@ -10,6 +10,9 @@
 //! * `--give <Item:count,...>` puts items in the player's inventory
 //!   (`Iron:50,Gold:10`).
 //! * `--o2 <percent>` sets the atmosphere's oxygen.
+//! * `--credits <n>` sets the colony's credits.
+//! * `--open <inventory|chest|synth|terminal>` walks the player to that
+//!   fixture in the starter dome and opens its window.
 //!
 //! Set `SBCT_SAVE_DIR` when testing so nothing touches your real saves.
 
@@ -81,12 +84,15 @@ impl Plugin for DevPlugin {
             app.insert_resource(QuitAfter(secs))
                 .add_systems(Update, quit_after);
         }
-        app.add_systems(OnEnter(AppState::InGame), apply_world_flags);
+        app.add_systems(
+            OnEnter(AppState::InGame),
+            apply_world_flags.before(crate::player::spawn_local_player),
+        );
     }
 }
 
 /// Applies the flags that change a freshly started world (hosts only).
-fn apply_world_flags(mut session: ResMut<Session>) {
+fn apply_world_flags(mut session: ResMut<Session>, mut panels: ResMut<crate::panels::Panels>) {
     if !session.is_authority() {
         return;
     }
@@ -124,6 +130,34 @@ fn apply_world_flags(mut session: ResMut<Session>) {
             }
         }
     }
+    if let Some(c) = arg_value("--credits").and_then(|s| s.parse::<i64>().ok()) {
+        colony.credits = c;
+    }
+    if let Some(what) = arg_value("--open") {
+        use crate::panels::Open;
+        use sbct_sim::colony::actions::Container;
+        use sbct_sim::colony::domes::{Fixture, fixture_pos};
+        let home = colony.home;
+        let (fixture, open) = match what.as_str() {
+            "chest" => (Fixture::Chest(0), Open::Container(Container::DomeChest(home, 0))),
+            "synth" => (Fixture::Synthesizer, Open::Synth),
+            "terminal" => (Fixture::Terminal, Open::Terminal),
+            _ => (Fixture::Bunk(3), Open::Inventory),
+        };
+        let pos = colony.ents.get(&home).and_then(|e| {
+            let EntKindDome(d) = dome_of(e)?;
+            d.fixtures()
+                .iter()
+                .find(|f| f.fixture == fixture)
+                .map(|f| fixture_pos(e.pos, f))
+        });
+        if let (Some(pos), Some(p)) = (pos, colony.players.get_mut(&me)) {
+            p.pose.pos = pos;
+            p.in_dome = Some(home);
+            p.warp += 1;
+            panels.open = Some(open);
+        }
+    }
     if let Some(at) = arg_value("--goto")
         && let Some((x, y)) = at.split_once(',')
         && let (Ok(x), Ok(y)) = (x.parse::<f32>(), y.parse::<f32>())
@@ -149,5 +183,14 @@ fn take_screenshots(mut commands: Commands, time: Res<Time<Real>>, mut shots: Re
 fn quit_after(time: Res<Time<Real>>, limit: Res<QuitAfter>, mut exit: MessageWriter<AppExit>) {
     if time.elapsed_secs() > limit.0 {
         exit.write(AppExit::Success);
+    }
+}
+
+struct EntKindDome(sbct_sim::colony::items::DomeKind);
+
+fn dome_of(e: &sbct_sim::colony::Ent) -> Option<EntKindDome> {
+    match &e.kind {
+        sbct_sim::colony::EntKind::Dome(d) => Some(EntKindDome(d.kind)),
+        _ => None,
     }
 }

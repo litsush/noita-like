@@ -1,5 +1,280 @@
 #!/usr/bin/env python3
-"""DOCSTRING_PLACEHOLDER"""
+"""Procedural sprite generator for "Planet Terraforming" (characters, body
+mods, robots, creatures, workers, animals).
+
+Pure Python 3 standard library (zlib + struct PNG writer), fully
+deterministic (no randomness, no clock).  Run from the repo root:
+
+    python3 tools/gen_sprites.py                 # (re)write every file below
+    python3 tools/gen_sprites.py --preview DIR   # also write 4x previews to DIR
+                                                 # (plus mods_on_player.png)
+
+Exit status is 1 if any self-check fails (a frame drawn outside its cell,
+the suit not covering the body, ...); the warnings are printed.
+
+Conventions for every sheet: RGBA8, transparent background, frames packed
+left-to-right from x=0, rows top-to-bottom, unused frames fully transparent.
+1 art pixel = 1 game cell (shown at 3x, nearest filtering).  Everything
+faces RIGHT (flip horizontally for left).  Light comes from the top-left.
+Sprites carry a 1px #12101a outline; glows, sparks, flames and thin insect
+legs are drawn without one.  Semi-transparent pixels are used only for glow
+halos, motion streaks, webs, spores and the leech's flesh.
+
+=========================================================================
+1. PLAYER LAYERS
+   assets/sprites/player_body.png          192x384
+   assets/sprites/player_suit.png          192x384
+   assets/sprites/player_accent_body.png   192x384
+   assets/sprites/player_accent_suit.png   192x384
+=========================================================================
+Frames of 24x32, 8 columns x 12 rows, IDENTICAL layout and pixel alignment
+in all four files (all four are rendered from one pose table).  The figure
+is 10 px wide and 24 px tall when standing in the suit (outline included:
+x 8..17, helmet top outline on y=8), centred on x~12; on grounded frames
+the outline under the boot soles is on y=31 (sole fill on y=30).  Collision
+box in game: 8x22.
+
+  player_body         the terraformer without the suit: dark teal undersuit
+                      with rust knee/shoulder/cuff patches, bare head, short
+                      dark hair, dark gloves and boots.
+  player_suit         the exploration suit; every opaque body pixel is
+                      covered by an opaque suit pixel (self-checked), so the
+                      body layer may be skipped or drawn underneath.  Bone
+                      panels with moss, rust gloves/ankle/collar seals, teal
+                      belt, round helmet with a dark visor and a cyan visor
+                      highlight, teal chest unit with a lime status light.
+                      No backpack and nothing on the back/feet/hands that
+                      would clash with attachments.
+  player_accent_body  team-colour pixels for the body: neckerchief + belt.
+  player_accent_suit  team-colour pixels for the suit: helmet stripe,
+                      shoulder patch of the leading arm, a band on each
+                      forearm.
+  Accent layers are neutral greys (R=G=B, 150..255, shading preserved),
+  everything else transparent: multiply by the player's colour and draw on
+  top of the matching layer (the same pixels are light grey in the base
+  layer).  Draw order: back attachment, body and/or suit, accent, the other
+  attachments.
+
+  Rows (frames used; the remaining columns are transparent):
+     0  idle (4): breathing, slight arm sway
+     1  run (8): full cycle
+     2  cols 0-1 jump (0 rise, 1 apex); cols 2-3 fall (alternate; limbs
+        trailing up)
+     3  climb (4): clinging to a wall on the RIGHT whose face is at x~16-17
+     4  swim (4): diagonal/horizontal paddle, centred in the frame
+     5  reach forward (4): arm straight ahead holding the multitool
+     6  reach up-forward (4): aiming 45 degrees up
+     7  reach down-forward (4): aiming 48 degrees down
+        (rows 5-7: frame 0 extending, frame 1 fully extended, frames 2-3
+        the held pose with recoil/vibration - loop 2,3 while held.  The
+        multitool is drawn in BOTH the body and suit layers and only in
+        these rows; its glowing tip is ~3 px beyond the hand along the aim.)
+     8  col 0 hurt as a pure white flash silhouette (accent layers empty),
+        col 1 hurt flinch; cols 2-5 blackout: buckling, falling backwards,
+        col 5 lying on the back (head to the left)
+     9  sleep (2): lying on the back, head to the left, eyes closed,
+        breathing; for beds
+    10  fly/hover (4): upright, legs trailing together, 1px bob (rocket feet)
+    11  cols 0-1 glide (leaning forward, arms spread front/back);
+        cols 2-3 dash (leaning hard forward; includes semi-transparent
+        motion streaks behind, in both body and suit layers)
+
+=========================================================================
+2. assets/sprites/player_anchors.json
+=========================================================================
+  {"frame": [24, 32], "cols": 8, "rows": 12,
+   "anchors": {"head": A, "eyes": A, "torso": A, "back": A,
+               "arms": A, "hands": A, "legs": A, "feet": A},
+   "extra":   {"foot_front": A, "foot_back": A, "knee_front": A,
+               "knee_back": A, "hand_back": A}}
+  Each A is a 12x8 array indexed [row][col] of [x, y] integer pixel
+  coordinates inside the 24x32 frame (0 <= x < 24, 0 <= y < 32), or null
+  for unused frames.  They are computed from the same skeleton that draws
+  the frames, for the SUIT silhouette (unsuited, the head top is 1 px
+  lower).  Draw an attachment cell so that its pixel (8,8) lands on the
+  anchor; when the player faces left mirror both: x' = 23 - x for the
+  anchor and flip the cell (its pixel (7,8) then lands on the anchor).
+    head   top-centre of the helmet (the helmet's outline row)
+    eyes   centre of the visor / eyes
+    torso  centre of the chest
+    back   upper back, 1-2 px behind (left of) the suit's back outline
+    arms   shoulder joint of the leading (near) arm
+    hands  the leading hand (the tip of the reach in rows 5-7)
+    legs   midpoint between the two knees
+    feet   midpoint between the two feet, on the sole/ground row (y=31 when
+           standing)
+  "extra" is optional data for games that want per-limb placement (e.g.
+  drawing the feet cell once per foot while running): the sole of each foot
+  (same convention as "feet"), each knee joint and the far hand.
+
+=========================================================================
+3. assets/sprites/mods.png   128x848   body-mod attachments
+=========================================================================
+Cells of 16x16, 8 columns x 53 rows.  Row = set index (table below).
+Columns: 0-1 tier I (animation frame A, B), 2-3 tier II, 4-5 tier III,
+6-7 Legendary.  So cell = (tier*2 + frame, set).  Draw the cell with its
+pixel (8,8) on the slot's anchor, facing right, flipped with the player.
+"back" cells are drawn BEHIND the player layers, all others in front.
+Tiers grow from ~5-7 px (I) to ~11-14 px (III).  Legendary cells use
+luminous colours, carry a 1px semi-transparent glow halo outside their
+outline (alpha ~105 in frame A, ~60 in frame B) and are clearly animated
+between A and B; tiers I-III have small A/B animations (blinking lights,
+flames, rotors) or identical frames.  Alternate A/B every ~0.25-0.4 s.
+A cell may use its whole 16x16 area (offsets -8..7 from the anchor pixel).
+Where each slot's art sits relative to the anchor pixel (0,0), x forward:
+    feet   wraps the boots and sits on the ground: the art's bottom outline
+           is on y=0 (the anchor/ground row); only a Legendary halo reaches
+           y=1
+    legs   around the knees and shins, struts beside the legs
+    back   hangs behind the back, x -8..3 (the body covers x >= 1)
+    torso  on the chest, at most x,y -6..6 (plus Legendary sparkles)
+    head   sits on the helmet: the art's base is on y=0..2, the rest above
+    eyes   over the visor, protruding forward (to the right)
+    arms   on the shoulder / upper arm, tools rising above the shoulder
+    hands  around the hand, emitters pointing forward
+Set index, name, slot (motif):
+   0 Rocket Feet       feet  (boot shell, heel thruster pod, flame)
+   1 Sticky Soles      feet  (green gecko pads and goo)
+   2 Spring Heels      feet  (coil springs behind heel / before toe)
+   3 Hustle Treads     feet  (wheels, then tank treads)
+   4 Aqua Flippers     feet  (blue fin blades)
+   5 Stompers          feet  (heavy iron boot block, hazard sole)
+   6 Dash Pistons      legs  (pistons with extending rods)
+   7 Cargo Pants       legs  (pouches; Legendary pocket dimension)
+   8 Thermal Leggings  legs  (glowing heater bands)
+   9 Root Walkers      legs  (vines, leaves, flowers)
+  10 Shock Absorbers   legs  (coil-spring struts, knee cap)
+  11 Jackhammer Knees  legs  (yellow housing, downward chisel)
+  12 O2 Backpack       back  (tank(s) with a leaf; Legendary glass tank)
+  13 Glide Wings       back  (leaf-membrane glider wing)
+  14 Shoulder Turret   back  (ball turret, barrel angled up-forward)
+  15 Battery Pack      back  (cell box with lime charge bars)
+  16 Sprinkler Pack    back  (water tank, sprinkler; Legendary raincloud)
+  17 Pack Mule Frame   back  (frame, crate, horseshoe magnet)
+  18 Drone Dock        back  (shelf with tiny docked drones)
+  19 Beacon Rack       back  (mast with a magenta beacon, signal rings)
+  20 Plating           torso (riveted armour plates)
+  21 Filter Lungs      torso (respirator canister, fan)
+  22 Medi-Core         torso (white panel with a cross)
+  23 Reactor Heart     torso (ring reactor with a glowing core)
+  24 Camo Skin         torso (mottled ghillie patch; Legendary shimmer)
+  25 Synth Belly       torso (purple fabricator with a gear)
+  26 Buddy Breather    torso (regulator, yellow spare regulator, bubbles)
+  27 Antenna Array     head  (antenna, crossbars, dish)
+  28 Trade Chip        head  (chip with gold pins, coin)
+  29 Hive Mind         head  (crown of linked magenta nodes)
+  30 Botanist's Bonnet head  (sprout, then straw hat with flowers)
+  31 Headlamp          head  (lamp with beam; Legendary mini sun)
+  32 Dome Brain        head  (little glass geodesic dome)
+  33 Weather Vane      head  (vane arrow, cups; Legendary storm cloud)
+  34 X-Ray Specs       eyes  (green lens goggles)
+  35 Night Vision      eyes  (protruding green-tipped tubes)
+  36 Threat Lens       eyes  (red lens with a projected reticle)
+  37 Appraisal Monocle eyes  (gold monocle on a chain)
+  38 Zoom Goggles      eyes  (brass telescoping lens)
+  39 Geo Visor         eyes  (visor bar projecting a holo grid)
+  40 Extendo-Arms      arms  (jointed extra arm(s) with claws)
+  41 Drill Arms        arms  (yellow housing, striped drill cone)
+  42 Power Lifters     arms  (pauldron with hydraulic pistons)
+  43 Shield Arm        arms  (buckler, kite shield; Legendary energy disc)
+  44 Farm Hands        arms  (trowel, sickle, rake)
+  45 Welder Arms       arms  (torch with blue flame, gas tank)
+  46 Bolt Enhancements hands (emitter rings and prongs)
+  47 Midas Mitts       hands (gold mitt / gauntlet)
+  48 Cryo Palms        hands (ice mitt with crystal spikes)
+  49 Boom Mitts        hands (red mitt, fused bomb knuckle)
+  50 Green Fingers     hands (leafy glove, sprouts, flower)
+  51 Grapple Glove     hands (hook, grapnel, cable reel)
+  52 Healing Hands     hands (white glove with a green cross)
+
+=========================================================================
+4. assets/sprites/mod_icons.png   256x64
+=========================================================================
+16x16 icons, 16 columns x 4 rows, index = set index (col = i % 16,
+row = i // 16); indices 53-63 are transparent.  Each is the set's tier-II
+attachment (a lower tier if that is larger than 12 px) centred on an opaque
+dark rounded-square badge tinted by slot: feet red, legs blue, back moss
+green, torso rust, head purple, eyes teal, arms gold, hands magenta.
+
+=========================================================================
+5. assets/sprites/robot.png, robot_accent.png   128x80 each
+=========================================================================
+16x16 frames, 8 columns x 5 rows; the hover drone is centred on x~8, its
+shell centre on y~7-8 (it floats; it bobs +-1 px inside the frame).
+    row 0  hover idle (4)
+    row 1  working (4): tool arm jabbing forward with sparks
+    row 2  carrying (4): crate clamped underneath, side thrusters
+    row 3  charging (4): eye pulsing amber -> green, lightning glyph at
+           the top right
+    row 4  cols 0-1 out of power (dim, sagging 2 px lower, eye dark);
+           cols 2-3 alarm (red eye, frame 2 with a red "!" at the right)
+    cols 4-7 of every row are transparent.
+  robot_accent.png has the identical layout and holds only the 1px stripe
+  around the shell in neutral greys (>=150): multiply by the robot's colour
+  and draw over robot.png.
+
+=========================================================================
+6. assets/sprites/creatures.png   192x288
+=========================================================================
+24x24 frames, 8 columns x 12 rows.  Walkers stand on y=23; flyers and
+swimmers are centred on (12,12).
+    row 0   driftmoth: fly (4)
+    row 1   puffback: cols 0-3 walk, cols 4-7 graze
+    row 2   skitter: cols 0-3 walk, cols 4-7 lunge (crouch, leap, full
+            stretch, land)
+    row 3   skitter: cols 0-3 death / curl-up (ends on its back, legs
+            folded), cols 4-7 idle twitch
+    row 4   webspinner: cols 0-3 walk, cols 4-7 spit (abdomen swings over
+            the head; the glob leaves in col 6)
+    row 5   cols 0-3 web projectile (spinning glob flying right),
+            cols 4-7 web splat / hit (expanding, fading web)
+    row 6   gloom leech: cols 0-3 swim / undulate, cols 4-7 latched
+            (curled, pulsing, mouth to the right)
+    row 7   burrow maw: cols 0-1 hidden (mound with a twitching feeler),
+            cols 2-7 erupt (6); col 6 reaches the full 24 px height (its
+            outline touches y=0)
+    row 8   burrow maw: cols 0-3 bite loop, cols 4-7 retreat (col 7 is
+            just the settling mound)
+    row 9   cols 0-5 generic death puff (ichor burst, then fading spores);
+            cols 6-7 transparent
+    row 10  hit flashes, pure white silhouettes: col 0 skitter (of row 2
+            col 0), col 1 webspinner (row 4 col 0), col 2 leech
+            (row 6 col 0), col 3 maw (the emerged maw, row 8 col 0),
+            col 4 puffback (row 1 col 0), col 5 driftmoth (row 0 col 0)
+    row 11  transparent
+
+   assets/sprites/brood_mother.png   256x144
+64x48 frames, 4 columns x 3 rows, feet on y=47, facing right.
+    row 0  walk (4)
+    row 1  spawn (4): abdomen splits, eggs drop and land
+    row 2  col 0 hurt as a white flash silhouette, col 1 hurt (rearing),
+           col 2 death (collapsing), col 3 death (dead, deflated, legs
+           curled, ichor pool)
+
+=========================================================================
+7. assets/sprites/workers.png   128x144
+=========================================================================
+16x24 frames, 8 columns x 6 rows, feet on y=23, centred on x~8.
+    row 0  worker A (teal overalls, yellow hard hat): cols 0-5 walk (6),
+           cols 6-7 idle (2)
+    row 1  worker A: cols 0-3 work (hammering; spark in col 2),
+           cols 4-7 carry (walking with a crate)
+    row 2  worker B (rust overalls, moss shirt, red hair bun, darker
+           skin): same as row 0
+    row 3  worker B: same as row 1
+    row 4  colonist A (pink dress, long blond hair): cols 0-3 walk,
+           cols 4-7 wave / cheer (4-5 wave, 6 hop with both arms up,
+           7 land)
+    row 5  colonist B (blue shirt, dark trousers, grey hair): same as row 4
+
+=========================================================================
+8. assets/sprites/animals.png   128x48
+=========================================================================
+16x16 frames, 8 columns x 3 rows, feet on y=15 (fish centred on (8,8)).
+    row 0  cluckbug: cols 0-3 idle, cols 4-7 peck
+    row 1  milk grub: cols 0-3 idle (breathing), cols 4-7 wriggle
+    row 2  pond fish (~8x5): cols 0-3 swim, amber variant; cols 4-7 swim,
+           teal glow variant"""
 import json
 import math
 import os
@@ -674,7 +949,7 @@ def draw_human(cv, J, D, st):
                     c = GLASS[2]
             else:
                 c = BONE[3] if lgt > 0.55 else BONE[2] if lgt > 0.0 else BONE[1] if lgt > -0.6 else BONE[0]
-                if -2.0 <= u <= -0.8 and v > -1.2:
+                if -2.4 <= u <= -0.4 and v > -1.2:
                     c = ACC[3] if lgt > 0.55 else ACC[2] if lgt > 0.0 else ACC[1]
                     cv.set(p[0], p[1], c)
                     cv.tag.add(p)
@@ -1517,9 +1792,9 @@ def m_filter(g):
         else:
             g.px(cx, cy, g.G2); g.px(cx, cy - 1 + f * 0, g.D)
     if t == 0:
-        can(1, 1, 2.3)
+        can(1, 1, 2.0)
     elif t == 1:
-        can(1, 0, 1.6); can(1, 3, 1.6); g.px(-1, 1, M3[1]); g.px(-1, 2, M3[1])
+        can(1, -1, 1.9); can(1, 3, 1.9); g.px(-1, 1, M3[1]); g.px(-1, 2, M3[1])
     else:
         can(1, 2, 2.6); g.box(-3, -1, -2, 3, M3); g.px(-3, -1, AMBER)
         g.px(2, -1, RUST[2]); g.px(3, -2, RUST[2]); g.px(-1, -1, RUST[1])

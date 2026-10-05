@@ -9,6 +9,7 @@ mod fx;
 mod hud;
 mod lighting;
 mod menu;
+mod panels;
 mod player;
 mod render;
 mod session;
@@ -63,7 +64,8 @@ fn main() {
         .init_resource::<render::UiHasPointer>()
         .init_resource::<render::ParticlePool>()
         .init_resource::<controls::Rebind>()
-        .init_resource::<hud::Panels>()
+        .init_resource::<panels::Panels>()
+        .init_resource::<panels::Focus>()
         .init_resource::<hud::Toasts>()
         .init_resource::<lighting::PointLights>()
         .init_resource::<entities::EntSprites>()
@@ -82,7 +84,9 @@ fn main() {
         .add_systems(EguiPrimaryContextPass, ui::setup_ui.before(menu::menu_ui))
         .add_systems(
             EguiPrimaryContextPass,
-            ui::ui_sounds_and_fade.after(menu::menu_ui).after(hud::hud_ui),
+            ui::ui_sounds_and_fade
+                .after(menu::menu_ui)
+                .after(panels::panels_ui),
         )
         // Session lifecycle, in any state.
         .add_systems(
@@ -137,6 +141,8 @@ fn main() {
                 (
                     hud::toggle_pause,
                     hud::ingame_steam_events,
+                    panels::find_focus,
+                    panels::interact,
                     player::use_tools,
                     player::move_player,
                     session::send,
@@ -163,6 +169,9 @@ fn main() {
                 .before(session::end_session)
                 .run_if(playing()),
         )
-        .add_systems(EguiPrimaryContextPass, hud::hud_ui.run_if(playing()))
+        .add_systems(
+            EguiPrimaryContextPass,
+            (hud::hud_ui, panels::panels_ui).chain().run_if(playing()),
+        )
         .run();
 }

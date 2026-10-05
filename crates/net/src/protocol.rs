@@ -5,11 +5,11 @@ use serde::{Deserialize, Serialize};
 
 use sbct_sim::colony::actions::Action;
 use sbct_sim::colony::{
-    Colony, Ent, Event, Globals, Id, Motion, Player, PlayerKey, Pose, PublicPlayer, Vitals,
+    Colony, Ent, Event, Globals, Id, Meta, Motion, Player, PlayerKey, Pose, PublicPlayer, Vitals,
 };
 
 /// Bump whenever a message layout changes so mismatched builds refuse to connect.
-pub const PROTOCOL_VERSION: u32 = 20;
+pub const PROTOCOL_VERSION: u32 = 21;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum ClientMsg {
@@ -66,6 +66,8 @@ pub enum HostMsg {
     },
     Motion(Vec<Motion>),
     Globals(Globals),
+    /// Species, blueprints and workers, whenever any of them change.
+    Meta(Box<Meta>),
     Events(Vec<Event>),
 }
 

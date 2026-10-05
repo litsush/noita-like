@@ -72,6 +72,21 @@ pub enum Action {
         at: V2,
     },
     Inv(InvOp),
+    /// Synthesize `count` batches of a recipe (an index into `recipes()`).
+    Craft {
+        recipe: u16,
+        count: u16,
+    },
+    /// Sell items from the player's inventory to Earth.
+    Sell {
+        item: super::items::Item,
+        count: u32,
+    },
+    Buy(super::economy::Offer),
+    AssignWorker {
+        worker: Id,
+        job: Option<Id>,
+    },
 }
 
 type Outcome = Result<(), &'static str>;
@@ -90,6 +105,10 @@ impl Colony {
             Action::Fire { from, dir } => self.fire(key, from, dir),
             Action::Use { at } => self.use_item(world, key, at),
             Action::Inv(op) => self.inv_op(key, op),
+            Action::Craft { recipe, count } => self.craft(key, recipe, count),
+            Action::Sell { item, count } => self.sell(key, item, count),
+            Action::Buy(offer) => self.buy(key, offer),
+            Action::AssignWorker { worker, job } => self.assign_worker(worker, job),
         }
     }
 
@@ -231,6 +250,10 @@ impl Colony {
                 matches!(e.kind, EntKind::Machine(_) | EntKind::Crate(_)).then_some(e.pos)
             }
         }
+    }
+
+    pub(super) fn container_mut_for(&mut self, key: PlayerKey, c: Container) -> Option<&mut Inventory> {
+        self.container_mut(key, c)
     }
 
     fn container_mut(&mut self, key: PlayerKey, c: Container) -> Option<&mut Inventory> {

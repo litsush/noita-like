@@ -10,11 +10,13 @@ pub mod actions;
 pub mod body;
 pub mod creatures;
 pub mod domes;
+pub mod economy;
 pub mod geom;
 pub mod inventory;
 pub mod items;
 pub mod mods;
 pub mod plants;
+pub mod recipes;
 pub mod save;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -431,6 +433,11 @@ pub enum Fx {
     WebHit,
     Place,
     DomePlaced,
+    Craft,
+    Sell,
+    Buy,
+    Unlock,
+    PodLand,
     Dawn,
     Dusk,
     Thunder,
@@ -448,6 +455,22 @@ pub enum Event {
         text: String,
         good: bool,
     },
+}
+
+/// Running totals, for the codex and the ending.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Stats {
+    /// Credits earned from Earth.
+    pub earned: u64,
+}
+
+/// Slow-changing colony-wide state, sent whole when anything in it changes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Meta {
+    pub species: Vec<Species>,
+    pub blueprints: BTreeSet<recipes::Blueprint>,
+    pub workers: Vec<economy::Worker>,
+    pub stats: Stats,
 }
 
 /// Small, frequently sent colony-wide state.
@@ -476,6 +499,15 @@ pub struct Colony {
     pub home: Id,
     /// Lairs whose Brood Mother has already appeared.
     pub cleared_lairs: Vec<(i32, i32)>,
+    /// Blueprints bought from Earth.
+    pub blueprints: BTreeSet<recipes::Blueprint>,
+    pub workers: Vec<economy::Worker>,
+    pub deliveries: Vec<economy::Delivery>,
+    pub stats: Stats,
+    /// Bumped when species, blueprints or workers change; clients are sent
+    /// the [`Meta`] section again.
+    #[serde(skip)]
+    pub meta_rev: u32,
     pub rng: Rng,
     /// Accumulators for work done less often than every tick.
     #[serde(skip)]
@@ -520,6 +552,11 @@ impl Colony {
             players: BTreeMap::new(),
             home: 0,
             cleared_lairs: Vec::new(),
+            blueprints: BTreeSet::new(),
+            workers: Vec::new(),
+            deliveries: Vec::new(),
+            stats: Stats::default(),
+            meta_rev: 1,
             rng: Rng::new(seed ^ 0xC0107),
             timers: Timers::default(),
             dirty: BTreeSet::new(),
@@ -817,6 +854,22 @@ impl Colony {
         }
     }
 
+    pub fn meta(&self) -> Meta {
+        Meta {
+            species: self.species.clone(),
+            blueprints: self.blueprints.clone(),
+            workers: self.workers.clone(),
+            stats: self.stats.clone(),
+        }
+    }
+
+    pub fn apply_meta(&mut self, m: Meta) {
+        self.species = m.species;
+        self.blueprints = m.blueprints;
+        self.workers = m.workers;
+        self.stats = m.stats;
+    }
+
     pub fn take_events(&mut self) -> Vec<Event> {
         std::mem::take(&mut self.events)
     }
@@ -830,6 +883,7 @@ impl Colony {
         self.step_bolts(world, dt);
         self.step_drops(world, dt);
         creatures::step(self, world, dt);
+        self.step_deliveries(world, dt);
 
         self.timers.second += dt;
         if self.timers.second >= 1.0 {

@@ -450,3 +450,9 @@ Each milestone is committed and pushed, builds and runs, and works with at least
   - The colony core (`sim::colony`) runs the clock, weather, players' vitals, digging and drops, the laser, creatures, inventories and chests, with tests for each.
   - The client was rebuilt on it: tiled world rendering, lighting that follows the sun, sky and horizon layers, rain and mist, layered player sprites, HUD, menus with new/load/join, world saves.
   - Two players over LAN see the same world, time and weather, each other, creatures and drops.
+- **Milestones 2 and 3 (player, suit, laser, creatures; inventory, Synthesizer, Comm. Terminal, credits):**
+  - Suit oxygen, cold, spore gas, health, blackout and respawn with a recoverable pack; the laser with its battery and lockout; seven creatures with their own behaviours and a spawner that follows depth and time of day.
+  - Inventory window with drag and drop, split, shift-click, favourites, trash, sort, quick stack, deposit all, loot all and search; chests in domes, standalone chests, caches, packs and pods.
+  - Synthesizer with recipes and blueprints, drawing on the player's inventory, the dome's chests and every Storage Dome.
+  - Comm. Terminal: sell ores and goods, order seeds and animals (delivered by drop pod), buy blueprints, hire and assign workers.
+  - Interaction prompts, the generated sprites for players (body, suit, team accents), creatures, props and domes.

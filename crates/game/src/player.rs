@@ -131,7 +131,7 @@ pub fn move_player(
     mut sfx: MessageWriter<Sfx>,
     mut bursts: MessageWriter<Burst>,
     ui: Res<UiHasPointer>,
-    panels: Res<crate::hud::Panels>,
+    panels: Res<crate::panels::Panels>,
 ) {
     let dt = time.delta_secs().min(1.0 / 30.0);
     let p = &mut *player;
@@ -319,7 +319,7 @@ pub fn use_tools(
     config: Res<Config>,
     time: Res<Time>,
     ui: Res<UiHasPointer>,
-    panels: Res<crate::hud::Panels>,
+    panels: Res<crate::panels::Panels>,
     window: Single<&Window, With<PrimaryWindow>>,
     camera: Single<(&Camera, &GlobalTransform), With<WorldCamera>>,
     mut player: ResMut<LocalPlayer>,

@@ -10,27 +10,12 @@ use sbct_sim::colony::items::Item;
 use sbct_sim::colony::{Colony, HOTBAR, PLAYER_HEIGHT, WeatherKind};
 
 use crate::controls::{Action, Rebind};
+use crate::panels::Panels;
 use crate::render::{UiHasPointer, WorldCamera};
 use crate::session::{EndSession, PendingJoin, Role, Session};
-use crate::settings::{Config, SettingsTab, settings_ui};
+use crate::settings::{Config, settings_ui};
 use crate::steam::{SteamClient, SteamInbox};
 use crate::ui::{self, ACCENT, DANGER, GOOD, TEXT, TEXT_DIM, UiIcons, WARN};
-
-/// Which windows are open over the game.
-#[derive(Resource, Default)]
-pub struct Panels {
-    pub pause: bool,
-    pub settings: bool,
-    pub settings_tab: SettingsTab,
-    /// A text field has keyboard focus, so keys shouldn't move the player.
-    pub typing: bool,
-}
-
-impl Panels {
-    pub fn blocks_movement(&self) -> bool {
-        self.pause || self.typing
-    }
-}
 
 pub struct Toast {
     pub text: String,
@@ -71,6 +56,8 @@ pub fn toggle_pause(
     if config.bindings.just_pressed(Action::Pause, &keys, &mouse) {
         if panels.settings {
             panels.settings = false;
+        } else if panels.open.is_some() {
+            panels.close();
         } else {
             panels.pause = !panels.pause;
         }
