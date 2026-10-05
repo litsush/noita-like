@@ -155,6 +155,36 @@ pub fn present_events(
                                 .life(0.7),
                         );
                     }
+                    Fx::Sow => {
+                        sfx.write(Sfx::at("plant_sow", at));
+                    }
+                    Fx::Harvest => {
+                        sfx.write(Sfx::at("plant_harvest", at));
+                        bursts.write(
+                            Burst::new(at, Color::srgb(0.45, 0.85, 0.5))
+                                .count(10)
+                                .speed(45.0)
+                                .life(0.5),
+                        );
+                    }
+                    Fx::Water => {
+                        sfx.write(Sfx::at("water_pour", at));
+                        bursts.write(
+                            Burst::new(at, Color::srgb(0.45, 0.7, 0.95))
+                                .count(8)
+                                .speed(30.0)
+                                .life(0.4),
+                        );
+                    }
+                    Fx::Fertilize => {
+                        sfx.write(Sfx::at("fertilize", at));
+                    }
+                    Fx::Discover => {
+                        sfx.write(Sfx::ui("codex_new"));
+                    }
+                    Fx::FlowerPop => {
+                        sfx.write(Sfx::at("flower_pop", at).volume(0.7));
+                    }
                     Fx::Dawn => {
                         sfx.write(Sfx::ui("day_start"));
                     }

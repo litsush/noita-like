@@ -11,7 +11,7 @@ use crate::material::Kind;
 use crate::planetgen::{Band, FeatureKind};
 use crate::world::World;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum CreatureKind {
     Driftmoth,
     Puffback,

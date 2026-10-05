@@ -2,6 +2,7 @@
 //! the Comm. Terminal and the other things players open by interacting.
 //! Also finds what the player can interact with and shows the prompt.
 
+mod dome;
 mod inventory;
 mod synth;
 mod terminal;
@@ -10,6 +11,7 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 use sbct_sim::colony::actions::{Action as Act, Container};
 use sbct_sim::colony::domes::{Fixture, fixture_pos};
+use sbct_sim::colony::farming::PlanterOp;
 use sbct_sim::colony::geom::V2;
 use sbct_sim::colony::items::MachineKind;
 use sbct_sim::colony::{Colony, CrateKind, EntKind, Id, PLAYER_HEIGHT, Player};
@@ -32,6 +34,10 @@ pub enum Open {
     Container(Container),
     Synth,
     Terminal,
+    /// A dome's status, planters and production.
+    Dome(Id),
+    /// A machine without an inventory of its own.
+    Machine(Id),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -58,6 +64,8 @@ pub struct Panels {
     pub search: String,
     pub synth_filter: String,
     pub terminal_tab: TerminalTab,
+    /// The name being typed in a rename box, and for which entity.
+    pub rename: Option<(Id, String)>,
 }
 
 impl Panels {
@@ -77,6 +85,8 @@ pub enum Target {
     Fixture(Id, Fixture),
     Machine(Id, MachineKind),
     Crate(Id, CrateKind),
+    /// A plant growing outside a planter.
+    Plant(Id),
 }
 
 /// The thing the Interact key would use right now, and where it is.
@@ -84,18 +94,30 @@ pub enum Target {
 pub struct Focus(pub Option<(Target, V2)>);
 
 impl Target {
-    fn label(&self, colony: &Colony) -> String {
+    /// What the Interact key would do, for the prompt.
+    fn label(&self, colony: &Colony, me: &Player) -> String {
         match *self {
             Target::Fixture(dome, f) => {
-                let kind = colony.dome(dome).map(|(_, d)| d.kind);
+                let Some((_, d)) = colony.dome(dome) else {
+                    return String::new();
+                };
                 match f {
-                    Fixture::Chest(i) => kind.map_or("Chest", |k| k.chest_label(i as usize)).to_string(),
-                    Fixture::Bunk(_) => "Bunk".into(),
+                    Fixture::Chest(i) => d.kind.chest_label(i as usize).to_string(),
+                    Fixture::Bunk(_) => {
+                        if colony.clock.is_night() {
+                            "Sleep".into()
+                        } else {
+                            "Set your spawn here".into()
+                        }
+                    }
                     Fixture::SuitRack => "Suit rack".into(),
                     Fixture::Synthesizer => "Synthesizer".into(),
                     Fixture::Terminal => "Comm. Terminal".into(),
                     Fixture::ModBay => "Mod Bay".into(),
-                    Fixture::Planter(_) => "Planter".into(),
+                    Fixture::Planter(i) => match planter_action(colony, me, dome, i) {
+                        Some((_, label)) => label,
+                        None => planter_status(colony, dome, i),
+                    },
                     Fixture::Cooker => "Cooker".into(),
                     Fixture::CompostVat => "Compost Vat".into(),
                     Fixture::AssemblyRing => "Assembly ring".into(),
@@ -109,7 +131,70 @@ impl Target {
             Target::Crate(_, CrateKind::Pack) => "Lost pack".into(),
             Target::Crate(_, CrateKind::Cache) => "Salvage cache".into(),
             Target::Crate(_, CrateKind::Pod) => "Drop pod".into(),
+            Target::Plant(id) => {
+                let Some(EntKind::Plant(p)) = colony.ents.get(&id).map(|e| &e.kind) else {
+                    return String::new();
+                };
+                let name = colony
+                    .species
+                    .get(p.species as usize)
+                    .map_or("Plant", |s| s.name.as_str());
+                if p.growth >= 1.0 {
+                    format!("Harvest {name}")
+                } else {
+                    format!("{name}: {:.0}% grown", p.growth * 100.0)
+                }
+            }
         }
+    }
+}
+
+/// A one-line description of a planter.
+pub fn planter_status(colony: &Colony, dome: Id, slot: u8) -> String {
+    let Some(p) = colony.dome(dome).and_then(|(_, d)| d.planters.get(slot as usize)) else {
+        return String::new();
+    };
+    match p.species.and_then(|s| colony.species.get(s as usize)) {
+        None => "Empty planter: hold a seed".into(),
+        Some(sp) => {
+            let water = if sp.thirst_per_day() == 0.0 {
+                ""
+            } else if p.moisture <= 0.0 {
+                ", dry"
+            } else if p.moisture < 0.3 {
+                ", nearly dry"
+            } else {
+                ""
+            };
+            format!("{}: {:.0}% grown{water}", sp.name, p.growth.min(1.0) * 100.0)
+        }
+    }
+}
+
+/// What interacting with a planter would do given what the player holds.
+pub fn planter_action(colony: &Colony, me: &Player, dome: Id, slot: u8) -> Option<(PlanterOp, String)> {
+    use sbct_sim::colony::items::Item;
+    let p = colony.dome(dome)?.1.planters.get(slot as usize)?;
+    let held = me.held().map(|s| s.item);
+    let sp = p.species.and_then(|s| colony.species.get(s as usize));
+    match (sp, held) {
+        (None, Some(Item::Seed(s))) => {
+            let name = colony
+                .species
+                .get(s as usize)
+                .map_or("seed", |sp| sp.name.as_str());
+            Some((PlanterOp::Plant, format!("Plant {name}")))
+        }
+        (Some(sp), _) if p.growth >= 1.0 && sp.product.is_some() => {
+            Some((PlanterOp::Harvest, format!("Harvest {}", sp.name)))
+        }
+        (Some(sp), Some(Item::WateringCan)) if p.moisture < 0.9 && sp.thirst_per_day() > 0.0 => {
+            Some((PlanterOp::Water, format!("Water {}", sp.name)))
+        }
+        (Some(sp), Some(Item::Fertilizer)) if p.fertilizer <= 0.0 => {
+            Some((PlanterOp::Fertilize, format!("Fertilize {}", sp.name)))
+        }
+        _ => None,
     }
 }
 
@@ -142,6 +227,13 @@ fn targets(colony: &Colony, me: &Player) -> Vec<(Target, V2)> {
                 V2 {
                     x: e.pos.x,
                     y: e.pos.y - 6.0,
+                },
+            )),
+            EntKind::Plant(_) => out.push((
+                Target::Plant(e.id),
+                V2 {
+                    x: e.pos.x,
+                    y: e.pos.y - 8.0,
                 },
             )),
             _ => {}
@@ -198,6 +290,8 @@ pub fn interact(
             Open::Container(c) => colony.containers_near(me.key).contains(&c) || crate_near(colony, me, c),
             Open::Synth => colony.synthesizer_near(me.key),
             Open::Terminal => colony.terminal_near(me.key),
+            Open::Dome(id) => me.in_dome == Some(id),
+            Open::Machine(id) => crate_near(colony, me, Container::Machine(id)),
         };
         if !still_there {
             panels.close();
@@ -230,6 +324,10 @@ pub fn interact(
         return;
     }
     let Some((target, _)) = focus.0 else { return };
+    let (Some(colony), Some(me)) = (&session.colony, session.player()) else {
+        return;
+    };
+    let mut act = None;
     let open = match target {
         Target::Fixture(dome, Fixture::Chest(i)) => Some(Open::Container(Container::DomeChest(dome, i))),
         Target::Fixture(_, Fixture::Synthesizer) => Some(Open::Synth),
@@ -238,17 +336,36 @@ pub fn interact(
             toasts.push("Your suit seals by itself when you step outside.", true);
             None
         }
-        Target::Fixture(..) => {
-            toasts.push("Nothing to do here yet.", false);
+        Target::Fixture(_, Fixture::Bunk(_)) => {
+            act = Some(Act::Sleep);
             None
         }
+        Target::Fixture(_, Fixture::ModBay) => {
+            toasts.push("The Mod Bay isn't wired up yet.", false);
+            None
+        }
+        Target::Fixture(dome, Fixture::Planter(i)) => match planter_action(colony, me, dome, i) {
+            Some((op, _)) => {
+                act = Some(Act::Planter { dome, slot: i, op });
+                None
+            }
+            None => Some(Open::Dome(dome)),
+        },
+        Target::Fixture(dome, _) => Some(Open::Dome(dome)),
         Target::Machine(id, MachineKind::Chest | MachineKind::Pylon) => {
             Some(Open::Container(Container::Machine(id)))
         }
         Target::Machine(_, MachineKind::Synthesizer) => Some(Open::Synth),
-        Target::Machine(..) => None,
+        Target::Machine(id, _) => Some(Open::Machine(id)),
         Target::Crate(id, _) => Some(Open::Container(Container::Crate(id))),
+        Target::Plant(id) => {
+            act = Some(Act::Harvest { plant: id });
+            None
+        }
     };
+    if let Some(act) = act {
+        session.act(act);
+    }
     if let Some(open) = open {
         panels.open = Some(open);
         sfx.write(Sfx::ui("inv_open"));
@@ -299,7 +416,7 @@ pub fn panels_ui(
             let text = format!(
                 "[{}] {}",
                 config.bindings.hint(Action::Interact),
-                target.label(colony)
+                target.label(colony, me)
             );
             let at = egui::pos2(pos.x / zoom, pos.y / zoom);
             let font = egui::FontId::proportional(16.0);
@@ -363,6 +480,12 @@ pub fn panels_ui(
         }
         Some(Open::Terminal) => {
             terminal::window(ctx, &icons, colony, me, &mut panels, &mut acts, &mut close);
+        }
+        Some(Open::Dome(id)) => {
+            dome::dome_window(ctx, &icons, colony, me, id, &mut panels, &mut acts, &mut close);
+        }
+        Some(Open::Machine(id)) => {
+            dome::machine_window(ctx, &icons, colony, id, &mut panels, &mut acts, &mut close);
         }
         None => {}
     }

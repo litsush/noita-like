@@ -456,3 +456,10 @@ Each milestone is committed and pushed, builds and runs, and works with at least
   - Synthesizer with recipes and blueprints, drawing on the player's inventory, the dome's chests and every Storage Dome.
   - Comm. Terminal: sell ores and goods, order seeds and animals (delivered by drop pod), buy blueprints, hire and assign workers.
   - Interaction prompts, the generated sprites for players (body, suit, team accents), creatures, props and domes.
+- **Milestone 4 (domes, farming, battery flowers, power):**
+  - Dome kits and machines are placed with a live preview, named, renamed and packed up again. Domes can't touch; placing clears the interior and builds the shell and foundation.
+  - Planters: sow, water (watering can or sprinklers from the dome's water reserve), fertilize, harvest, uproot. Species only grow in the right dome. Plants in planters and outdoors are drawn procedurally from their genes, sway, and bend away from players.
+  - Wild flora across the surface, lakes and caves; battery flowers sprout at dawn. Harvesting gives produce and seeds and fills the codex.
+  - Kitchens, Dark Dome compost vats, Barns, Aqua Dome fish pools and Dome Domes all produce; workers boost output and harvest; workers eat from the stockpile each dawn.
+  - Charging Pylons hold flowers, link into grids and power what is in range. Oxygen from plants and generators raises the atmosphere.
+  - Beds set the spawn point; when everyone sleeps at night it becomes morning.

@@ -13,6 +13,8 @@
 //! * `--credits <n>` sets the colony's credits.
 //! * `--open <inventory|chest|synth|terminal>` walks the player to that
 //!   fixture in the starter dome and opens its window.
+//! * `--setup <farm>` builds a demo base beside the starter dome (domes with
+//!   crops at every stage, a pylon) and puts the player in it.
 //!
 //! Set `SBCT_SAVE_DIR` when testing so nothing touches your real saves.
 
@@ -97,6 +99,8 @@ fn apply_world_flags(mut session: ResMut<Session>, mut panels: ResMut<crate::pan
         return;
     }
     let me = session.me;
+    let session = &mut *session;
+    let mut world = session.world.as_mut();
     let Some(colony) = &mut session.colony else { return };
     if let Some(t) = arg_value("--time").and_then(|s| s.parse::<f32>().ok()) {
         colony.clock.time = t;
@@ -158,6 +162,11 @@ fn apply_world_flags(mut session: ResMut<Session>, mut panels: ResMut<crate::pan
             panels.open = Some(open);
         }
     }
+    if arg_value("--setup").as_deref() == Some("farm")
+        && let Some(world) = world.as_mut()
+    {
+        setup_farm(colony, world, me);
+    }
     if let Some(at) = arg_value("--goto")
         && let Some((x, y)) = at.split_once(',')
         && let (Ok(x), Ok(y)) = (x.parse::<f32>(), y.parse::<f32>())
@@ -192,5 +201,56 @@ fn dome_of(e: &sbct_sim::colony::Ent) -> Option<EntKindDome> {
     match &e.kind {
         sbct_sim::colony::EntKind::Dome(d) => Some(EntKindDome(d.kind)),
         _ => None,
+    }
+}
+
+/// A small working base for screenshots and manual testing.
+fn setup_farm(
+    colony: &mut sbct_sim::colony::Colony,
+    world: &mut sbct_sim::World,
+    me: sbct_sim::colony::PlayerKey,
+) {
+    use sbct_sim::colony::domes::{Dome, build_cells};
+    use sbct_sim::colony::items::{DomeKind, MachineKind};
+    use sbct_sim::colony::{EntKind, Machine};
+    let home = colony.ents[&colony.home].pos;
+    let mut x = home.x + 108.0 + 30.0;
+    let mut first = None;
+    for (kind, species) in [
+        (DomeKind::Green, vec![0u16, 2, 6, 10]),
+        (DomeKind::Dark, vec![15, 16, 17, 15]),
+        (DomeKind::Aqua, vec![18, 19]),
+        (DomeKind::Kitchen, vec![]),
+    ] {
+        let (w, _) = kind.size();
+        x += w as f32 / 2.0;
+        let ground = sbct_sim::colony::build::ground_below(world, x as i32, home.y as i32 - 60, 140)
+            .unwrap_or(home.y as i32);
+        let pos = v2(x, ground as f32);
+        build_cells(world, kind, pos);
+        let mut dome = Dome::new(kind, format!("{} 1", kind.name()));
+        for (i, s) in species.iter().enumerate() {
+            dome.planters[i].species = Some(*s);
+            dome.planters[i].growth = [1.0, 0.7, 0.4, 0.15][i % 4];
+            dome.planters[i].moisture = 1.0;
+        }
+        dome.reserve = 20.0;
+        let id = colony.spawn(pos, EntKind::Dome(dome));
+        first.get_or_insert((id, pos));
+        x += w as f32 / 2.0 + 14.0;
+        if kind == DomeKind::Green {
+            let mut pylon = Machine::new(MachineKind::Pylon, "Charging Pylon 1".into());
+            pylon.inv.add(Item::Crop(0), 6, 1.0);
+            colony.spawn(v2(x - 6.0, ground as f32), EntKind::Machine(pylon));
+        }
+    }
+    if let (Some((id, pos)), Some(p)) = (first, colony.players.get_mut(&me)) {
+        p.pose.pos = v2(pos.x - 20.0, pos.y);
+        p.in_dome = Some(id);
+        p.warp += 1;
+        p.inv.add(Item::WateringCan, 1, 1.0);
+        p.inv.add(Item::Seed(3), 5, 1.0);
+        p.inv.add(Item::Fertilizer, 5, 1.0);
+        p.can_water = 10.0;
     }
 }

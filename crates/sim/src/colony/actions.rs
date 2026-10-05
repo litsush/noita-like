@@ -87,6 +87,33 @@ pub enum Action {
         worker: Id,
         job: Option<Id>,
     },
+    /// Work a planter in a dome.
+    Planter {
+        dome: Id,
+        slot: u8,
+        op: super::farming::PlanterOp,
+    },
+    /// Harvest a plant growing outside a planter.
+    Harvest {
+        plant: Id,
+    },
+    /// Put the held animal or fish fry into the dome the player is in.
+    Stock,
+    /// Choose what a Dome Dome builds.
+    SetTarget {
+        dome: Id,
+        target: Option<super::items::DomeKind>,
+    },
+    /// Pack a machine or dome back into an item.
+    Dismantle {
+        ent: Id,
+    },
+    Rename {
+        ent: Id,
+        name: String,
+    },
+    /// Lie down in a bed of the dome the player is in. Sets their spawn.
+    Sleep,
 }
 
 type Outcome = Result<(), &'static str>;
@@ -109,7 +136,47 @@ impl Colony {
             Action::Sell { item, count } => self.sell(key, item, count),
             Action::Buy(offer) => self.buy(key, offer),
             Action::AssignWorker { worker, job } => self.assign_worker(worker, job),
+            Action::Planter { dome, slot, op } => self.planter_op(key, dome, slot, op),
+            Action::Harvest { plant } => self.harvest_plant(key, plant),
+            Action::Stock => self.stock(key),
+            Action::SetTarget { dome, target } => self.set_target(dome, target),
+            Action::Dismantle { ent } => self.dismantle(world, key, ent),
+            Action::Rename { ent, name } => self.rename(ent, &name),
+            Action::Sleep => self.sleep(key),
         }
+    }
+
+    fn sleep(&mut self, key: PlayerKey) -> Outcome {
+        let p = &self.players[&key];
+        let dome = p
+            .in_dome
+            .ok_or("Beds are in the starter dome and Bedroom Domes")?;
+        let (_, d) = self.dome(dome).ok_or("That dome is gone")?;
+        if d.kind.beds() == 0 {
+            return Err("There are no beds here");
+        }
+        let taken = self
+            .online()
+            .filter(|o| o.sleeping && o.in_dome == Some(dome))
+            .count() as u32;
+        if taken >= d.kind.beds() {
+            return Err("Every bed is taken");
+        }
+        let night = self.clock.is_night();
+        let p = self.players.get_mut(&key).unwrap();
+        p.spawn = Some(dome);
+        p.sleeping = night;
+        p.touch_public();
+        self.toast(
+            Some(key),
+            if night {
+                "Sleeping. When everyone is in bed, the night passes."
+            } else {
+                "This is where you'll wake up now. Beds are for sleeping at night."
+            },
+            true,
+        );
+        Ok(())
     }
 
     fn in_reach(&self, key: PlayerKey, at: V2, extra: f32) -> bool {
@@ -188,10 +255,16 @@ impl Colony {
         let Some(stack) = p.held() else {
             return Ok(());
         };
-        if let Some(block) = stack.item.block() {
-            return self.place_block(world, key, slot, block, at);
+        use super::items::Item;
+        match stack.item {
+            item if item.block().is_some() => self.place_block(world, key, slot, item.block().unwrap(), at),
+            Item::DomeKit(kind) => self.place_dome(world, key, slot, kind, at),
+            Item::Machine(kind) => self.place_machine(world, key, slot, kind, at),
+            Item::Seed(species) => self.plant_outdoors(world, key, slot, species, at),
+            Item::WateringCan => self.use_can(world, key, at),
+            Item::Cluckbug | Item::MilkGrub | Item::FishFry => self.stock(key),
+            _ => Err("Can't use that here"),
         }
-        Err("Can't use that here")
     }
 
     fn place_block(

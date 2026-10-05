@@ -10,6 +10,9 @@ mod hud;
 mod lighting;
 mod menu;
 mod panels;
+mod placement;
+mod plantart;
+mod plants;
 mod player;
 mod render;
 mod session;
@@ -69,6 +72,9 @@ fn main() {
         .init_resource::<hud::Toasts>()
         .init_resource::<lighting::PointLights>()
         .init_resource::<entities::EntSprites>()
+        .init_resource::<plants::PlantSprites>()
+        .init_resource::<plantart::PlantArt>()
+        .init_resource::<placement::Placement>()
         .add_systems(
             Startup,
             (assets::load_assets, render::spawn_camera, menu::setup_menu).chain(),
@@ -123,6 +129,7 @@ fn main() {
                 render::spawn_world_view,
                 lighting::setup_lighting,
                 sky::spawn_sky,
+                placement::spawn_ghost,
             ),
         )
         .add_systems(
@@ -131,6 +138,7 @@ fn main() {
                 render::cleanup_world_view,
                 render::reset_particle_pool,
                 entities::reset_entities,
+                plants::reset_plants,
                 |mut commands: Commands| commands.remove_resource::<player::LocalPlayer>(),
             ),
         )
@@ -156,6 +164,9 @@ fn main() {
                     avatars::animate_avatars,
                     entities::sync_entities,
                     entities::animate_entities,
+                    plants::sync_plants,
+                    plants::animate_plants,
+                    placement::update_ghost,
                     player::follow_camera,
                     render::upload_dirty_chunks,
                     render::draw_sim_particles,

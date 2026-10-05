@@ -71,7 +71,7 @@ fn fixture_row(kind: DomeKind, f: Fixture) -> (usize, f32) {
     }
 }
 
-fn machine_row(kind: MachineKind) -> (usize, f32) {
+pub fn machine_row(kind: MachineKind) -> (usize, f32) {
     match kind {
         MachineKind::Chest => (prop::CHEST, 0.0),
         MachineKind::Lamp => (prop::LAMP, 3.0),

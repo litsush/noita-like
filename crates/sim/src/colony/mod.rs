@@ -8,14 +8,17 @@
 
 pub mod actions;
 pub mod body;
+pub mod build;
 pub mod creatures;
 pub mod domes;
 pub mod economy;
+pub mod farming;
 pub mod geom;
 pub mod inventory;
 pub mod items;
 pub mod mods;
 pub mod plants;
+pub mod power;
 pub mod recipes;
 pub mod save;
 
@@ -175,6 +178,8 @@ pub struct Player {
     pub equipped: [Option<u8>; 8],
     /// The dome whose bed the player wakes in.
     pub spawn: Option<Id>,
+    /// Lying in a bed. Moving gets you up.
+    pub sleeping: bool,
     /// Bumped whenever the host moves the player (respawn, recall); the
     /// client then jumps to `pose.pos`.
     pub warp: u32,
@@ -221,6 +226,7 @@ impl Player {
             mods: BTreeMap::new(),
             equipped: [None; 8],
             spawn: None,
+            sleeping: false,
             warp: 0,
             dig_tally: BTreeMap::new(),
             dig_wait: 0.0,
@@ -320,6 +326,33 @@ pub struct Machine {
     pub progress: f32,
     pub issues: u8,
     pub boost: f32,
+}
+
+impl Machine {
+    pub fn new(kind: MachineKind, name: String) -> Machine {
+        let slots = match kind {
+            MachineKind::Chest => domes::CHEST_SLOTS,
+            MachineKind::Pylon => 20,
+            _ => 0,
+        };
+        Machine {
+            kind,
+            name,
+            inv: Inventory::new(slots),
+            store: 0.0,
+            on: false,
+            progress: 0.0,
+            issues: 0,
+            boost: 1.0,
+        }
+    }
+
+    pub fn display_key(&self) -> u64 {
+        (self.on as u64)
+            | ((self.issues as u64) << 1)
+            | (((self.store / 10.0) as u64) << 9)
+            | (((self.progress * 20.0) as u64) << 32)
+    }
 }
 
 /// A loose container in the world.
@@ -438,6 +471,13 @@ pub enum Fx {
     Buy,
     Unlock,
     PodLand,
+    Sow,
+    Harvest,
+    Water,
+    Fertilize,
+    /// A new codex entry.
+    Discover,
+    FlowerPop,
     Dawn,
     Dusk,
     Thunder,
@@ -462,6 +502,20 @@ pub enum Event {
 pub struct Stats {
     /// Credits earned from Earth.
     pub earned: u64,
+    /// Food points produced so far today, and over the whole of yesterday.
+    pub food_today: f32,
+    pub food_yesterday: f32,
+    /// Charge drawn from pylons since the colony was founded.
+    pub power_used: f32,
+}
+
+/// What the colony has discovered.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Codex {
+    /// Species the colony has grown or harvested.
+    pub plants: BTreeSet<SpeciesId>,
+    /// Creatures someone has met.
+    pub creatures: BTreeSet<creatures::CreatureKind>,
 }
 
 /// Slow-changing colony-wide state, sent whole when anything in it changes.
@@ -471,6 +525,7 @@ pub struct Meta {
     pub blueprints: BTreeSet<recipes::Blueprint>,
     pub workers: Vec<economy::Worker>,
     pub stats: Stats,
+    pub codex: Codex,
 }
 
 /// Small, frequently sent colony-wide state.
@@ -504,6 +559,7 @@ pub struct Colony {
     pub workers: Vec<economy::Worker>,
     pub deliveries: Vec<economy::Delivery>,
     pub stats: Stats,
+    pub codex: Codex,
     /// Bumped when species, blueprints or workers change; clients are sent
     /// the [`Meta`] section again.
     #[serde(skip)]
@@ -556,6 +612,7 @@ impl Colony {
             workers: Vec::new(),
             deliveries: Vec::new(),
             stats: Stats::default(),
+            codex: Codex::default(),
             meta_rev: 1,
             rng: Rng::new(seed ^ 0xC0107),
             timers: Timers::default(),
@@ -576,6 +633,9 @@ impl Colony {
         dome.chests[1].add(Item::Machine(MachineKind::Lamp), 4, 1.0);
         colony.home = colony.spawn(pos, EntKind::Dome(dome));
         colony.place_caches();
+        colony.seed_wild_flora(&planet.world);
+        colony.take_changes();
+        colony.take_events();
         colony
     }
 
@@ -721,6 +781,10 @@ impl Colony {
         if let Some(p) = self.players.get_mut(&key)
             && p.alive()
         {
+            if p.sleeping && pose.pos.distance(p.pose.pos) > 2.0 {
+                p.sleeping = false;
+                p.touch_public();
+            }
             p.pose = pose;
         }
     }
@@ -860,6 +924,7 @@ impl Colony {
             blueprints: self.blueprints.clone(),
             workers: self.workers.clone(),
             stats: self.stats.clone(),
+            codex: self.codex.clone(),
         }
     }
 
@@ -868,6 +933,7 @@ impl Colony {
         self.blueprints = m.blueprints;
         self.workers = m.workers;
         self.stats = m.stats;
+        self.codex = m.codex;
     }
 
     pub fn take_events(&mut self) -> Vec<Event> {
@@ -878,7 +944,24 @@ impl Colony {
 
     /// Advances the colony by `dt` seconds. Host only.
     pub fn step(&mut self, world: &mut World, dt: f32) {
-        self.step_clock(dt);
+        // If everyone is in bed at night, it's morning.
+        if self.clock.is_night()
+            && self.online().count() > 0
+            && self.online().all(|p| p.sleeping || !p.alive())
+        {
+            self.clock.time = DAY_SECS - 0.01;
+            self.toast(None, "Everyone slept until dawn", true);
+        }
+        if self.step_clock(dt) {
+            self.dawn(world);
+            for p in self.players.values_mut() {
+                if p.sleeping {
+                    p.sleeping = false;
+                    p.hp = p.stats().max_hp;
+                    p.touch_public();
+                }
+            }
+        }
         self.step_players(world, dt);
         self.step_bolts(world, dt);
         self.step_drops(world, dt);
@@ -897,12 +980,15 @@ impl Colony {
         }
     }
 
-    fn step_clock(&mut self, dt: f32) {
+    /// Advances the clock and weather. Returns true when a new day starts.
+    fn step_clock(&mut self, dt: f32) -> bool {
         let was_night = self.clock.is_night();
+        let mut new_day = false;
         self.clock.time += dt;
         if self.clock.time >= DAY_SECS {
             self.clock.time -= DAY_SECS;
             self.clock.day += 1;
+            new_day = true;
             self.fx(Fx::Dawn, V2::ZERO);
             self.toast(None, format!("Day {}", self.clock.day), true);
         }
@@ -923,6 +1009,7 @@ impl Colony {
         if self.weather.kind == WeatherKind::Rain && self.rng.next_f32() < dt / 25.0 {
             self.fx(Fx::Thunder, V2::ZERO);
         }
+        new_day
     }
 
     /// Whether a point is under open sky (for rain, cold and daylight).
@@ -1301,6 +1388,7 @@ impl Colony {
         // The greener the air, the faster grass creeps over bare dirt.
         let t = ((self.atmosphere.o2 - O2_START) / (O2_BREATHABLE - O2_START)).clamp(0.0, 1.0);
         world.set_fertility((6.0 + t * 200.0) as u8);
+        self.step_production(world, 1.0);
     }
 }
 

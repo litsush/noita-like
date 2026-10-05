@@ -301,6 +301,9 @@ pub struct Dome {
     pub progress: f32,
     /// What a Dome Dome is building.
     pub target: Option<DomeKind>,
+    /// Litres of water on hand. Pipes refill it; some domes can be topped
+    /// up by hand.
+    pub reserve: f32,
     /// Set by the production tick.
     pub powered: bool,
     pub watered: bool,
@@ -320,8 +323,9 @@ impl Dome {
             fish: 0,
             progress: 0.0,
             target: None,
-            powered: false,
-            watered: false,
+            reserve: 0.0,
+            powered: kind.power_per_day() == 0.0,
+            watered: kind.water_per_day() == 0.0,
             issues: 0,
             boost: 1.0,
         }
@@ -330,6 +334,36 @@ impl Dome {
     /// The chest that production and workers put things into.
     pub fn output_chest(&mut self) -> Option<&mut Inventory> {
         self.chests.last_mut()
+    }
+
+    /// Most water the dome holds: half a day of its own use.
+    pub fn reserve_cap(&self) -> f32 {
+        self.kind.water_per_day() * 0.5
+    }
+
+    /// A digest of everything about the dome that players can see, so the
+    /// host only resends it when something visible changed.
+    pub fn display_key(&self) -> u64 {
+        let mut k = (self.powered as u64) | ((self.watered as u64) << 1) | ((self.issues as u64) << 2);
+        k = k.wrapping_mul(31).wrapping_add((self.progress * 20.0) as u64);
+        k = k.wrapping_mul(31).wrapping_add(self.fish as u64);
+        k = k
+            .wrapping_mul(31)
+            .wrapping_add((self.reserve / self.reserve_cap().max(1.0) * 8.0) as u64);
+        for p in &self.planters {
+            let species = p.species.map_or(0, |s| s as u64 + 1);
+            let stage = (p.growth.min(1.0) * 8.0) as u64;
+            let wet = (p.moisture * 4.0).ceil() as u64;
+            k = k
+                .wrapping_mul(131)
+                .wrapping_add(species * 1000 + stage * 100 + wet * 10 + (p.fertilizer > 0.0) as u64);
+        }
+        for a in &self.animals {
+            k = k
+                .wrapping_mul(31)
+                .wrapping_add((a.progress * 8.0) as u64 + a.fed as u64 * 16);
+        }
+        k
     }
 }
 

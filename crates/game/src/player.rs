@@ -137,6 +137,7 @@ pub fn move_player(
     let p = &mut *player;
     let Some(me) = session.player() else { return };
     let (alive, slowed, warp, pos) = (me.alive(), me.slowed > 0.0, me.warp, me.pose.pos);
+    let sleeping = me.sleeping;
     // The host moved us (respawn, recall).
     if warp != p.warp {
         p.warp = warp;
@@ -294,6 +295,9 @@ pub fn move_player(
         flags |= pose_flag::TOOL;
     }
     listener.0 = Vec2::new(p.body.pos.x, p.body.pos.y - PLAYER_HEIGHT / 2.0);
+    if sleeping {
+        p.anim = player_anim::SLEEP;
+    }
     let pose = Pose {
         pos: p.body.pos,
         vel: p.body.vel,
@@ -420,11 +424,35 @@ pub fn use_tools(
             p.cursor
         };
         p.tool_time = 0.25;
-        let usable = held_item.is_some_and(|i| i.block().is_some());
-        if usable {
+        use sbct_sim::colony::items::Item;
+        let block = held_item.is_some_and(|i| i.block().is_some());
+        // Things that are placed or applied once per click.
+        let once = matches!(
+            held_item,
+            Some(
+                Item::DomeKit(_)
+                    | Item::Machine(_)
+                    | Item::Seed(_)
+                    | Item::WateringCan
+                    | Item::Cluckbug
+                    | Item::MilkGrub
+                    | Item::FishFry
+            )
+        );
+        if block {
             if p.use_wait <= 0.0 {
                 p.use_wait = USE_INTERVAL;
                 session.act(Act::Use { at: target });
+            }
+        } else if once {
+            if b.just_pressed(Action::Primary, &keys, &mouse) {
+                // Kits and machines go where the preview shows, even past arm's reach of the cursor clamp.
+                let at = if matches!(held_item, Some(Item::DomeKit(_) | Item::Machine(_))) {
+                    p.cursor
+                } else {
+                    target
+                };
+                session.act(Act::Use { at });
             }
         } else {
             p.digging = Some(target);

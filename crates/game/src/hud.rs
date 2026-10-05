@@ -184,6 +184,7 @@ pub fn hud_ui(
     mut rebind: ResMut<Rebind>,
     icons: Option<Res<UiIcons>>,
     steam: Option<Res<SteamClient>>,
+    placement: Res<crate::placement::Placement>,
     camera: Single<(&Camera, &GlobalTransform), With<WorldCamera>>,
     time: Res<Time<Real>>,
 ) -> Result {
@@ -388,6 +389,11 @@ pub fn hud_ui(
                         config.bindings.hint(Action::Multitool)
                     ));
                 });
+                if let Some(why) = placement.error {
+                    ui.label(egui::RichText::new(format!("Can't place here: {why}")).color(DANGER));
+                } else if placement.active {
+                    ui.label(egui::RichText::new("Click to place").color(GOOD));
+                }
                 let held = me.held().map(|st| colony.item_name(st.item));
                 let hint = match held {
                     Some(name) => format!("{name}  ·  {} to use", config.bindings.hint(Action::Primary)),

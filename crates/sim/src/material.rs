@@ -265,16 +265,17 @@ impl Material {
     }
 
     /// Whether a player collides with this material. Dome glass is a
-    /// membrane that players walk through.
+    /// membrane that players walk through, and foliage brushes aside.
     #[inline]
     pub fn is_solid_for_player(self) -> bool {
-        matches!(self.kind(), Kind::Solid | Kind::Powder) && self != Material::Glass
+        matches!(self.kind(), Kind::Solid | Kind::Powder)
+            && !matches!(self, Material::Glass | Material::Leaves)
     }
 
     /// Whether a creature collides with this material (dome glass keeps them out).
     #[inline]
     pub fn is_solid_for_creature(self) -> bool {
-        matches!(self.kind(), Kind::Solid | Kind::Powder)
+        matches!(self.kind(), Kind::Solid | Kind::Powder) && self != Material::Leaves
     }
 
     /// Whether flowing materials can occupy this cell (air, gas, fire).
