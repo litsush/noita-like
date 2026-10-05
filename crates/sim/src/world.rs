@@ -310,6 +310,9 @@ impl World {
         if cell.mat == Material::Lava && self.react_hot(x, y, 12) {
             return;
         }
+        if cell.mat == Material::Acid && self.react_acid(x, y) {
+            return;
+        }
         if self.try_move(x, y, x, y + 1) {
             return;
         }
@@ -402,7 +405,7 @@ impl World {
             if !self.in_bounds(nx, ny) {
                 continue;
             }
-            if n == Material::Water {
+            if n == Material::Water || n == Material::Acid {
                 if is_lava {
                     self.set(x, y, Material::Stone);
                     self.set(nx, ny, Material::Steam);
@@ -420,6 +423,29 @@ impl World {
             self.set(x, y - 1, Material::Smoke);
         }
         false
+    }
+
+    /// Acid slowly dissolves soft and organic neighbours, using itself up.
+    /// Stone resists it. Returns true if this cell was consumed.
+    fn react_acid(&mut self, x: i32, y: i32) -> bool {
+        for (dx, dy) in [(0, 1), (-1, 0), (1, 0), (0, -1)] {
+            let (nx, ny) = (x + dx, y + dy);
+            let n = self.material(nx, ny);
+            let eats = n.is_diggable() || matches!(n, Material::Wood | Material::Web);
+            if eats && self.in_bounds(nx, ny) && self.rng.chance(3) {
+                self.set(nx, ny, Material::Smoke);
+                if self.rng.coin() {
+                    self.set(x, y, Material::Empty);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// All cells, row-major.
+    pub fn cells(&self) -> &[Cell] {
+        &self.cells
     }
 
     // ---- change tracking -------------------------------------------------

@@ -32,6 +32,55 @@ impl Rng {
     pub fn coin(&mut self) -> bool {
         self.next_u64() >> 63 == 1
     }
+
+    /// Uniform in [0, 1).
+    #[inline]
+    pub fn f32(&mut self) -> f32 {
+        (self.next_u64() >> 40) as f32 / (1u64 << 24) as f32
+    }
+
+    /// Uniform in [lo, hi).
+    #[inline]
+    pub fn range(&mut self, lo: f32, hi: f32) -> f32 {
+        lo + (hi - lo) * self.f32()
+    }
+
+    /// Uniform integer in [lo, hi] (inclusive).
+    #[inline]
+    pub fn int(&mut self, lo: i32, hi: i32) -> i32 {
+        if hi <= lo {
+            return lo;
+        }
+        lo + (self.next_u64() % (hi - lo + 1) as u64) as i32
+    }
+
+    /// True with probability `p` in [0, 1].
+    #[inline]
+    pub fn prob(&mut self, p: f32) -> bool {
+        self.f32() < p
+    }
+
+    /// A random element of a non-empty slice.
+    pub fn pick<'a, T>(&mut self, items: &'a [T]) -> &'a T {
+        &items[(self.next_u64() % items.len() as u64) as usize]
+    }
+
+    /// Index chosen in proportion to `weights`. Falls back to 0 if they're all zero.
+    pub fn weighted(&mut self, weights: &[f32]) -> usize {
+        let total: f32 = weights.iter().map(|w| w.max(0.0)).sum();
+        if total <= 0.0 {
+            return 0;
+        }
+        let mut r = self.f32() * total;
+        for (i, w) in weights.iter().enumerate() {
+            let w = w.max(0.0);
+            if r < w {
+                return i;
+            }
+            r -= w;
+        }
+        weights.len() - 1
+    }
 }
 
 /// Stateless hash of a 2D position, used for noise and per-cell shading.

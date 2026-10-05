@@ -97,6 +97,7 @@ enum Action {
     HostLan,
     JoinSteam(u64),
     JoinLan,
+    Ecosystem,
     Quit,
 }
 
@@ -127,7 +128,9 @@ fn action_from_args(menu: &mut MenuState) -> Option<Action> {
     if let Some(seed) = value("--seed") {
         menu.seed = seed;
     }
-    if args.iter().any(|a| a == "--singleplayer") {
+    if args.iter().any(|a| a == "--ecosystem") {
+        Some(Action::Ecosystem)
+    } else if args.iter().any(|a| a == "--singleplayer") {
         Some(Action::Singleplayer)
     } else if args.iter().any(|a| a == "--host-lan") {
         if let Some(port) = value("--host-lan") {
@@ -274,6 +277,9 @@ fn main_screen(ui: &mut egui::Ui, menu: &mut MenuState, action: &mut Option<Acti
     }
     if big_button(ui, "Singleplayer") {
         *action = Some(Action::Singleplayer);
+    }
+    if big_button(ui, "Alien Ecosystem") {
+        *action = Some(Action::Ecosystem);
     }
     ui.add_space(16.0);
     if big_button(ui, "Quit") {
@@ -441,6 +447,9 @@ fn run_action(
     match action {
         Action::Quit => {
             exit.write(AppExit::Success);
+        }
+        Action::Ecosystem => {
+            commands.set_state(AppState::Ecosystem);
         }
         Action::Singleplayer => {
             commands.insert_resource(Session::host(None, OFFLINE_ID, menu.name.clone(), None, seed()));

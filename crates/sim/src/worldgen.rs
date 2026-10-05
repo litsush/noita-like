@@ -23,7 +23,7 @@ fn value_noise(seed: u64, x: f32, y: f32) -> f32 {
 }
 
 /// Fractal noise in roughly [0, 1].
-fn fbm(seed: u64, x: f32, y: f32, octaves: u32) -> f32 {
+pub fn fbm(seed: u64, x: f32, y: f32, octaves: u32) -> f32 {
     let (mut sum, mut amp, mut freq, mut norm) = (0.0, 1.0, 1.0, 0.0);
     for o in 0..octaves {
         sum += value_noise(seed.wrapping_add(o as u64 * 7919), x * freq, y * freq) * amp;

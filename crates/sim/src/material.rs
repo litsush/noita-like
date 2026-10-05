@@ -31,6 +31,14 @@ pub enum Material {
     Fire,
     Smoke,
     Steam,
+    /// Eats through soil and organic matter; stone-lined pools hold it.
+    Acid,
+    /// Silk spun by trapper creatures. Doesn't block movement, it entangles.
+    Web,
+    /// Packed mud walls that creatures build into shelters.
+    Nest,
+    /// Tree canopy. Walkers pass in front of it, climbers live in it.
+    Leaf,
 }
 
 pub struct Props {
@@ -81,10 +89,14 @@ static PROPS: [Props; Material::COUNT] = [
     p("Fire", Kind::Fire, 1, 0, 0, [255, 140, 30], 60),
     p("Smoke", Kind::Gas, 2, 0, 0, [60, 60, 64], 12),
     p("Steam", Kind::Gas, 3, 0, 0, [200, 210, 220], 12),
+    p("Acid", Kind::Liquid, 105, 0, 5, [130, 220, 60], 18),
+    p("Web", Kind::Solid, 255, 140, 0, [215, 215, 225], 12),
+    p("Nest", Kind::Solid, 255, 6, 0, [118, 90, 62], 24),
+    p("Leaf", Kind::Solid, 255, 30, 0, [64, 150, 70], 30),
 ];
 
 impl Material {
-    pub const COUNT: usize = 13;
+    pub const COUNT: usize = 17;
 
     /// Materials a player can place, in hotbar order.
     pub const PLACEABLE: [Material; 9] = [
@@ -114,6 +126,10 @@ impl Material {
             10 => Fire,
             11 => Smoke,
             12 => Steam,
+            13 => Acid,
+            14 => Web,
+            15 => Nest,
+            16 => Leaf,
             _ => Empty,
         }
     }
@@ -131,7 +147,28 @@ impl Material {
     /// Whether a player collides with this material.
     #[inline]
     pub fn is_solid_for_player(self) -> bool {
-        matches!(self.kind(), Kind::Solid | Kind::Powder)
+        matches!(self.kind(), Kind::Solid | Kind::Powder) && self != Material::Web
+    }
+
+    /// Part of a tree: solid to climbers, scenery to everything else.
+    #[inline]
+    pub fn is_tree(self) -> bool {
+        matches!(self, Material::Wood | Material::Leaf)
+    }
+
+    /// Whether a creature collides with this material.
+    #[inline]
+    pub fn blocks_creature(self, climber: bool) -> bool {
+        self.is_solid_for_player() && (climber || !self.is_tree())
+    }
+
+    /// Soft ground that diggers can tunnel through.
+    #[inline]
+    pub fn is_diggable(self) -> bool {
+        matches!(
+            self,
+            Material::Dirt | Material::Grass | Material::Sand | Material::Ash | Material::Nest
+        )
     }
 
     /// Initial `life` for materials that expire.
