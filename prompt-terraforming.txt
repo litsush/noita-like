@@ -1,0 +1,319 @@
+STATUS: NEW
+================================================================================
+PROMPT: Planet Terraforming (co-op sandbox + automation game)
+================================================================================
+
+Before anything else, read CLAUDE.md. It explains the NEW/OLD status line at the
+top of this file. Do this prompt only because it is marked NEW, and change it to
+OLD when you have finished (see section 12).
+
+You are working in the `noita-like` repository (https://github.com/litsush/noita-like).
+
+BRANCH AND GIT
+  - Create a new branch called `planet-terraforming` from `main` and do all the work
+    there. This is a separate game from the wizard roguelike on the
+    `roguelike-prototype` branch. Don't merge either branch into the other, don't
+    merge into `main`, and don't open a PR unless asked.
+  - Commit after each logical step and `git push origin planet-terraforming` after
+    each milestone (section 11), so the team can pull and test progress at any time.
+    Every pushed commit must build and run.
+  - You may read `roguelike-prototype` for reference and copy code that is useful
+    here (e.g. the lighting pass, the Python asset-generation approach in `tools/`,
+    the save file, the UI theme helpers, the audio plugin), but adapt it to this game
+    instead of bringing over wizard content.
+
+WHAT ALREADY EXISTS ON MAIN
+  Read `README.md` and the code first. `main` has a Noita-style falling-sand engine in
+  Rust: `crates/sim` (Bevy-free cell simulation with chunks, materials and world
+  generation), `crates/net` (protocol plus Steam and TCP transports) and
+  `crates/game` (Bevy 0.19 + bevy_egui client with a menu, a host-authoritative
+  multiplayer session, digging/placing and a HUD). Build this game on top of that
+  engine and keep its architecture: simulation in `sim`, networking in `net`,
+  presentation and game rules in `game`. Keep the host-authoritative model.
+
+================================================================================
+1. THE GAME
+================================================================================
+
+PREMISE: You are terraformers sent from Earth to a similar planet in a nearby
+galaxy to prepare it for human habitation.
+
+GENRE: A blend of a Terraria-style sandbox and automation/idle games like Cookie
+Clicker. Early on, everything is done by hand. Over time, players build up
+plants, domes, pipes, generators and robots that work for them, and numbers keep
+climbing even while the players are off exploring.
+
+GAMEPLAY LOOP:
+  mine underground -> sell mined resources -> buy cybernetic body upgrades and
+  equipment/resources for the base -> repeat, until the base produces enough
+  atmospheric oxygen, food, fresh water and living space for humanity to come.
+
+WIN CONDITION: Have enough Apartment Domes, a high enough atmospheric oxygen
+level, and enough food and fresh water output to support the cargo ship full of
+humans. Show progress toward every target clearly at all times (a Colony Readiness
+panel). When all targets are met, the players can call the ship from the Comm.
+Terminal, and it lands in a memorable ending sequence. Afterwards, the world stays
+playable.
+
+AESTHETIC: Plant punk. Similar vibes to Rain World (overgrown industrial ruins,
+moody atmospheric lighting, a living alien ecosystem, rain and mist), but fully
+pixel art and with far more plants. Lush, strange alien flora growing over cold
+human machinery. Animated foliage that sways and reacts to players and wind.
+
+START OF GAME: Players spawn in a starter biodome. The air inside is breathable.
+It has 8 beds, two storage chests, and a rack that holds exploration suits, since
+the atmosphere doesn't have enough oxygen to breathe at the start.
+
+================================================================================
+2. MULTIPLAYER (STEAM CO-OP, UP TO 8 PLAYERS)
+================================================================================
+
+  - Up to 8 players can join the same world over Steam (and over LAN with the
+    existing `--host-lan` / `--join-lan` flags, for testing without Steam).
+  - The host is authoritative. Everything in this prompt must stay in sync for all
+    players: terrain, plants and their growth, domes, pipes and water, machines,
+    robots and their programs, inventories, chests, credits, atmosphere, creatures,
+    day/night and weather.
+  - The world is persistent: the host saves it and can load it again later. Players
+    can join and leave at any time, and their character, inventory and body mods are
+    kept for when they rejoin.
+  - Credits are shared by the colony. Inventories and body mods are per player.
+  - Each player needs a way to tell apart (name tags and a colour accent on their
+    suit) and a map marker for every teammate.
+
+================================================================================
+3. WORLD, SURVIVAL AND OXYGEN
+================================================================================
+
+  - A large 2D world with a surface (lakes, alien plant life, ruins), and
+    contiguous underground cave networks similar to Terraria, with entrances on the
+    surface. Generate it deterministically from a seed.
+  - A day/night cycle (battery flowers grow each day) and weather (rain, mist) that
+    supports the aesthetic and the water systems.
+  - Exploration suits: outside breathable air, players use a suit with a limited
+    oxygen supply that refills inside domes or near oxygen sources. The suit is shown
+    on the sprite. As the planet's atmosphere improves, suits drain more slowly, and
+    at a high enough level players can breathe outside without one.
+
+OXYGEN: The planet's oxygen level isn't high enough to sustain humans yet. Biodomes
+produce excess oxygen that is released into the atmosphere. The more plants you
+have, the higher the atmosphere's oxygen level gets, slowly but surely. Later in
+the game there are other ways to raise oxygen production. With iron, silicon and
+power from battery flowers, players can synthesize Oxygen Generators to place
+outside. Show the global oxygen level and its rate of change on the HUD.
+
+CAVES AND ORES: Inside the caves are dangerous cave predators (creepy things like
+alien spiders) but also precious minerals and ores (iron, copper, gold, silicon
+and rarer ones deeper down) used in the synthesizer to create upgrades and
+equipment. Deeper caves are darker, more dangerous and richer.
+
+================================================================================
+4. POWER: BATTERY FLOWERS
+================================================================================
+
+Battery flowers grow each day on the planet's surface and must be harvested to
+power equipment. They can also be grown in Green Domes. Harvested battery flowers
+are an item that charges machines, robots and equipment. Design how power is
+stored and delivered (e.g. carrying flowers to machines, charging stations, or a
+power network) so that it supports automation and stays readable.
+
+================================================================================
+5. THE LASER
+================================================================================
+
+By default, players can shoot a simple laser bolt that consumes battery. The
+battery recharges on its own with no resources needed, but takes extra time to
+recharge if it is fully depleted, so players should be careful not to overuse
+power. Show the battery meter on the HUD.
+
+================================================================================
+6. THE SYNTHESIZER, EARTH AND CREDITS
+================================================================================
+
+THE SYNTHESIZER turns materials into equipment, machines, domes, robots and body
+mods using recipes (blueprints). Players start with a set of basic recipes.
+
+EARTH: Players can sell excess minerals to Earth at the Comm. Terminal in exchange
+for credits. Credits buy animals, seeds, human workers, and blueprints for new
+synthesizer recipes. Decide what human workers do (e.g. they live in Bedroom or
+Apartment domes and boost a dome's output) and document it.
+
+================================================================================
+7. DOMES, FARMING, WATER AND PLANTS
+================================================================================
+
+DOMES: Domes are synthesized and then placed in the world. A dome can't touch
+another dome. A placed dome forms a breathable interior around the player.
+Dome types:
+  - Green Dome: needs lots of glass, iron, dirt, fertilizer and wood. Contains 4
+    planters for growing all sorts of crops, including battery flowers.
+  - Storage Dome: bulk storage.
+  - Bedroom Dome: housing for players and human workers.
+  - Kitchen Dome: turns crops into food.
+  - Dark Dome: for growing mushrooms and other darkness-related tasks.
+  - Dome Dome: slowly builds other domes without resources; it just takes time.
+  - Aqua Dome: for growing aquatic plants, farming marine life, etc.
+  - Apartment Dome: housing for the incoming colonists. A certain number is
+    required to win.
+  - Barn Dome: farm animals not included; they must be requested from Earth.
+  - Water Generator Dome: produces water (see below).
+Each dome needs a clear interior layout, its own look, and a short tooltip
+explaining what it does and what it needs.
+
+WATER DISTRIBUTION: Water can be sourced from lakes on the planet or produced with
+Water Generator Domes. Players build copper pipe networks to automate water for:
+drinking water, sprinkler systems inside Green Domes, and coolant systems for other
+machinery. Pipes show flow visually, and there is an overlay that shows networks,
+flow rates and problems.
+
+PLANT GENETICS: After saving up enough credits, players can buy a seed gene
+splicer, which splices the genes of any two plant seeds to create unique new
+plants. Spliced plants inherit traits from both parents (e.g. oxygen output,
+growth speed, yield, power output, light needs, water needs, appearance), so
+splicing creates genuinely new and useful plants, not just recolours. Design
+around 15-20 base species, a trait system, procedurally named and procedurally
+drawn hybrids, and a codex that records every plant the colony has discovered.
+
+FARMING: Planting, watering, fertilizing and harvesting crops, by hand at first
+and automated later with sprinklers and robots.
+
+================================================================================
+8. ROBOTS AND THE SENTENCE BUILDER
+================================================================================
+
+Robots are synthesized from iron, silicon and gold and are powered by battery
+flowers. They can be programmed to do tasks such as farming, harvesting,
+scavenging in certain areas, mining, carrying items between chests, and so on.
+
+PROGRAMMING: Robots are programmed with a sentence builder: players build plain
+sentences from drop-down word blocks instead of writing code. For example:
+  "WHEN [battery] is [below] [20%], [go to] [Charging Station 1]."
+  "[Harvest] [battery flowers] in [Green Dome 2], then [store] them in [Storage
+   Dome 1]."
+  "[Mine] [iron] in [area: marked on map] UNTIL [inventory] is [full], then
+   [return to] [Storage Dome 1]."
+  "IF [a predator] is [nearby], [flee to] [nearest dome]."
+A robot runs a short list of these sentences, with conditions, actions, targets
+and areas (areas are marked by dragging a box on the map). Show what a robot is
+doing and why (a speech bubble or status line), and highlight any sentence that
+can't run, with a reason. Robots are synced in multiplayer and keep working while
+players are elsewhere, as long as their chunks are simulated (decide how
+off-screen robots and domes keep producing; an idle-game style of simulated
+production for unloaded areas is fine).
+
+================================================================================
+9. BODY MODIFICATIONS
+================================================================================
+
+Body mods are synthesized, and Earth has loads of blueprints for new, cooler mods
+too. Every mod set has three tiers that are bought in order and get progressively
+cooler, plus a Legendary tier. Every tier must be visually reflected on the
+player's sprite with a high-quality sprite that matches the game's art style. Make
+sure all sprites are polished, not cut off, and animated when it makes sense.
+
+Example sets (implement these):
+
+  Rocket Feet
+    Tier I    Booster Thrust: double jump, with a cool rocket burst effect from the
+              feet on the second jump.
+    Tier II   Rocket Hover: hold after the second jump for about 2 seconds of rocket
+              thrust, for extra height and control.
+    Tier III  Rocket Flight: 5 seconds of flight per jump.
+    Legendary Perma-thrust: infinite flight.
+
+  Extendo-Arms
+    Tier I    Arm++: longer arms, extending your reach for every interaction.
+              Animate the arm extending when you reach.
+    Tier II   Arm++ Premium: an extra arm that automates nearby tasks of your
+              choice. It can mine nearby ore, water nearby plants, construct
+              nearby biodomes, etc. (configured with the same sentence builder as
+              robots, or a simple task picker).
+    Tier III  Arm++ Ultra: a second automated arm. Both arms get extra reach, and
+              so do you.
+    Legendary Armnipresence: a fully arm-tonomous bonus arm that flies freely and
+              is controlled from the map. Open the extended map view and click a
+              button to send the arm to do things anywhere on the revealed parts of
+              the map. It can dig and interact with chests, farms and so on.
+
+  Bolt Enhancements
+    Tier I    Overcharge: charge your shot for a bigger, higher-damage bolt that
+              uses more battery.
+    Tier II   Jack Up: your bolts deal more damage and are larger.
+    Tier III  Rug Pull: every shot fires two bolts, without using extra battery.
+    Legendary Straight Up Scammed: bolts use 80% less energy.
+
+Come up with 50 more mod sets and add them to the game, each with three tiers plus
+a Legendary tier, names in the same playful tone, and a visible change on the
+sprite at every tier. Cover a wide spread: movement, mining, combat, survival
+(oxygen, cold, toxins), farming, automation, building, scanning/mapping,
+logistics, and co-op support (mods that help teammates). Write all 53 sets in a
+design doc before implementing them. Mods should create interesting choices, so
+decide whether players can equip every mod at once or have a limited number of
+body slots (head, torso, arms, legs, back, etc.), and document it.
+
+================================================================================
+10. INVENTORY AND QUALITY OF LIFE
+================================================================================
+
+A full Terraria-style inventory system with lots of QoL features: hotbar,
+inventory grid, stack sizes, drag and drop, shift-click quick move between
+inventory and chests, sorting, quick stack to nearby chests, deposit-all,
+search/filter, item tooltips, trash slot, auto pickup with a magnet radius,
+favourite/lock items, and storage that synthesizers and robots can draw from.
+Also a map (with fog of war, markers for domes, robots, teammates and pins) and a
+codex for plants, creatures and recipes. All controls must be shown and rebindable
+in a Controls page in Settings, reachable from both the main menu and the pause
+menu.
+
+================================================================================
+11. ART, AUDIO, PROCESS AND MILESTONES
+================================================================================
+
+ART AND AUDIO: There are no assets on `main`. Generate all art and audio with
+scripts (the Python approach in `tools/` on `roguelike-prototype` is a good model),
+commit the output, and document it in the README. Everything must look polished
+and intentional: player sprite with suit and mod layers, animated plants, domes,
+machines, robots, creepy cave predators, UI in the plant-punk style, ambience
+(rain, wind, alien wildlife, dripping caves) and music that fits Rain World-like
+moodiness.
+
+PROCESS:
+  - Start with a design doc at `docs/terraforming-plan.md`: core loop and
+    progression curve, resource and recipe tables, all dome types, plant species
+    and trait rules, the robot sentence-builder grammar, all 53 mod sets, the
+    power and water systems, and the network design for syncing all of it. Keep
+    a progress log in it.
+  - Milestones, each committed and pushed when done, and each working in co-op
+    with at least two players:
+      1. World generation (surface, lakes, caves, ores), day/night and weather
+      2. Player, suit oxygen, starter dome, laser and battery, creatures
+      3. Inventory, chests, synthesizer, Comm. Terminal, credits
+      4. Domes and farming; battery flowers and power
+      5. Copper pipes and water
+      6. Atmosphere and oxygen generators; Colony Readiness and the win condition
+      7. Robots and the sentence builder
+      8. Gene splicer and plant genetics
+      9. Body mods: the 3 example sets, then the other 50
+      10. Art, animation, UI and audio polish
+      11. 8-player test, balancing and bug fixing
+  - Balance progression so a full game takes several hours for a small group and
+    feels good with anywhere from 1 to 8 players.
+  - `cargo build`, `cargo test --workspace` and `cargo clippy --workspace
+    --all-targets` must pass with no warnings. Run `cargo fmt`. Add tests for the
+    sim rules, recipes, plant genetics, the robot program interpreter, the save file
+    and the network protocol.
+  - Play-test multiplayer by running a host and several LAN clients on one machine.
+    Steam can't be tested with one account, so the Steam path must use the same
+    messages and code paths as LAN.
+  - Update README.md with how to play, the controls, multiplayer, and asset
+    generation.
+
+================================================================================
+12. FINISHING
+================================================================================
+
+When everything is done and pushed:
+  1. Change the first line of this file from `STATUS: NEW` to `STATUS: OLD`,
+     commit it, and push `planet-terraforming`.
+  2. Write a summary of what was built, how to test it (solo and co-op), what is
+     rough or missing, and what you'd do next.
