@@ -13,6 +13,8 @@
 //! * `--credits <n>` sets the colony's credits.
 //! * `--open <inventory|chest|synth|terminal>` walks the player to that
 //!   fixture in the starter dome and opens its window.
+//! * `--overlay <water|power|both>` starts with overlays on; `--ship <secs>`
+//!   starts with the colony ship that many seconds into its descent.
 //! * `--setup <farm>` builds a demo base beside the starter dome (domes with
 //!   crops at every stage, a pylon) and puts the player in it.
 //!
@@ -94,7 +96,15 @@ impl Plugin for DevPlugin {
 }
 
 /// Applies the flags that change a freshly started world (hosts only).
-fn apply_world_flags(mut session: ResMut<Session>, mut panels: ResMut<crate::panels::Panels>) {
+fn apply_world_flags(
+    mut session: ResMut<Session>,
+    mut panels: ResMut<crate::panels::Panels>,
+    mut overlays: ResMut<crate::overlays::Overlays>,
+) {
+    if let Some(o) = arg_value("--overlay") {
+        overlays.water = o != "power";
+        overlays.power = o != "water";
+    }
     if !session.is_authority() {
         return;
     }
@@ -161,6 +171,9 @@ fn apply_world_flags(mut session: ResMut<Session>, mut panels: ResMut<crate::pan
             p.warp += 1;
             panels.open = Some(open);
         }
+    }
+    if let Some(t) = arg_value("--ship").and_then(|s| s.parse::<f32>().ok()) {
+        colony.ship = sbct_sim::colony::readiness::Ship::Landing(t);
     }
     if arg_value("--setup").as_deref() == Some("farm")
         && let Some(world) = world.as_mut()
@@ -242,6 +255,21 @@ fn setup_farm(
             let mut pylon = Machine::new(MachineKind::Pylon, "Charging Pylon 1".into());
             pylon.inv.add(Item::Crop(0), 6, 1.0);
             colony.spawn(v2(x - 6.0, ground as f32), EntKind::Machine(pylon));
+            // A buried main with a full tank at its head feeds every dome.
+            use sbct_sim::colony::water::{run, tile_of};
+            let from = tile_of(v2(home.x + 120.0, ground as f32 + 10.0));
+            for t in run(from, (from.0 + 95, from.1)) {
+                colony.pipes.insert(t);
+            }
+            let mut tank = Machine::new(MachineKind::Tank, "Water Tank 1".into());
+            tank.store = 400.0;
+            let tank_ground =
+                sbct_sim::colony::build::ground_below(world, home.x as i32 + 124, home.y as i32 - 60, 140)
+                    .unwrap_or(ground);
+            colony.spawn(v2(home.x + 124.0, tank_ground as f32), EntKind::Machine(tank));
+            for t in run(from, (from.0, tile_of(v2(0.0, tank_ground as f32)).1)) {
+                colony.pipes.insert(t);
+            }
         }
     }
     if let (Some((id, pos)), Some(p)) = (first, colony.players.get_mut(&me)) {

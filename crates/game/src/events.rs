@@ -185,6 +185,16 @@ pub fn present_events(
                     Fx::FlowerPop => {
                         sfx.write(Sfx::at("flower_pop", at).volume(0.7));
                     }
+                    Fx::PipePlace => {
+                        sfx.write(Sfx::at("pipe_place", at));
+                    }
+                    Fx::TargetMet => {
+                        sfx.write(Sfx::ui("fanfare_ready"));
+                    }
+                    Fx::AllMet => {
+                        sfx.write(Sfx::ui("readiness_all"));
+                    }
+                    Fx::ShipCalled | Fx::ShipLand => {}
                     Fx::Dawn => {
                         sfx.write(Sfx::ui("day_start"));
                     }

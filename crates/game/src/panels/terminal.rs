@@ -66,6 +66,7 @@ pub fn window(
                         (TerminalTab::Buy, "Order goods"),
                         (TerminalTab::Blueprints, "Blueprints"),
                         (TerminalTab::Workers, "Workers"),
+                        (TerminalTab::Colony, "Colony"),
                     ] {
                         ui.selectable_value(&mut panels.terminal_tab, tab, label);
                     }
@@ -78,6 +79,7 @@ pub fn window(
                         TerminalTab::Buy => buy(ui, icons, colony, acts),
                         TerminalTab::Blueprints => blueprints(ui, icons, colony, acts),
                         TerminalTab::Workers => workers(ui, icons, colony, acts),
+                        TerminalTab::Colony => readiness(ui, icons, colony, acts),
                     });
             });
         });
@@ -293,5 +295,81 @@ fn workers(ui: &mut egui::Ui, icons: &UiIcons, colony: &Colony, acts: &mut Vec<A
                     });
             });
         });
+    }
+}
+
+fn readiness(ui: &mut egui::Ui, icons: &UiIcons, colony: &Colony, acts: &mut Vec<Act>) {
+    use sbct_sim::colony::readiness::{COLONISTS_PER_APARTMENT, Readiness, Ship, TARGETS};
+    ui.label(
+        egui::RichText::new(
+            "Earth will send the colony ship when the planet can support its passengers: housing, air, food and water.",
+        )
+        .color(TEXT_DIM),
+    );
+    let r = colony.readiness;
+    let (values, targets, met) = (r.values(), TARGETS.values(), r.met());
+    let how = [
+        "Build Apartment Domes and give each power and water.",
+        "Grow plants in domes (Kelp Ribbon and Breathfern give the most) and run Oxygen Generators.",
+        "Cook Meals in Kitchen Domes; keep Barns and Aqua Domes producing.",
+        "Pumps and Water Generators must supply more than the colony uses.",
+    ];
+    for i in 0..4 {
+        row(ui, |ui| {
+            ui::icon(ui, icons, [56, 51, 55, 54][i], 24.0);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                ui.horizontal(|ui| {
+                    ui.label(Readiness::LABELS[i]);
+                    ui.label(
+                        egui::RichText::new(format!("{:.1} of {:.0}", values[i], targets[i]))
+                            .color(if met[i] { GOOD } else { WARN }),
+                    );
+                });
+                ui::meter(
+                    ui,
+                    values[i] / targets[i],
+                    if met[i] { GOOD } else { ACCENT },
+                    260.0,
+                );
+                if !met[i] {
+                    ui.label(egui::RichText::new(how[i]).color(TEXT_DIM));
+                }
+            });
+        });
+    }
+    ui.add_space(6.0);
+    match colony.ship {
+        Ship::Away => {
+            let ready = r.all_met();
+            ui.vertical_centered(|ui| {
+                if ui
+                    .add_enabled(
+                        ready,
+                        egui::Button::new(egui::RichText::new("Call the ship").size(24.0))
+                            .min_size(egui::vec2(260.0, 44.0)),
+                    )
+                    .on_disabled_hover_text("Every target must be met first.")
+                    .clicked()
+                {
+                    acts.push(Act::CallShip);
+                }
+                if ready {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} colonists are waiting in orbit.",
+                            r.apartments as u32 * COLONISTS_PER_APARTMENT
+                        ))
+                        .color(GOOD),
+                    );
+                }
+            });
+        }
+        Ship::Landing(_) => {
+            ui.label(egui::RichText::new("The ship is on its way down. Go outside and watch!").color(GOOD));
+        }
+        Ship::Landed(day) => {
+            ui.label(egui::RichText::new(format!("The colony was established on day {day}.")).color(GOOD));
+        }
     }
 }

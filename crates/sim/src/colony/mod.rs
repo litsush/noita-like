@@ -19,8 +19,10 @@ pub mod items;
 pub mod mods;
 pub mod plants;
 pub mod power;
+pub mod readiness;
 pub mod recipes;
 pub mod save;
+pub mod water;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -478,6 +480,12 @@ pub enum Fx {
     /// A new codex entry.
     Discover,
     FlowerPop,
+    PipePlace,
+    /// A readiness target was met for the first time.
+    TargetMet,
+    AllMet,
+    ShipCalled,
+    ShipLand,
     Dawn,
     Dusk,
     Thunder,
@@ -535,6 +543,8 @@ pub struct Globals {
     pub weather: Weather,
     pub atmosphere: Atmosphere,
     pub credits: i64,
+    pub readiness: readiness::Readiness,
+    pub ship: readiness::Ship,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -560,6 +570,15 @@ pub struct Colony {
     pub deliveries: Vec<economy::Delivery>,
     pub stats: Stats,
     pub codex: Codex,
+    /// The four readiness targets as last measured.
+    pub readiness: readiness::Readiness,
+    /// Targets already celebrated.
+    pub announced: [bool; 4],
+    pub ship: readiness::Ship,
+    /// Copper pipe, as tiles of 4×4 cells.
+    pub pipes: BTreeSet<water::Tile>,
+    #[serde(skip)]
+    pipe_changes: Vec<(water::Tile, bool)>,
     /// Bumped when species, blueprints or workers change; clients are sent
     /// the [`Meta`] section again.
     #[serde(skip)]
@@ -613,6 +632,11 @@ impl Colony {
             deliveries: Vec::new(),
             stats: Stats::default(),
             codex: Codex::default(),
+            readiness: readiness::Readiness::default(),
+            announced: [false; 4],
+            ship: readiness::Ship::Away,
+            pipes: BTreeSet::new(),
+            pipe_changes: Vec::new(),
             meta_rev: 1,
             rng: Rng::new(seed ^ 0xC0107),
             timers: Timers::default(),
@@ -855,6 +879,8 @@ impl Colony {
             weather: self.weather,
             atmosphere: self.atmosphere,
             credits: self.credits,
+            readiness: self.readiness,
+            ship: self.ship,
         }
     }
 
@@ -863,6 +889,8 @@ impl Colony {
         self.weather = g.weather;
         self.atmosphere = g.atmosphere;
         self.credits = g.credits;
+        self.readiness = g.readiness;
+        self.ship = g.ship;
     }
 
     /// Changed entities (as snapshots) and removed ids since the last call.
@@ -1388,7 +1416,9 @@ impl Colony {
         // The greener the air, the faster grass creeps over bare dirt.
         let t = ((self.atmosphere.o2 - O2_START) / (O2_BREATHABLE - O2_START)).clamp(0.0, 1.0);
         world.set_fertility((6.0 + t * 200.0) as u8);
+        self.step_water(1.0);
         self.step_production(world, 1.0);
+        self.step_readiness(1.0);
     }
 }
 

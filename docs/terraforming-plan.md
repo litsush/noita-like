@@ -463,3 +463,8 @@ Each milestone is committed and pushed, builds and runs, and works with at least
   - Kitchens, Dark Dome compost vats, Barns, Aqua Dome fish pools and Dome Domes all produce; workers boost output and harvest; workers eat from the stockpile each dawn.
   - Charging Pylons hold flowers, link into grids and power what is in range. Oxygen from plants and generators raises the atmosphere.
   - Beds set the spawn point; when everyone sleeps at night it becomes morning.
+- **Milestones 5 and 6 (pipes and water; atmosphere, readiness and the win):**
+  - Copper pipe is laid by dragging (and taken up with the other button). Pumps in lakes and Water Generator Domes feed networks; domes refill their reserves from them in priority order; tanks buffer; Oxygen Generators run faster with coolant.
+  - The Water overlay outlines each network in its own colour with supply, demand, surplus, dead ends and problems. The Power overlay shows pylon ranges, links, stored charge and what has no power.
+  - Oxygen from plants and generators raises the atmosphere; suits drain more slowly and come off at 16%; grass spreads as the air improves.
+  - The Colony Readiness bars are always on the HUD. With all four targets met, the ship is called from the Comm. Terminal: it descends, lands beside the starter dome, colonists walk out and the world carries on.

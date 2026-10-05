@@ -3,13 +3,16 @@ mod audio;
 mod avatars;
 mod controls;
 mod dev;
+mod ending;
 mod entities;
 mod events;
 mod fx;
 mod hud;
 mod lighting;
 mod menu;
+mod overlays;
 mod panels;
+mod pipes;
 mod placement;
 mod plantart;
 mod plants;
@@ -75,6 +78,8 @@ fn main() {
         .init_resource::<plants::PlantSprites>()
         .init_resource::<plantart::PlantArt>()
         .init_resource::<placement::Placement>()
+        .init_resource::<overlays::Overlays>()
+        .init_resource::<ending::Ending>()
         .add_systems(
             Startup,
             (assets::load_assets, render::spawn_camera, menu::setup_menu).chain(),
@@ -130,6 +135,7 @@ fn main() {
                 lighting::setup_lighting,
                 sky::spawn_sky,
                 placement::spawn_ghost,
+                pipes::setup_pipes,
             ),
         )
         .add_systems(
@@ -139,6 +145,8 @@ fn main() {
                 render::reset_particle_pool,
                 entities::reset_entities,
                 plants::reset_plants,
+                pipes::reset_pipes,
+                ending::reset_ending,
                 |mut commands: Commands| commands.remove_resource::<player::LocalPlayer>(),
             ),
         )
@@ -151,6 +159,8 @@ fn main() {
                     hud::ingame_steam_events,
                     panels::find_focus,
                     panels::interact,
+                    overlays::toggle_overlays,
+                    pipes::drag_pipes,
                     player::use_tools,
                     player::move_player,
                     session::send,
@@ -167,6 +177,9 @@ fn main() {
                     plants::sync_plants,
                     plants::animate_plants,
                     placement::update_ghost,
+                    pipes::sync_pipes,
+                    ending::update_ship,
+                    overlays::draw_overlay_shapes,
                     player::follow_camera,
                     render::upload_dirty_chunks,
                     render::draw_sim_particles,
@@ -182,7 +195,14 @@ fn main() {
         )
         .add_systems(
             EguiPrimaryContextPass,
-            (hud::hud_ui, panels::panels_ui).chain().run_if(playing()),
+            (
+                overlays::overlay_labels,
+                hud::hud_ui,
+                panels::panels_ui,
+                ending::ending_banner,
+            )
+                .chain()
+                .run_if(playing()),
         )
         .run();
 }

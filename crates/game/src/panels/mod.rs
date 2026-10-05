@@ -47,6 +47,7 @@ pub enum TerminalTab {
     Buy,
     Blueprints,
     Workers,
+    Colony,
 }
 
 /// Which windows are open over the game, and their transient state.

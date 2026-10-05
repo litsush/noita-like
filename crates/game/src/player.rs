@@ -382,7 +382,8 @@ pub fn use_tools(
         session.act(Act::Inv(InvOp::Select(slot as u8)));
         sfx.write(Sfx::ui("inv_move"));
     }
-    if typing || ui.0 {
+    // Pipe in hand: both buttons drag out runs instead (see `pipes.rs`).
+    if typing || ui.0 || held_item == Some(sbct_sim::colony::items::Item::Pipe) {
         return;
     }
     let center = v2(p.body.pos.x, p.body.pos.y - PLAYER_HEIGHT / 2.0);

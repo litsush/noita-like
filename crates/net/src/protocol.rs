@@ -9,7 +9,7 @@ use sbct_sim::colony::{
 };
 
 /// Bump whenever a message layout changes so mismatched builds refuse to connect.
-pub const PROTOCOL_VERSION: u32 = 21;
+pub const PROTOCOL_VERSION: u32 = 22;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum ClientMsg {
@@ -68,6 +68,8 @@ pub enum HostMsg {
     Globals(Globals),
     /// Species, blueprints and workers, whenever any of them change.
     Meta(Box<Meta>),
+    /// Pipe tiles laid (true) or taken up (false).
+    Pipes(Vec<((i32, i32), bool)>),
     Events(Vec<Event>),
 }
 

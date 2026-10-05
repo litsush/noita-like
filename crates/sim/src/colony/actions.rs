@@ -114,6 +114,14 @@ pub enum Action {
     },
     /// Lie down in a bed of the dome the player is in. Sets their spawn.
     Sleep,
+    /// Lay a run of copper pipe between two tiles, or take it up.
+    Pipe {
+        from: super::water::Tile,
+        to: super::water::Tile,
+        remove: bool,
+    },
+    /// Call the colony ship down. Needs every readiness target met.
+    CallShip,
 }
 
 type Outcome = Result<(), &'static str>;
@@ -143,6 +151,8 @@ impl Colony {
             Action::Dismantle { ent } => self.dismantle(world, key, ent),
             Action::Rename { ent, name } => self.rename(ent, &name),
             Action::Sleep => self.sleep(key),
+            Action::Pipe { from, to, remove } => self.lay_pipe(key, from, to, remove),
+            Action::CallShip => self.call_ship(key),
         }
     }
 

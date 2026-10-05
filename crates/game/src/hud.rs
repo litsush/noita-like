@@ -7,6 +7,7 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 use sbct_net::steam::SteamEvent;
 use sbct_sim::colony::items::Item;
+use sbct_sim::colony::readiness::{Ship, TARGETS};
 use sbct_sim::colony::{Colony, HOTBAR, PLAYER_HEIGHT, WeatherKind};
 
 use crate::controls::{Action, Rebind};
@@ -311,6 +312,48 @@ pub fn hud_ui(
                     ui::icon(ui, &icons, 50, 16.0);
                     ui.label(format!("{}", colony.credits));
                 });
+                // Colony Readiness: four small bars, always visible.
+                let r = colony.readiness;
+                let (values, targets, met) = (r.values(), TARGETS.values(), r.met());
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    let landed = matches!(colony.ship, Ship::Landed(_));
+                    for (i, icon) in [56, 51, 55, 54].into_iter().enumerate() {
+                        let detail = match i {
+                            0 => format!(
+                                "Apartment Domes with power and water: {:.0} of {:.0}",
+                                values[0], targets[0]
+                            ),
+                            1 => format!("Atmospheric oxygen: {:.2}% of {:.0}%", values[1], targets[1]),
+                            2 => format!(
+                                "Food made per day (Kitchens, Barns, Aqua Domes): {:.0} of {:.0}",
+                                values[2], targets[2]
+                            ),
+                            _ => format!(
+                                "Fresh water surplus across pipe networks: {:.0} of {:.0} L/day",
+                                values[3], targets[3]
+                            ),
+                        };
+                        ui::icon(ui, &icons, icon, 16.0).on_hover_text(&detail);
+                        let color = if met[i] { GOOD } else { ACCENT };
+                        ui.scope(|ui| ui::meter(ui, values[i] / targets[i], color, 70.0))
+                            .response
+                            .on_hover_text(detail);
+                        if met[i] {
+                            ui::icon(ui, &icons, 79, 12.0);
+                        }
+                        ui.add_space(4.0);
+                    }
+                    if landed {
+                        ui.label(egui::RichText::new("Colony established").color(GOOD));
+                    } else if r.all_met() {
+                        ui.label(egui::RichText::new("Ready: call the ship!").color(GOOD));
+                    }
+                })
+                .response
+                .on_hover_text(
+                    "Colony Readiness: meet all four targets, then call the ship from the Comm. Terminal.",
+                );
             });
         });
 
