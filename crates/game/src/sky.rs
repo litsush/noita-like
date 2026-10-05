@@ -42,7 +42,14 @@ pub struct CaveLayer {
 pub struct MistLayer {
     speed: f32,
     scale: f32,
+    /// 0 is the layer itself; 1–4 are thinner and thinner strips under it,
+    /// so the mist fades into the ground instead of ending on a line.
+    strip: u8,
 }
+
+/// Height in cells of each fading strip under the mist.
+const MIST_STRIP: f32 = 2.0;
+const MIST_STRIPS: u8 = 12;
 
 #[derive(Component)]
 pub struct RainDrop {
@@ -214,18 +221,20 @@ pub fn spawn_sky(
     }
 
     for (speed, scale) in [(5.0, 1.0), (-3.0, 1.7)] {
-        commands.spawn((
-            MistLayer { speed, scale },
-            InGameEntity,
-            Sprite {
-                image: assets.mist.clone(),
-                custom_size: Some(Vec2::ONE),
-                rect: Some(Rect::new(0.0, 0.0, 1.0, 1.0)),
-                color: Color::srgba(0.8, 0.9, 0.88, 0.0),
-                ..default()
-            },
-            Transform::from_xyz(0.0, 0.0, z::MIST),
-        ));
+        for strip in 0..=MIST_STRIPS {
+            commands.spawn((
+                MistLayer { speed, scale, strip },
+                InGameEntity,
+                Sprite {
+                    image: assets.mist.clone(),
+                    custom_size: Some(Vec2::ONE),
+                    rect: Some(Rect::new(0.0, 0.0, 1.0, 1.0)),
+                    color: Color::srgba(0.8, 0.9, 0.88, 0.0),
+                    ..default()
+                },
+                Transform::from_xyz(0.0, 0.0, z::MIST),
+            ));
+        }
     }
     for _ in 0..RAIN_DROPS {
         commands.spawn((
@@ -393,10 +402,20 @@ pub fn update_sky(
     let t = time.elapsed_secs();
     for (m, mut sprite, mut tf) in &mut mists {
         let alpha = state.mist * depth_fade * 0.5 + state.rain * depth_fade * 0.12;
-        sprite.color = Color::srgba(0.82, 0.92, 0.9, alpha);
-        // Mist hangs over the ground: the layer stops a little below the surface.
-        let top = cam.y - half.y;
-        let bottom = (cam.y + half.y).min(colony.profile.surface_at(cam.x as i32) as f32 + 26.0);
+        // Mist hangs over the ground: the layer stops a little below the
+        // surface and thins out over a few strips.
+        let floor = (cam.y + half.y).min(colony.profile.surface_at(cam.x as i32) as f32 + 12.0);
+        let (top, bottom, fade) = if m.strip == 0 {
+            (cam.y - half.y, floor, 1.0)
+        } else {
+            let top = floor + (m.strip - 1) as f32 * MIST_STRIP;
+            (
+                top,
+                top + MIST_STRIP,
+                1.0 - m.strip as f32 / (MIST_STRIPS + 1) as f32,
+            )
+        };
+        sprite.color = Color::srgba(0.82, 0.92, 0.9, alpha * fade);
         let size = Vec2::new(half.x * 2.0, (bottom - top).max(1.0));
         let u = (cam.x * 0.8 + t * m.speed).rem_euclid(256.0 * m.scale) / m.scale;
         let v = (top * 0.8).rem_euclid(256.0 * m.scale) / m.scale;

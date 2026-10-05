@@ -337,6 +337,7 @@ pub struct Vitals {
     pub suit: bool,
     pub in_dome: Option<Id>,
     pub can_water: f32,
+    pub gear: modfx::Gear,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -506,6 +507,7 @@ pub enum Fx {
     Discover,
     FlowerPop,
     Stomp,
+    ShieldHit,
     Teleport,
     Heal,
     Ping,
@@ -866,6 +868,7 @@ impl Colony {
             suit: p.suit,
             in_dome: p.in_dome,
             can_water: p.can_water,
+            gear: p.gear,
         })
     }
 
@@ -881,6 +884,7 @@ impl Colony {
             p.suit = v.suit;
             p.in_dome = v.in_dome;
             p.can_water = v.can_water;
+            p.gear = v.gear;
         }
     }
 
@@ -911,6 +915,12 @@ impl Colony {
             p.gear.shield -= soaked;
             p.gear.shield_wait = 5.0;
             amount -= soaked;
+            if soaked > 0.0 {
+                self.events.push(Event::Fx {
+                    fx: Fx::ShieldHit,
+                    pos,
+                });
+            }
         }
         p.hp -= amount;
         if amount >= 4.0 {

@@ -36,6 +36,7 @@ pub fn container_inv<'a>(
         }
         Container::Machine(id) | Container::Crate(id) => match &colony.ents.get(&id)?.kind {
             EntKind::Machine(m) => Some((&m.inv, m.name.clone())),
+            EntKind::Robot(r) => Some((&r.inv, format!("{}: cargo", r.name))),
             EntKind::Crate(c) => Some((
                 &c.inv,
                 match c.kind {
@@ -267,6 +268,23 @@ pub fn window(
                                 .desired_width(110.0)
                                 .hint_text("search"),
                         );
+                        // Mods that reach the base from anywhere.
+                        let stats = me.stats();
+                        if stats.remote_stockpile
+                            && ui.small_button("Stockpile").on_hover_text("Open the starter dome's chest").clicked()
+                        {
+                            panels.open = Some(super::Open::Container(Container::DomeChest(colony.home, 0)));
+                        }
+                        if stats.remote_synth
+                            && ui.small_button("Synth").on_hover_text("Synthesize from here").clicked()
+                        {
+                            panels.open = Some(super::Open::Synth);
+                        }
+                        if stats.remote_terminal
+                            && ui.small_button("Earth").on_hover_text("Trade with Earth from here").clicked()
+                        {
+                            panels.open = Some(super::Open::Terminal);
+                        }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.small_button("x").on_hover_text("Close").clicked() {
                                 *close = true;

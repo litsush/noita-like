@@ -188,6 +188,7 @@ pub fn hud_ui(
     placement: Res<crate::placement::Placement>,
     camera: Single<(&Camera, &GlobalTransform), With<WorldCamera>>,
     time: Res<Time<Real>>,
+    local: Option<Res<crate::player::LocalPlayer>>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     let Some(icons) = icons else { return Ok(()) };
@@ -229,7 +230,7 @@ pub fn hud_ui(
                 let bar = egui::Rect::from_center_size(at + egui::vec2(0.0, 3.0), egui::vec2(30.0, 3.0));
                 painter.rect_filled(bar, 0.0, egui::Color32::from_black_alpha(160));
                 let mut fill = bar;
-                fill.set_width(bar.width() * (p.hp / 100.0).clamp(0.0, 1.0));
+                fill.set_width(bar.width() * (p.hp / p.stats().max_hp).clamp(0.0, 1.0));
                 painter.rect_filled(fill, 0.0, if p.alive() { GOOD } else { DANGER });
             }
         }
@@ -250,6 +251,16 @@ pub fn hud_ui(
                 vitals_row(ui, &icons, 51, me.o2, stats.o2_capacity, o2_color);
                 let battery_color = if me.lockout { DANGER } else { ui::POWER };
                 vitals_row(ui, &icons, 52, me.battery, stats.battery_capacity, battery_color);
+                if stats.shield > 0.0 {
+                    vitals_row(
+                        ui,
+                        &icons,
+                        52,
+                        me.gear.shield,
+                        stats.shield,
+                        egui::Color32::from_rgb(120, 200, 255),
+                    );
+                }
                 if me.warmth < 99.0 {
                     vitals_row(
                         ui,
@@ -271,8 +282,37 @@ pub fn hud_ui(
                 if me.lockout {
                     ui.label(egui::RichText::new("Laser drained: recharging").color(DANGER));
                 }
-                if me.slowed > 0.0 {
+                if me.slowed > 0.0 && !stats.web_immune {
                     ui.label(egui::RichText::new("Webbed").color(WARN));
+                }
+                // Movement mods: what is ready.
+                if let Some(local) = &local {
+                    if stats.dashes > 0 {
+                        let ready = local.dash_charges.floor() as u8;
+                        let pips: String = (0..stats.dashes)
+                            .map(|i| if i < ready { "■" } else { "□" })
+                            .collect();
+                        ui.label(egui::RichText::new(format!("Dash {pips}")).color(TEXT_DIM));
+                    }
+                    if stats.thrust_secs.is_finite() && stats.thrust_secs > 0.0 && local.thrust_left > 0.0 {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Thrust").color(TEXT_DIM));
+                            ui::meter(ui, local.thrust_left / stats.thrust_secs, WARN, 100.0);
+                        });
+                    }
+                }
+                let wait = |label: &str, secs: f32| {
+                    (secs > 0.0).then(|| format!("{label} {}:{:02}", secs as u32 / 60, secs as u32 % 60))
+                };
+                for text in [
+                    wait("Beacon", me.gear.recall_wait),
+                    wait("Rain dance", me.gear.rain_wait),
+                    wait("Green fingers", me.gear.tickle_wait),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    ui.label(egui::RichText::new(text).color(TEXT_DIM));
                 }
             });
         });
@@ -293,6 +333,15 @@ pub fn hud_ui(
                         ((hour.fract()) * 60.0) as u32 / 10 * 10
                     ));
                     ui::icon(ui, &icons, weather_icon(colony.weather.kind), 16.0);
+                    // Weather Vane: what is coming, and when.
+                    if stats.forecast {
+                        let secs = colony.weather.remaining.max(0.0) as u32;
+                        ui.label(
+                            egui::RichText::new(format!("{}:{:02}", secs / 60, secs % 60)).color(TEXT_DIM),
+                        )
+                        .on_hover_text("Forecast: time until the weather changes, and what comes next");
+                        ui::icon(ui, &icons, weather_icon(colony.weather.next), 16.0);
+                    }
                     ui.add_space(8.0);
                     ui::icon(ui, &icons, 51, 16.0);
                     let rate = colony.atmosphere.rate;

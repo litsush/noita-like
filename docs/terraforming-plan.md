@@ -318,18 +318,18 @@ There are 53 mod sets. Each has tiers I–III, bought in order, plus a Legendary
 | **Spring Heels** | Bounce: +30% jump height | Boing: +60%; landing on a creature hurts it | Kangaroo Court: hold down to charge a triple-height jump | Moon Rules: low gravity all the time |
 | **Hustle Treads** | Brisk Walk: +20% speed | Jog Protocol: +40% | Zoomies: +60% | Late For Work: double speed and you run across water |
 | **Aqua Flippers** | Doggy Paddle+: swim 50% faster | Dolphin Kick: swim twice as fast | Torpedo: triple swim speed; water costs no extra oxygen | Certified Fish: breathe underwater |
-| **Stompers** | Heavy Landing: landing from a height digs a small crater | Crater Maker: bigger crater, hurts creatures | Seismic Drop: press down in the air to ground-pound | Tectonic Plates: huge ground-pound that stuns everything nearby |
+| **Stompers** | Heavy Landing: landing from a height digs a small crater | Crater Maker: bigger crater, hurts creatures | Seismic Drop: press down in the air to ground-pound | Tectonic Plates: huge ground-pound that leaves everything nearby reeling at half speed |
 
 ### Legs
 
 | Set | I | II | III | Legendary |
 |---|---|---|---|---|
 | **Dash Pistons** | Sidestep: short dash | Double Dash: two charges | Phase Dash: dash through creatures unharmed | Blink And You Miss Me: dash passes through thin walls |
-| **Cargo Pants** | Deep Pockets: +10 inventory slots | Deeper Pockets: +20 | Pocket Dimension: +30 | Bag Of Holding My Beer: open the colony stockpile from anywhere |
-| **Thermal Leggings** | Warm Knees: cold drains 50% slower | Toasty: immune to cold | Space Heater: warms teammates nearby | Walking Summer: plants near you ignore night and cold |
+| **Cargo Pants** | Deep Pockets: +10 inventory slots | Deeper Pockets: +20 | Pocket Dimension: +30 | Bag Of Holding My Beer: synthesize from, and open, the colony stockpile from anywhere |
+| **Thermal Leggings** | Warm Knees: cold drains 50% slower | Toasty: immune to cold | Space Heater: warms teammates nearby | Walking Summer: plants near you keep growing through night and cold |
 | **Root Walkers** | Green Stride: grass grows where you walk | Seed Trail: planters you pass are replanted from your seeds | Harvest Stride: plants you pass are harvested | Johnny Applesprint: plants you pass are harvested, replanted and watered |
-| **Shock Absorbers** | Brace: take 15% less damage | Brace Harder: 30% less, no knockback | Braced For Impact: 45% less | Unbothered: 60% less; immune while standing still |
-| **Jackhammer Knees** | Kneel Drill: hold down to dig beneath you | Power Squat: digs twice as fast | Free Fall Drill: keeps digging while you fall | Elevator Going Down: plunges at full speed and collects everything |
+| **Shock Absorbers** | Brace: take 15% less damage | Brace Harder: 30% less, shrug off webs | Braced For Impact: 45% less | Unbothered: 60% less; immune while standing still |
+| **Jackhammer Knees** | Kneel Drill: hold down to dig beneath you | Power Squat: digs twice as fast | Free Fall Drill: keeps digging while you fall | Elevator Going Down: drills twice as deep per stroke |
 
 ### Back
 
@@ -342,7 +342,7 @@ There are 53 mod sets. Each has tiers I–III, bought in order, plus a Legendary
 | **Sprinkler Pack** | Mist Me: waters plants close to you | Drizzle: wider | Monsoon: wider, and plants grow 25% faster | Personal Raincloud: a cloud follows you; plants under it grow twice as fast |
 | **Pack Mule Frame** | Lint Roller: pickup radius ×2 | Vacuum: ×3 | Hoover Dam: ×5, quick-stacks when you enter a dome | Everything Comes To Me: pickup across the screen, through walls |
 | **Drone Dock** | Buddy: a drone follows and picks up drops | Buddy Pro: it also mines ore near you | Buddy Squad: two drones | Union Busted: four drones |
-| **Beacon Rack** | Ping: drop a waypoint all teammates see | Recall: teleport home (cooldown) | Rally: teammates can teleport to you | Group Chat: teleport to any teammate or dome |
+| **Beacon Rack** | Ping: drop a waypoint all teammates see | Recall: teleport home from the map (cooldown) | Rally: teammates can teleport to you | Group Chat: teleport to any teammate or dome |
 
 ### Torso
 
@@ -351,22 +351,22 @@ There are 53 mod sets. Each has tiers I–III, bought in order, plus a Legendary
 | **Plating** | Tin Vest: +25 health | Steel Hoodie: +50 | Titanium Turtleneck: +100 | Legally A Tank: +200; attackers take damage |
 | **Filter Lungs** | Sniff Test: spore gas hurts 50% less | Nose Plugs: immune to spore gas | Clean Air Act: clears gas around you | Breathes In Menacingly: gas you clear becomes oxygen for the planet |
 | **Medi-Core** | Self-Care: slow health regeneration anywhere | Group Hug: heals teammates nearby | Defib: revives downed teammates nearby | HMO Premium Plus: the whole team regenerates anywhere |
-| **Reactor Heart** | Pocket Reactor: slowly charges pylons near you | Walking Outlet: you power machines near you | Grid Daddy: larger radius | I Am The Power Plant: domes near you need no power |
-| **Camo Skin** | Beige Mode: predators notice you from half as far | Ghosting: unseen while standing still | Left On Read: predators ignore you unless attacked | Do Not Disturb: predators flee from you |
-| **Synth Belly** | Snack Crafting: synthesize start recipes anywhere | Bulk Order: recipes cost 15% less | Supply Chain: 30% less, drawing on the stockpile from anywhere | Free Shipping: half your crafts come out doubled |
+| **Reactor Heart** | Pocket Reactor: slowly charges pylons near you | Walking Outlet: you power machines near you | Grid Daddy: larger radius | I Am The Power Plant: a base-sized radius |
+| **Camo Skin** | Beige Mode: predators notice you from half as far | Ghosting: unseen while standing still | Left On Read: predators ignore you | Do Not Disturb: predators flee from you |
+| **Synth Belly** | Snack Crafting: synthesize anywhere | Bulk Order: recipes cost 15% less | Supply Chain: 30% less, drawing on the stockpile from anywhere | Free Shipping: half your crafts come out doubled |
 | **Buddy Breather** | Share Air: teammates near you drain oxygen 50% slower | Air Supply: they don't drain at all | Lung Lease: you refill their tanks | Atmosphere Subscription: you count as a dome; air around you is breathable |
 
 ### Head
 
 | Set | I | II | III | Legendary |
 |---|---|---|---|---|
-| **Antenna Array** | Bars: map reveals 50% further | Full Bars: caves near you appear on the map | 5G: ore veins appear on the map | Satellite Uplink: the whole map is revealed |
+| **Antenna Array** | Bars: map reveals 50% further | Full Bars: the map reveals twice as far | 5G: ore veins appear on the map | Satellite Uplink: the whole map is revealed |
 | **Trade Chip** | Haggle: sell for 10% more | Hard Bargain: 20% | Remote Work: 35%, and sell from anywhere | Insider Trading: 75% more |
-| **Hive Mind** | Middle Manager: robots near you work 25% faster | Micromanager: 50%; edit programs from anywhere | Synergy: 100% | Hostile Takeover: every robot works twice as fast and uses no power |
+| **Hive Mind** | Middle Manager: robots near you work 25% faster | Micromanager: 50%; edit programs from the map | Synergy: 100% | Hostile Takeover: every robot works twice as fast and uses no power |
 | **Botanist's Bonnet** | Green Thumb: +25% yield harvesting by hand | Greener Thumb: +50%; see plant genes on hover | Greenest Thumb: double yield, extra seeds | Photosynthesis Hat: hybrids you splice get +1 to every gene |
-| **Headlamp** | Flashlight: a cone of light | High Beams: wider and longer | Floodlight: lights the whole screen | Second Sun: light-loving plants grow near you even in caves |
+| **Headlamp** | Flashlight: a cone of light | High Beams: wider and longer | Floodlight: lights the whole screen | Second Sun: plants near you grow faster, even in caves |
 | **Dome Brain** | Blueprint Memory: dome kits cost 10% less | Efficient Layouts: 20% | Arcology: 30%; Dome Domes near you build twice as fast | Big Dome Energy: domes you place produce 25% more |
-| **Weather Vane** | Forecast: see the coming weather | Rain Dance: call rain (long cooldown) | Storm Chaser: you move and recharge faster in rain | Cloud Computing: it always drizzles on your domes; Water Generators +50% |
+| **Weather Vane** | Forecast: see the coming weather | Rain Dance: call rain (long cooldown) | Storm Chaser: you move and recharge faster in rain | Cloud Computing: it always drizzles on the colony, topping up every dome's water |
 
 ### Eyes
 
@@ -376,19 +376,19 @@ There are 53 mod sets. Each has tiers I–III, bought in order, plus a Legendary
 | **Night Vision** | Carrot Diet: darkness is less dark | Cat Mode: much less | Owl Mode: nearly bright | Dark Mode Disabled: nothing is ever dark |
 | **Threat Lens** | Lucky Shot: 10% of bolts crit for double | Weak Points: 20%; see creature health | Bullseye: 30%; crits triple | Aimbot (Legal): bolts curve toward predators |
 | **Appraisal Monocle** | Finder's Fee: creatures drop 25% more | Good Eye: 50% | Connoisseur: rare drops appear | Loot Goblin: double drops |
-| **Zoom Goggles** | Step Back: see 15% further | Wide Angle: 30% | Panorama: 50% | Eagle Eye: detach the camera to scout |
-| **Geo Visor** | Long Reach Planning: place things 50% further away | Site Survey: valid dome sites are outlined | Remote Build: place from three times as far | Sim City Mode: place domes from the map |
+| **Zoom Goggles** | Step Back: see 15% further | Wide Angle: 30% | Panorama: 50% | Eagle Eye: hold the scout key to send the camera off toward the cursor |
+| **Geo Visor** | Long Reach Planning: place things 50% further away | Site Survey: spots where the held dome kit fits are marked | Remote Build: place from three times as far | Sim City Mode: place anywhere you can see |
 
 ### Arms
 
 | Set | I | II | III | Legendary |
 |---|---|---|---|---|
-| **Extendo-Arms** | Arm++: longer reach for everything | Arm++ Premium: an extra arm that does a nearby task of your choice | Arm++ Ultra: a second automated arm; more reach | Armnipresence: a free-flying arm sent anywhere on the revealed map |
+| **Extendo-Arms** | Arm++: longer reach for everything | Arm++ Premium: an extra arm that does a nearby task of your choice | Arm++ Ultra: a second automated arm; more reach | Armnipresence: a free-flying arm sent from the map to any explored spot, where it mines, harvests, waters and collects for you |
 | **Drill Arms** | Dig Dug: dig 30% faster | Bore Dom: 60%, wider | Tunnel Vision: twice as fast, wider still | Mine Craft: rock vaporizes instantly |
 | **Power Lifters** | Lift With Your Legs: stacks hold 50% more | Two Trips: double | One Trip: triple | Do You Even Lift: ten times |
-| **Shield Arm** | Parry: a shield absorbs 20 damage, then recharges | Bubble: 40 | Deflector: 70, and reflects webs | Force Field Trip: covers teammates near you |
+| **Shield Arm** | Parry: a shield absorbs 20 damage, then recharges | Bubble: 40 | Deflector: 70, and shrugs off webs | Force Field Trip: teammates near you take half damage |
 | **Farm Hands** | Quick Pick: harvest a whole dome at once | Quick Plant: plant a whole dome at once | Quick Everything: also waters and fertilizes | Agricultural Revolution: works on every dome in view |
-| **Welder Arms** | Tack Weld: pipes go twice as far per item | Pipe Dream: four times | Hot Swap: dismantling refunds everything | Unionized: machines you place run 25% faster |
+| **Welder Arms** | Tack Weld: pipes go twice as far per item | Pipe Dream: four times | Hot Swap: dismantling puts the contents straight into your pack | Unionized: machines you place run 25% faster |
 
 ### Hands
 
@@ -397,9 +397,9 @@ There are 53 mod sets. Each has tiers I–III, bought in order, plus a Legendary
 | **Bolt Enhancements** | Overcharge: hold to charge a bigger, stronger bolt that uses more battery | Jack Up: bolts are larger and hit harder | Rug Pull: every shot fires two bolts for the price of one | Straight Up Scammed: bolts use 80% less energy |
 | **Midas Mitts** | Sticky Fingers: +15% ore from digging | Gold Digger: +30% | Fool's Gold: +50%; stone sometimes yields gold | Everything I Touch: stone sometimes yields any ore |
 | **Cryo Palms** | Chill Pill: bolts slow creatures | Brain Freeze: bolts freeze water into ice | Ice Age: frozen creatures shatter for extra damage | Absolute Zero Chill: a freezing aura around you |
-| **Boom Mitts** | Pop: bolts burst on impact, digging a little | Bang: bigger bursts | Kaboom: bigger still, and sets things alight | Controlled Demolition: huge bursts that never hurt you or teammates |
+| **Boom Mitts** | Pop: bolts burst on impact, digging a little | Bang: bigger bursts | Kaboom: bigger still, and sets things alight | Controlled Demolition: huge bursts |
 | **Green Fingers** | Tickle: touch a plant to advance its growth (cooldown) | Poke: shorter cooldown | Coax: touched plants mature at once | Miracle Grow: plants near you grow three times as fast |
-| **Grapple Glove** | Yoink: fire a short grapple line and pull yourself in | Long Yoink: longer; pulls drops and creatures to you | Swing State: swing on the line | Spider, Man: unlimited range |
+| **Grapple Glove** | Yoink: fire a short grapple line and pull yourself in | Long Yoink: longer; pulls drops to you | Swing State: keep your momentum when you let go | Spider, Man: unlimited range |
 | **Healing Hands** | High Five: touch a teammate to heal them | Fist Bump: revive downed teammates quickly | Finger Guns: a healing beam at range | Thoughts And Prayers (Effective): heal the whole team from anywhere |
 
 ### On the sprite
@@ -476,3 +476,19 @@ Each milestone is committed and pushed, builds and runs, and works with at least
   - The Gene Splicer window previews the hybrid of any two seeds before it is made; the Codex (C) lists plants with genes and parents, creatures and recipes.
   - Body mods: all 53 sets with four tiers each as data (`mods.rs`), feeding one `ModStats` that the rules and the client read. Tiers are synthesized at a Synthesizer or the Mod Bay; sets are swapped at the Mod Bay; attachments show on every player's sprite.
   - Changes from the table above made while building: Antenna Array II reveals twice as far (rather than "caves appear"); Reactor Heart IV is a base-sized radius; Camo Skin III is "predators ignore you"; Welder Arms III puts a dismantled building's contents straight into the pack; Geo Visor II explains what is wrong with a site and IV places anywhere on screen; Armnipresence's free arm is sent from the map and mines, harvests, waters and collects where it is, delivering to its owner.
+- **Milestone 10 (polish):**
+  - Decorative foliage (grass, ferns, reeds, hanging vines, cave fungi and deep coral) is dressed onto whatever terrain is on screen from a hash of the seed, sways, and vanishes when its ground is dug.
+  - Mist fades into the ground; the ending banner sits clear of the ship; a tank-fed water network says so instead of "no source".
+  - What mods look like beyond the sprite: drones circling their owner, the free arm flying out, the raincloud, the grapple line, the telescoping Extendo-Arm, headlamp beams, night vision, X-ray sparkle and creature markers, creature health bars, plant genes under the cursor, dome-site ticks, and HUD meters for shield, thrust, dash and cooldowns.
+- **Milestone 11 (8 players, balance, fixes):**
+  - A host and seven LAN clients on one machine: all eight in the roster on every client, same clock and weather, host at 60 fps.
+  - Teammates' mods are replicated as (set, tier) per slot, so every client works out the same stats for them (healing, rallying, shields, map markers).
+  - Robots, drones and arms keep working wherever they are: the host runs every robot every tick regardless of where players stand, and domes and machines produce once a second everywhere.
+  - Scripted key presses (`--press`) and `--mods` were added to the dev flags so movement mods can be exercised unattended.
+
+### Known gaps
+
+- Movement mods (wall climbing, gliding, grapple, dash through walls, ground-pound) were exercised by scripted runs for crashes and by eye in a few cases, not play-tested for feel.
+- Audio was generated and wired to events but never listened to by a person.
+- A few Legendary effects are simpler than their names promise; the table above describes what is implemented.
+- Steam uses the same messages as LAN but could not be tested with one account.

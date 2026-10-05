@@ -595,6 +595,16 @@ impl Session {
                     if public.key != self.me {
                         p.suit = public.suit;
                         p.dead = public.dead.then_some(0.0);
+                        // What they wear, so their stats can be worked out here too.
+                        p.mods.clear();
+                        p.equipped = [None; 8];
+                        for (slot, m) in public.mods.iter().enumerate() {
+                            if let Some((set, tier)) = m {
+                                p.mods.insert(*set, *tier);
+                                p.equipped[slot] = Some(*set);
+                            }
+                        }
+                        p.gear.free_arm = public.arm;
                     }
                     self.roster.insert(public.key, public);
                 }
@@ -608,8 +618,9 @@ impl Session {
                     }
                     if let Some(p) = colony.players.get_mut(&u.key) {
                         p.pose = u.pose;
-                        p.hp = u.hp as f32 / 255.0 * 100.0;
-                        p.o2 = u.o2 as f32 / 255.0 * 100.0;
+                        let s = p.stats();
+                        p.hp = u.hp as f32 / 255.0 * s.max_hp;
+                        p.o2 = u.o2 as f32 / 255.0 * s.o2_capacity;
                     }
                 }
             }

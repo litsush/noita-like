@@ -253,11 +253,16 @@ pub fn update_lighting(
     }
 
     // Write the overlay. The ambient floor depends on how deep the camera is.
-    let amb = match colony.profile.band(cam.x as i32, cam.y as i32) {
+    let amb: f32 = match colony.profile.band(cam.x as i32, cam.y as i32) {
         Band::Sky | Band::Shallows => 0.07,
         Band::Deeps => 0.035,
         Band::Abyss => 0.045,
     };
+    // Night Vision lifts the darkness; a Floodlight washes the screen.
+    let stats = session.player().map(|p| p.stats()).unwrap_or_default();
+    let amb = amb
+        .max(stats.night_vision * 0.9)
+        .max(if stats.headlamp >= 3 { 0.7 } else { 0.0 });
     let Some(mut image) = images.get_mut(&map.image) else {
         return;
     };

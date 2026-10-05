@@ -263,7 +263,7 @@ pub fn ending_banner(mut contexts: EguiContexts, session: Res<Session>, ending: 
     };
     let fade = ((since - 1.0) / 1.5).clamp(0.0, 1.0) * ((16.0 - since) / 2.0).clamp(0.0, 1.0);
     egui::Area::new("ending".into())
-        .anchor(egui::Align2::CENTER_TOP, [0.0, 90.0])
+        .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -110.0])
         .interactable(false)
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {

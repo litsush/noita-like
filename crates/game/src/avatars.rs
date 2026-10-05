@@ -35,7 +35,17 @@ pub enum Layer {
 
 /// The multitool's beam for a player who is digging.
 #[derive(Component)]
-pub struct DigBeam(PlayerKey);
+pub struct DigBeam {
+    key: PlayerKey,
+    /// 0–1: how far an Extendo-Arm has stretched toward its target.
+    ext: f32,
+    /// Where it last reached, so it can be seen drawing back.
+    last: Vec2,
+}
+
+/// Body slot and set of the Extendo-Arms.
+const ARMS_SLOT: usize = 4;
+const EXTENDO_ARMS: u8 = 40;
 
 fn team(color: u8) -> Color {
     let [r, g, b] = TEAM[color as usize % TEAM.len()];
@@ -57,7 +67,7 @@ pub fn sync_avatars(
         }
     }
     for (entity, beam) in &beams {
-        if !roster.iter().any(|p| p.key == beam.0) {
+        if !roster.iter().any(|p| p.key == beam.key) {
             commands.entity(entity).despawn();
         }
     }
@@ -107,7 +117,11 @@ pub fn sync_avatars(
                 }
             });
         commands.spawn((
-            DigBeam(public.key),
+            DigBeam {
+                key: public.key,
+                ext: 0.0,
+                last: Vec2::ZERO,
+            },
             InGameEntity,
             Sprite::from_color(Color::srgba(0.5, 1.0, 0.9, 0.8), Vec2::new(1.0, 1.5)),
             Transform::from_xyz(0.0, 0.0, z::BOLTS),
@@ -124,7 +138,7 @@ pub fn animate_avatars(
     mut avatars: Query<(&mut Avatar, &mut Transform, &Children), Without<Layer>>,
     mut layers: Query<(&Layer, &mut Sprite, &mut Transform, &mut Visibility), Without<Avatar>>,
     mut beams: Query<
-        (&DigBeam, &mut Sprite, &mut Transform, &mut Visibility),
+        (&mut DigBeam, &mut Sprite, &mut Transform, &mut Visibility),
         (Without<Avatar>, Without<Layer>),
     >,
 ) {
@@ -217,14 +231,14 @@ pub fn animate_avatars(
     }
 
     // Dig beams: from the hand to where the tool bites.
-    for (beam, mut sprite, mut tf, mut vis) in &mut beams {
-        let Some(player) = colony.players.get(&beam.0) else {
+    for (mut beam, mut sprite, mut tf, mut vis) in &mut beams {
+        let Some(player) = colony.players.get(&beam.key) else {
             *vis = Visibility::Hidden;
             continue;
         };
         let pose = player.pose;
         let from = hand_pos(pose.pos, pose.facing, pose.aim);
-        let to = if beam.0 == session.me {
+        let to = if beam.key == session.me {
             local.digging
         } else if pose.flags & pose_flag::TOOL != 0 {
             // We only know the aim: march along it to the first solid cell.
@@ -244,6 +258,34 @@ pub fn animate_avatars(
         } else {
             None
         };
+        let extendo = roster
+            .get(&beam.key)
+            .is_some_and(|p| matches!(p.mods[ARMS_SLOT], Some((EXTENDO_ARMS, _))));
+        if extendo {
+            // The arm shoots out to where it works and draws back after.
+            if let Some(to) = to {
+                beam.last = Vec2::new(to.x, to.y);
+                beam.ext = (beam.ext + dt * 9.0).min(1.0);
+            } else {
+                beam.ext = (beam.ext - dt * 7.0).max(0.0);
+            }
+            if beam.ext <= 0.0 {
+                *vis = Visibility::Hidden;
+                continue;
+            }
+            let shoulder = Vec2::new(pose.pos.x + pose.facing as f32 * 2.0, pose.pos.y - 14.0);
+            let tip = shoulder.lerp(beam.last, beam.ext);
+            let (a, b) = (Vec2::new(shoulder.x, -shoulder.y), Vec2::new(tip.x, -tip.y));
+            let d = b - a;
+            *vis = Visibility::Visible;
+            sprite.custom_size = Some(Vec2::new(d.length().max(1.0), 2.0));
+            // Banded like a telescoping arm.
+            let band = 0.72 + 0.1 * ((d.length() * 0.5 + t * 6.0).sin());
+            sprite.color = Color::srgb(band, band + 0.04, band + 0.08);
+            tf.translation = ((a + b) / 2.0).extend(z::PLAYERS + 0.5);
+            tf.rotation = Quat::from_rotation_z(d.y.atan2(d.x));
+            continue;
+        }
         let Some(to) = to else {
             *vis = Visibility::Hidden;
             continue;

@@ -835,6 +835,15 @@ impl Colony {
             if g.shield_wait <= 0.0 && g.shield < stats.shield {
                 g.shield = (g.shield + stats.shield / 3.0 * dt).min(stats.shield);
             }
+            // Spring Heels: coming down on a creature hurts it.
+            if stats.head_stomp && p.pose.vel.y > 90.0 && g.stomp_wait <= 0.0 {
+                let feet = p.pose.pos;
+                if creatures::damage_at(self, feet, 7.0, 14.0, Some(key)) {
+                    self.players.get_mut(&key).unwrap().gear.stomp_wait = 0.4;
+                }
+            }
+            let p = self.players.get_mut(&key).unwrap();
+            let g = &mut p.gear;
             if stats.turret > 0 && g.turret_wait <= 0.0 && p.in_dome.is_none() {
                 let from = v2(p.pose.pos.x, p.pose.pos.y - 20.0);
                 let mut targets: Vec<(f32, V2)> = self
@@ -1506,6 +1515,168 @@ mod tests {
         colony.step_mods_second(&mut world);
         assert_eq!(colony.players[&key].inv.count(Item::Xenite), 3);
         let _ = at;
+    }
+
+    #[test]
+    fn trade_crafting_and_farming_mods_change_the_numbers() {
+        let (mut world, mut colony, key) = colony();
+        at_mod_bay(&mut colony, key);
+        // Trade Chip: 20% more, and from anywhere at tier III.
+        let home = colony.home;
+        let terminal = {
+            let (e, d) = colony.dome(home).unwrap();
+            let f = d
+                .kind
+                .fixtures()
+                .iter()
+                .find(|f| f.fixture == Fixture::Terminal)
+                .unwrap();
+            fixture_pos(e.pos, f)
+        };
+        colony.players.get_mut(&key).unwrap().pose.pos = terminal;
+        colony.players.get_mut(&key).unwrap().inv.add(Item::Gold, 30, 1.0);
+        let value = Item::Gold.value(&colony.species) as i64;
+        colony
+            .apply(
+                &mut world,
+                key,
+                Action::Sell {
+                    item: Item::Gold,
+                    count: 10,
+                },
+            )
+            .unwrap();
+        assert_eq!(colony.credits, value * 10);
+        wear(&mut colony, key, set::TRADE_CHIP, 2);
+        colony
+            .apply(
+                &mut world,
+                key,
+                Action::Sell {
+                    item: Item::Gold,
+                    count: 10,
+                },
+            )
+            .unwrap();
+        assert_eq!(colony.credits, value * 10 + value * 12);
+        colony.players.get_mut(&key).unwrap().pose.pos.x += 900.0;
+        colony.players.get_mut(&key).unwrap().in_dome = None;
+        assert!(
+            colony
+                .apply(
+                    &mut world,
+                    key,
+                    Action::Sell {
+                        item: Item::Gold,
+                        count: 5
+                    }
+                )
+                .is_err()
+        );
+        wear(&mut colony, key, set::TRADE_CHIP, 3);
+        colony
+            .apply(
+                &mut world,
+                key,
+                Action::Sell {
+                    item: Item::Gold,
+                    count: 5,
+                },
+            )
+            .unwrap();
+
+        // Synth Belly: synthesize anywhere, for less.
+        let glass = crate::colony::recipes::recipes()
+            .iter()
+            .position(|r| r.output == Item::Glass)
+            .unwrap();
+        assert_eq!(colony.recipe_cost(key, glass)[0].1, 3);
+        assert!(
+            colony
+                .apply(
+                    &mut world,
+                    key,
+                    Action::Craft {
+                        recipe: glass as u16,
+                        count: 1
+                    }
+                )
+                .is_err()
+        );
+        wear(&mut colony, key, set::SYNTH_BELLY, 3);
+        assert_eq!(
+            colony.recipe_cost(key, glass)[0].1,
+            3,
+            "3 sand less 30% still rounds up to 3"
+        );
+        let green = crate::colony::recipes::recipes()
+            .iter()
+            .position(|r| r.output == Item::DomeKit(DomeKind::Green))
+            .unwrap();
+        assert_eq!(colony.recipe_cost(key, green)[0].1, 28, "40 glass less 30%");
+        colony.players.get_mut(&key).unwrap().inv.add(Item::Sand, 3, 1.0);
+        colony
+            .apply(
+                &mut world,
+                key,
+                Action::Craft {
+                    recipe: glass as u16,
+                    count: 1,
+                },
+            )
+            .unwrap();
+        assert_eq!(colony.players[&key].inv.count(Item::Glass), 2);
+
+        // Farm Hands: one harvest picks the whole dome. Botanist's Bonnet: more of it.
+        let at = colony.players[&key].pose.pos;
+        let dome = colony.spawn(
+            v2(at.x, at.y),
+            EntKind::Dome(crate::colony::domes::Dome::new(
+                DomeKind::Green,
+                "Green Dome 1".into(),
+            )),
+        );
+        for pl in colony.dome_mut(dome).unwrap().planters.iter_mut() {
+            pl.species = Some(2);
+            pl.growth = 1.0;
+        }
+        let (e, d) = colony.dome(dome).unwrap();
+        let f = d
+            .kind
+            .fixtures()
+            .iter()
+            .find(|f| f.fixture == Fixture::Planter(0))
+            .unwrap();
+        let planter = fixture_pos(e.pos, f);
+        let p = colony.players.get_mut(&key).unwrap();
+        p.pose.pos = planter;
+        p.in_dome = Some(dome);
+        wear(&mut colony, key, set::FARM_HANDS, 1);
+        wear(&mut colony, key, set::BOTANISTS_BONNET, 3);
+        let op = Action::Planter {
+            dome,
+            slot: 0,
+            op: crate::colony::farming::PlanterOp::Harvest,
+        };
+        colony.apply(&mut world, key, op).unwrap();
+        assert!(
+            colony
+                .dome(dome)
+                .unwrap()
+                .1
+                .planters
+                .iter()
+                .all(|p| p.growth < 1.0),
+            "all four picked"
+        );
+        let p = &colony.players[&key];
+        let base = colony.species[2].harvest_count();
+        assert!(
+            p.inv.count(Item::Crop(2)) >= 4 * base * 2 - 4,
+            "double yield: {}",
+            p.inv.count(Item::Crop(2))
+        );
+        assert!(p.inv.count(Item::Seed(2)) >= 4, "and a seed from each");
     }
 
     #[test]

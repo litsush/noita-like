@@ -222,6 +222,15 @@ pub fn present_events(
                                 .life(0.6),
                         );
                     }
+                    Fx::ShieldHit => {
+                        sfx.write(Sfx::at("shield_hit", at));
+                        bursts.write(
+                            Burst::new(at, Color::srgb(0.5, 0.8, 1.0))
+                                .count(10)
+                                .speed(60.0)
+                                .life(0.3),
+                        );
+                    }
                     Fx::Teleport => {
                         sfx.write(Sfx::at("teleport", at));
                         bursts.write(

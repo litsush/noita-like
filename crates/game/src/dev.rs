@@ -1,6 +1,9 @@
 //! Developer flags for unattended play-testing:
 //!
-//! * `--screenshot <dir>` saves a screenshot every few seconds.
+//! * `--screenshot <dir>` saves a screenshot every few seconds
+//!   (`--screenshot-every <secs>` changes how often).
+//! * `--press <Key@from-to,...>` holds keys down between two times in
+//!   seconds since launch (`KeyW@6-6.2,KeyD@5-9`), to script movement.
 //! * `--quit-after <secs>` exits after that many seconds.
 //! * `--window <WxH>` sets the window size; `--ui-scale <x>` the UI scale.
 //! * `--fps` logs frame rate once a second.
@@ -70,7 +73,9 @@ impl Plugin for DevPlugin {
             let _ = std::fs::create_dir_all(&dir);
             app.insert_resource(Screenshots {
                 dir,
-                every: 4.0,
+                every: arg_value("--screenshot-every")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(4.0),
                 next: 3.0,
                 count: 0,
             })
@@ -87,6 +92,35 @@ impl Plugin for DevPlugin {
                 bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(),
                 bevy::diagnostic::LogDiagnosticsPlugin::default(),
             ));
+        }
+        if let Some(script) = arg_value("--press") {
+            let presses: Vec<(KeyCode, f32, f32)> = script
+                .split(',')
+                .filter_map(|part| {
+                    let (key, span) = part.split_once('@')?;
+                    let (from, to) = span.split_once('-')?;
+                    let key = crate::controls::Binding::from_id(key).and_then(|b| match b {
+                        crate::controls::Binding::Key(k) => Some(k),
+                        _ => None,
+                    })?;
+                    Some((key, from.parse().ok()?, to.parse().ok()?))
+                })
+                .collect();
+            app.add_systems(
+                PreUpdate,
+                (move |time: Res<Time<Real>>, mut keys: ResMut<ButtonInput<KeyCode>>| {
+                    let t = time.elapsed_secs();
+                    for &(key, from, to) in &presses {
+                        let down = t >= from && t < to;
+                        if down && !keys.pressed(key) {
+                            keys.press(key);
+                        } else if !down && keys.pressed(key) && t >= to && t < to + 0.5 {
+                            keys.release(key);
+                        }
+                    }
+                })
+                .after(bevy::input::InputSystems),
+            );
         }
         if let Some(secs) = arg_value("--quit-after").and_then(|s| s.parse().ok()) {
             app.insert_resource(QuitAfter(secs))

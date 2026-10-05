@@ -491,6 +491,123 @@ fn crate_near(colony: &Colony, me: &Player, c: Container) -> bool {
     }
 }
 
+/// What some mods draw over the world: creature health (Threat Lens),
+/// plant genes under the cursor (Botanist's Bonnet) and where the held
+/// dome kit fits (Geo Visor).
+fn mod_overlays(
+    ctx: &egui::Context,
+    colony: &Colony,
+    me: &Player,
+    world: Option<&sbct_sim::World>,
+    cursor: V2,
+    to_screen: &dyn Fn(V2) -> Option<egui::Pos2>,
+) {
+    let stats = me.stats();
+    let painter = ctx.layer_painter(egui::LayerId::background());
+    if stats.see_health {
+        for e in colony.ents.values() {
+            let EntKind::Creature(c) = &e.kind else { continue };
+            if e.pos.distance(me.center()) > 260.0 || c.hp <= 0.0 {
+                continue;
+            }
+            let top = V2 {
+                x: e.pos.x,
+                y: e.pos.y - c.kind.size().1 - 5.0,
+            };
+            let Some(at) = to_screen(top) else { continue };
+            let bar = egui::Rect::from_center_size(at, egui::vec2(28.0, 4.0));
+            painter.rect_filled(bar, 0.0, egui::Color32::from_black_alpha(170));
+            let mut fill = bar;
+            fill.set_width(bar.width() * (c.hp / c.kind.max_hp()).clamp(0.0, 1.0));
+            painter.rect_filled(fill, 0.0, if c.kind.predator() { ui::DANGER } else { ui::GOOD });
+        }
+    }
+    if stats.see_genes {
+        // The plant or planter under the cursor.
+        let mut species = colony
+            .ents
+            .values()
+            .filter_map(|e| match e.kind {
+                EntKind::Plant(p) if e.pos.distance(cursor) < 12.0 => Some((p.species, p.growth)),
+                _ => None,
+            })
+            .next();
+        if species.is_none() {
+            species = colony.domes().find_map(|(e, d)| {
+                d.kind.fixtures().iter().find_map(|f| match f.fixture {
+                    Fixture::Planter(i)
+                        if fixture_pos(e.pos, f).distance(V2 {
+                            x: cursor.x,
+                            y: cursor.y + 8.0,
+                        }) < 12.0 =>
+                    {
+                        let p = d.planters.get(i as usize)?;
+                        Some((p.species?, p.growth))
+                    }
+                    _ => None,
+                })
+            });
+        }
+        if let Some((id, growth)) = species
+            && let Some(sp) = colony.species.get(id as usize)
+            && let Some(at) = to_screen(V2 {
+                x: cursor.x,
+                y: cursor.y - 22.0,
+            })
+        {
+            let g = sp.genes;
+            let text = format!(
+                "{}  {:.0}% grown\nOxygen {}  Growth {}  Yield {}  Power {}\nFood {}  Light {}  Thirst {}  Hardy {}",
+                sp.name,
+                growth.min(1.0) * 100.0,
+                g.oxygen,
+                g.growth,
+                g.yield_,
+                g.power,
+                g.food,
+                g.light,
+                g.thirst,
+                g.hardy
+            );
+            let galley = painter.layout_no_wrap(text, egui::FontId::proportional(13.0), ui::TEXT);
+            let rect = egui::Rect::from_center_size(
+                at - egui::vec2(0.0, 24.0),
+                galley.size() + egui::vec2(12.0, 8.0),
+            );
+            painter.rect_filled(rect, 2.0, egui::Color32::from_black_alpha(215));
+            painter.rect_stroke(
+                rect,
+                2.0,
+                egui::Stroke::new(1.0, ui::BORDER),
+                egui::StrokeKind::Inside,
+            );
+            painter.galley(rect.min + egui::vec2(6.0, 4.0), galley, ui::TEXT);
+        }
+    }
+    if stats.site_survey
+        && let Some(world) = world
+        && let Some(sbct_sim::colony::items::Item::DomeKit(kind)) = me.held().map(|s| s.item)
+    {
+        let mut dx = -320.0;
+        while dx <= 320.0 {
+            let probe = V2 {
+                x: cursor.x + dx,
+                y: cursor.y,
+            };
+            if let Ok(site) = colony.dome_site(world, kind, probe)
+                && let Some(at) = to_screen(site)
+            {
+                painter.line_segment(
+                    [at + egui::vec2(-5.0, 0.0), at + egui::vec2(5.0, 0.0)],
+                    egui::Stroke::new(3.0, ui::GOOD),
+                );
+                painter.line_segment([at, at - egui::vec2(0.0, 7.0)], egui::Stroke::new(2.0, ui::GOOD));
+            }
+            dx += 16.0;
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 /// Draws the interaction prompt and whichever panels are open.
 pub fn panels_ui(
@@ -554,6 +671,7 @@ pub fn panels_ui(
         };
         robot::bubbles(ctx, colony, local.cursor, me.center(), &to_screen);
         crate::map::ping_markers(ctx, colony, &to_screen);
+        mod_overlays(ctx, colony, me, session.world.as_ref(), local.cursor, &to_screen);
     }
 
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);

@@ -155,7 +155,7 @@ pub static MOD_SETS: [ModSet; SETS] = [
         ("Heavy Landing", "Landing from a height digs a small crater."),
         ("Crater Maker", "A bigger crater that hurts creatures."),
         ("Seismic Drop", "Press down in the air to ground-pound."),
-        ("Tectonic Plates", "A huge ground-pound that stuns everything nearby."),
+        ("Tectonic Plates", "A huge ground-pound that leaves everything nearby reeling at half speed."),
     ]),
     m("Dash Pistons", Slot::Legs, [
         ("Sidestep", "A short dash."),
@@ -191,7 +191,7 @@ pub static MOD_SETS: [ModSet; SETS] = [
         ("Kneel Drill", "Hold down to dig beneath you."),
         ("Power Squat", "Digs twice as fast."),
         ("Free Fall Drill", "Keeps digging while you fall."),
-        ("Elevator Going Down", "Plunges at full speed and collects everything."),
+        ("Elevator Going Down", "Drills twice as deep with every stroke."),
     ]),
     m("O2 Backpack", Slot::Back, [
         ("Spare Lung", "+50% oxygen."),
@@ -357,7 +357,7 @@ pub static MOD_SETS: [ModSet; SETS] = [
     ]),
     m("Geo Visor", Slot::Eyes, [
         ("Long Reach Planning", "Place things 50% further away."),
-        ("Site Survey", "The placement ghost explains what is wrong with a site."),
+        ("Site Survey", "Spots where the dome kit in your hand fits are marked on the ground."),
         ("Remote Build", "Place from three times as far."),
         ("Sim City Mode", "Place anywhere you can see."),
     ]),
@@ -547,6 +547,8 @@ pub struct ModStats {
     /// 0 none, 1 slide and wall-jump, 2 climb, 3 climb fast and hang, 4 run up walls.
     pub wall: u8,
     pub charge_jump: bool,
+    /// Landing on a creature hurts it (and bounces the player).
+    pub head_stomp: bool,
     pub gravity: f32,
     pub water_run: bool,
     pub swim: f32,
@@ -721,6 +723,7 @@ impl Default for ModStats {
             thrust_secs: 0.0,
             wall: 0,
             charge_jump: false,
+            head_stomp: false,
             gravity: 1.0,
             water_run: false,
             swim: 1.0,
@@ -850,6 +853,7 @@ fn apply(s: &mut ModStats, id: u8, t: u8) {
         STICKY_SOLES => s.wall = t,
         SPRING_HEELS => {
             s.jump *= by(t, [1.14, 1.265, 1.265, 1.265]);
+            s.head_stomp = t >= 2;
             s.charge_jump = t >= 3;
             if t >= 4 {
                 s.gravity *= 0.5;

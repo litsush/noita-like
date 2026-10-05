@@ -53,7 +53,7 @@ pub fn update_ghost(
         return;
     };
     let at = local.cursor;
-    let in_reach = me.center().distance(at) <= me.stats().reach;
+    let in_reach = me.center().distance(at) <= me.stats().place_reach;
     let (site, center, size) = match item {
         Item::DomeKit(kind) => {
             let (w, h) = kind.size();

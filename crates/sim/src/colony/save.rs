@@ -108,6 +108,48 @@ mod tests {
         colony.players.get_mut(&key).unwrap().inv.add(Item::Gold, 9, 1.0);
         world.set(100, 100, Material::Lava);
         run(&mut colony, &mut world, 1.0);
+        // Robots and their programs, areas, pins, hybrids and body mods.
+        use crate::colony::geom::{Rect, v2};
+        use crate::colony::mods::{Slot, set};
+        use crate::colony::robots::{Area, Cond, Place, Robot, Sentence, Step};
+        let mut robot = Robot::new("Rusty".into(), 3);
+        robot.charge = 41.0;
+        robot.program = vec![Sentence {
+            when: Some(Cond::Battery {
+                below: true,
+                percent: 20,
+            }),
+            steps: vec![Step::ChargeAt(Place::NearestPylon).into()],
+        }];
+        robot.inv.add(Item::Iron, 12, 1.0);
+        let robot_id = colony.spawn(v2(300.0, 200.0), crate::colony::EntKind::Robot(robot.clone()));
+        colony.areas.push(Area {
+            id: 0,
+            name: "North vein".into(),
+            rect: Rect::new(10, 20, 110, 90),
+        });
+        colony.pins.push(crate::colony::modfx::Pin {
+            id: 0,
+            name: "Lake".into(),
+            pos: v2(50.0, 60.0),
+            color: 2,
+            ping: None,
+        });
+        let hybrid = crate::colony::plants::splice(
+            colony.seed,
+            &colony.species[0],
+            &colony.species[1],
+            0,
+            &colony.species,
+        );
+        colony.species.push(crate::colony::plants::Species {
+            id: colony.species.len() as u16,
+            ..hybrid
+        });
+        let p = colony.players.get_mut(&key).unwrap();
+        p.mods.insert(set::ROCKET_FEET, 3);
+        p.equipped[Slot::Feet as usize] = Some(set::ROCKET_FEET);
+        p.gear.arm_tasks[0] = crate::colony::mods::ArmTask::Mine;
 
         let bytes = SaveFile::capture(&world, &colony).to_bytes();
         let (world2, mut colony2) = SaveFile::from_bytes(&bytes).unwrap().restore().unwrap();
@@ -124,6 +166,16 @@ mod tests {
         // The player gets their character back on joining.
         colony2.join(key, "Ada".into());
         assert_eq!(colony2.players[&key].inv.count(Item::Gold), 9);
+        assert_eq!(colony2.players[&key].stats().thrust_secs, 5.0);
+        assert_eq!(
+            colony2.players[&key].gear.arm_tasks[0],
+            crate::colony::mods::ArmTask::Mine
+        );
+        assert_eq!(colony2.ents[&robot_id].kind, crate::colony::EntKind::Robot(robot));
+        assert_eq!(colony2.areas, colony.areas);
+        assert_eq!(colony2.pins, colony.pins);
+        assert_eq!(colony2.species, colony.species);
+        assert_eq!(colony2.species.last().unwrap().parents, Some((0, 1)));
         // And the loaded world keeps running.
         let mut world2 = world2;
         run(&mut colony2, &mut world2, 1.0);

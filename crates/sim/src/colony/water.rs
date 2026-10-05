@@ -60,6 +60,8 @@ pub fn run(a: Tile, b: Tile) -> Vec<Tile> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Problem {
     NoSource,
+    /// No source, but a tank on the network still holds water.
+    TankOnly,
     /// Supply is less than what the consumers use.
     Insufficient,
     /// Connected to nothing that uses water.
@@ -70,6 +72,9 @@ impl Problem {
     pub fn describe(self) -> &'static str {
         match self {
             Problem::NoSource => "No source: connect a Pump in a lake or a Water Generator Dome",
+            Problem::TankOnly => {
+                "Running on tank water: connect a Pump or a Water Generator Dome to refill it"
+            }
             Problem::Insufficient => "Not enough supply for everything connected",
             Problem::NoConsumer => "Nothing connected uses water",
         }
@@ -231,7 +236,19 @@ impl Colony {
                 }
             }
             if net.sources.is_empty() {
-                net.problems.push(Problem::NoSource);
+                let stored: f32 = net
+                    .tanks
+                    .iter()
+                    .filter_map(|id| match self.ents.get(id).map(|e| &e.kind) {
+                        Some(EntKind::Machine(m)) => Some(m.store),
+                        _ => None,
+                    })
+                    .sum();
+                net.problems.push(if stored > 0.0 {
+                    Problem::TankOnly
+                } else {
+                    Problem::NoSource
+                });
             } else if net.supply < net.demand {
                 net.problems.push(Problem::Insufficient);
             }

@@ -55,9 +55,9 @@ pub struct LocalPlayer {
     /// Air jumps used since leaving the ground.
     air_jumps: u8,
     /// Seconds of rocket thrust left this jump.
-    thrust_left: f32,
+    pub thrust_left: f32,
     /// Dash charges ready (fractions are recharging).
-    dash_charges: f32,
+    pub dash_charges: f32,
     dash_time: f32,
     dash_dir: f32,
     /// How long Down has been held on the ground (Kangaroo Court).
@@ -374,6 +374,26 @@ pub fn move_player(
         }
     }
 
+    // Spring Heels: bounce off a creature you come down on.
+    if stats.head_stomp
+        && p.body.vel.y > 90.0
+        && let Some(colony) = &session.colony
+    {
+        let feet = p.body.pos;
+        let hit = colony.ents.values().any(|e| match &e.kind {
+            sbct_sim::colony::EntKind::Creature(c) => {
+                let (hw, h) = c.kind.size();
+                v2(e.pos.x, e.pos.y - h / 2.0).distance(feet) < 7.0 + hw.max(h / 2.0)
+            }
+            _ => false,
+        });
+        if hit {
+            p.body.vel.y = -JUMP_SPEED * 0.85;
+            p.air_jumps = 0;
+            sfx.write(Sfx::at("jump", feet_v(feet)).pitch(0.3));
+        }
+    }
+
     // Dash Pistons.
     p.dash_charges = (p.dash_charges + dt / 1.1).min(stats.dashes as f32);
     if pressed(Action::Dash) && stats.dashes > 0 && p.dash_charges >= 1.0 && p.dash_time <= 0.0 {
@@ -625,6 +645,10 @@ pub fn move_player(
     for act in acts {
         session.act(act);
     }
+}
+
+fn feet_v(p: V2) -> Vec2 {
+    Vec2::new(p.x, p.y)
 }
 
 fn solid_or_water(m: Material) -> bool {

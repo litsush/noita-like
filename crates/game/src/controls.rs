@@ -335,7 +335,7 @@ impl Binding {
         }
     }
 
-    fn from_id(s: &str) -> Option<Binding> {
+    pub fn from_id(s: &str) -> Option<Binding> {
         if let Some(name) = s.strip_prefix("Mouse:") {
             return MOUSE
                 .iter()

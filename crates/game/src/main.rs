@@ -2,6 +2,7 @@ mod assets;
 mod audio;
 mod avatars;
 mod controls;
+mod decor;
 mod dev;
 mod ending;
 mod entities;
@@ -11,6 +12,7 @@ mod hud;
 mod lighting;
 mod map;
 mod menu;
+mod modview;
 mod overlays;
 mod panels;
 mod pipes;
@@ -82,6 +84,7 @@ fn main() {
         .init_resource::<overlays::Overlays>()
         .init_resource::<ending::Ending>()
         .init_resource::<map::MapView>()
+        .init_resource::<modview::Xray>()
         .add_systems(
             Startup,
             (assets::load_assets, render::spawn_camera, menu::setup_menu).chain(),
@@ -150,6 +153,7 @@ fn main() {
                 pipes::reset_pipes,
                 ending::reset_ending,
                 map::reset_map,
+                modview::reset_xray,
                 |mut commands: Commands| commands.remove_resource::<player::LocalPlayer>(),
             ),
         )
@@ -177,6 +181,10 @@ fn main() {
                 (
                     avatars::sync_avatars,
                     avatars::animate_avatars,
+                    decor::dress_terrain,
+                    modview::sync_gadgets,
+                    modview::mod_lights,
+                    modview::xray,
                     entities::sync_entities,
                     entities::animate_entities,
                     plants::sync_plants,
