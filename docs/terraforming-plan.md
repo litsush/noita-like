@@ -177,12 +177,12 @@ A dome is synthesized as a kit and placed on the ground. Placing levels a founda
 
 | Dome | Size | Contents | Needs | Does |
 |---|---|---|---|---|
-| Starter Biodome | 160×72 | 8 beds, 2 chests, suit rack, Synthesizer, Comm. Terminal, Mod Bay, 2 planters | — (built-in generator) | Home. Spawn point |
+| Starter Biodome | 216×80 | 8 beds, 2 chests, suit rack, Synthesizer, Comm. Terminal, Mod Bay | — (built-in generator) | Home. Spawn point |
 | Green Dome | 104×52 | 4 planters, sprinkler port | Water for sprinklers (or by hand) | Grows land crops, including battery flowers; oxygen |
 | Storage Dome | 72×44 | 6 chests (40 slots each) | — | Part of the colony stockpile that synthesizers and robots draw from |
 | Bedroom Dome | 72×44 | 4 beds | — | Players sleep (all asleep skips the night) and set spawn; houses 4 workers |
 | Kitchen Dome | 72×44 | Cooker with input and output chests | Power, water | Turns any 3 crops into a Meal (food) |
-| Dark Dome | 72×44 | 4 dark planters, Compost Vat | — | Grows mushrooms and other dark species; composts plant matter into fertilizer |
+| Dark Dome | 104×52 | 4 dark planters, Compost Vat | — | Grows mushrooms and other dark species; composts plant matter into fertilizer |
 | Dome Dome | 104×52 | Assembly ring | Power | Builds a chosen dome kit for free, slowly (1–3 days) |
 | Aqua Dome | 104×52 | 2 aquatic planters, fish pool | Water | Aquatic plants (high oxygen); fish (food) |
 | Apartment Dome | 136×64 | 20 colonist berths, 6 worker beds | Power, water | Housing for the colonists. Counts toward readiness only when supplied |
@@ -444,3 +444,9 @@ Each milestone is committed and pushed, builds and runs, and works with at least
 ## 15. Progress log
 
 - **Plan:** this document.
+- **Milestone 1 (world, day/night, weather):**
+  - The cell engine gained ores, dome glass and plating, ruins, spore gas and grass that spreads as the air improves.
+  - `planetgen.rs` builds the 5120×1536 planet: rolling surface, lakes, a starter plateau, cave networks with surface entrances, three depth bands with richer ores further down, ruin vaults, Brood Mother lairs, alien trees and overgrown ruins.
+  - The colony core (`sim::colony`) runs the clock, weather, players' vitals, digging and drops, the laser, creatures, inventories and chests, with tests for each.
+  - The client was rebuilt on it: tiled world rendering, lighting that follows the sun, sky and horizon layers, rain and mist, layered player sprites, HUD, menus with new/load/join, world saves.
+  - Two players over LAN see the same world, time and weather, each other, creatures and drops.

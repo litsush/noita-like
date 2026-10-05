@@ -8,7 +8,12 @@ sbct_sim.workspace = true
 sbct_net.workspace = true
 bevy.workspace = true
 bevy_egui.workspace = true
+serde.workspace = true
+bincode.workspace = true
+serde_json = "1"
 
 [lints.clippy]
 # Bevy systems routinely take many parameters.
 too_many_arguments = "allow"
+# So do their queries.
+type_complexity = "allow"

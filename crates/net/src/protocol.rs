@@ -1,46 +1,47 @@
-//! Wire messages. The host owns the simulation; clients send their own
-//! player state and edit requests, and receive world chunks and other players.
+//! Wire messages. The host owns the world and the colony; clients send their
+//! own pose and their actions, and receive everything else.
 
 use serde::{Deserialize, Serialize};
 
-use crate::PeerId;
+use sbct_sim::colony::actions::Action;
+use sbct_sim::colony::{
+    Colony, Ent, Event, Globals, Id, Motion, Player, PlayerKey, Pose, PublicPlayer, Vitals,
+};
 
 /// Bump whenever a message layout changes so mismatched builds refuse to connect.
-pub const PROTOCOL_VERSION: u32 = 1;
-
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
-pub struct PlayerState {
-    /// Position in cell coordinates (y grows downward), centre of the feet.
-    pub x: f32,
-    pub y: f32,
-    pub vx: f32,
-    pub vy: f32,
-}
-
-/// A request to paint or dig a disc of cells. `material == 0` digs.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
-pub struct Edit {
-    pub x: i32,
-    pub y: i32,
-    pub radius: u8,
-    pub material: u8,
-}
+pub const PROTOCOL_VERSION: u32 = 20;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum ClientMsg {
-    Hello { version: u32, name: String },
-    State(PlayerState),
-    Edit(Edit),
+    /// `key` identifies the player across sessions so their character is kept.
+    Hello {
+        version: u32,
+        name: String,
+        key: PlayerKey,
+    },
+    Pose(Pose),
+    Action(Action),
+}
+
+/// A player's pose as relayed to everyone, with health and oxygen (0–255)
+/// for name tags.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct PoseUpdate {
+    pub key: PlayerKey,
+    pub pose: Pose,
+    pub hp: u8,
+    pub o2: u8,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum HostMsg {
+    /// The whole colony as it is now; the cell world follows as chunks.
     Welcome {
-        your_id: PeerId,
+        key: PlayerKey,
         width: u32,
         height: u32,
         seed: u64,
-        spawn: (f32, f32),
+        colony: Box<Colony>,
     },
     Reject {
         reason: String,
@@ -51,14 +52,21 @@ pub enum HostMsg {
         cy: u16,
         data: Vec<u8>,
     },
-    PlayerJoined {
-        id: PeerId,
-        name: String,
+    /// Everyone online. Sent whenever someone joins, leaves or changes how
+    /// they look.
+    Roster(Vec<PublicPlayer>),
+    Poses(Vec<PoseUpdate>),
+    /// The receiving player's full state (inventory, mods).
+    You(Box<Player>),
+    Vitals(Vitals),
+    /// Entities that changed (whole snapshots) and ids that are gone.
+    Ents {
+        upserts: Vec<Ent>,
+        removed: Vec<Id>,
     },
-    PlayerLeft {
-        id: PeerId,
-    },
-    Players(Vec<(PeerId, PlayerState)>),
+    Motion(Vec<Motion>),
+    Globals(Globals),
+    Events(Vec<Event>),
 }
 
 pub fn encode<T: Serialize>(msg: &T) -> Vec<u8> {
@@ -72,20 +80,65 @@ pub fn decode<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> Option<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sbct_sim::colony::actions::{Container, InvOp};
+    use sbct_sim::colony::geom::v2;
 
     #[test]
     fn roundtrip() {
         let bytes = encode(&ClientMsg::Hello {
             version: PROTOCOL_VERSION,
             name: "a".into(),
+            key: 77,
         });
         match decode::<ClientMsg>(&bytes) {
-            Some(ClientMsg::Hello { version, name }) => {
+            Some(ClientMsg::Hello { version, name, key }) => {
                 assert_eq!(version, PROTOCOL_VERSION);
                 assert_eq!(name, "a");
+                assert_eq!(key, 77);
             }
             other => panic!("{other:?}"),
         }
         assert!(decode::<HostMsg>(&[255, 255, 255, 255]).is_none());
+    }
+
+    #[test]
+    fn actions_and_colony_survive_the_wire() {
+        let actions = [
+            Action::Dig { x: -3, y: 900 },
+            Action::Fire {
+                from: v2(1.5, 2.5),
+                dir: v2(0.0, -1.0),
+            },
+            Action::Inv(InvOp::Move {
+                from: (Container::DomeChest(4, 1), 3),
+                to: (Container::Me, 12),
+                count: 40,
+            }),
+        ];
+        for a in actions {
+            let bytes = encode(&ClientMsg::Action(a.clone()));
+            let Some(ClientMsg::Action(back)) = decode::<ClientMsg>(&bytes) else {
+                panic!("action lost")
+            };
+            assert_eq!(back, a);
+        }
+
+        let mut planet = sbct_sim::planetgen::generate_sized(1024, 512, 5);
+        let mut colony = Colony::found(&mut planet);
+        colony.join(9, "Ada".into());
+        let msg = HostMsg::Welcome {
+            key: 9,
+            width: 1024,
+            height: 512,
+            seed: 5,
+            colony: Box::new(colony.clone()),
+        };
+        let bytes = encode(&msg);
+        let Some(HostMsg::Welcome { colony: back, .. }) = decode::<HostMsg>(&bytes) else {
+            panic!("welcome lost")
+        };
+        assert_eq!(back.ents, colony.ents);
+        assert_eq!(back.players[&9].name, "Ada");
+        assert!(bytes.len() < 200_000, "welcome is {} bytes", bytes.len());
     }
 }

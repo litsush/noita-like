@@ -1,9 +1,21 @@
+mod assets;
+mod audio;
+mod avatars;
+mod controls;
+mod dev;
+mod entities;
+mod events;
+mod fx;
 mod hud;
+mod lighting;
 mod menu;
 mod player;
 mod render;
 mod session;
+mod settings;
+mod sky;
 mod steam;
+mod ui;
 
 use bevy::prelude::*;
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
@@ -12,28 +24,66 @@ use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 pub enum AppState {
     #[default]
     Menu,
+    /// Joining a game or generating a world.
     Connecting,
     InGame,
 }
 
 fn main() {
+    let in_game = || in_state(AppState::InGame).and_then(resource_exists::<session::Session>);
+    let playing = || {
+        in_state(AppState::InGame)
+            .and_then(resource_exists::<session::Session>)
+            .and_then(resource_exists::<player::LocalPlayer>)
+    };
     App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "SBCT".into(),
-                resolution: (1280, 800).into(),
-                ..default()
-            }),
-            ..default()
-        }))
+        .add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "Planet Terraforming".into(),
+                        resolution: dev::window_size().unwrap_or((1280, 800)).into(),
+                        ..default()
+                    }),
+                    ..default()
+                })
+                .set(AssetPlugin {
+                    file_path: assets::ASSET_ROOT.into(),
+                    ..default()
+                })
+                .set(ImagePlugin::default_nearest()),
+        )
         .add_plugins(EguiPlugin::default())
         .add_plugins(steam::SteamPlugin)
+        .add_plugins((fx::FxPlugin, audio::AudioPlugin, dev::DevPlugin))
+        .insert_resource(settings::Config::load())
         .init_state::<AppState>()
-        .insert_resource(ClearColor(Color::srgb(0.45, 0.62, 0.85)))
+        .insert_resource(ClearColor(Color::srgb(0.03, 0.05, 0.06)))
         .insert_resource(Time::<Fixed>::from_hz(60.0))
         .init_resource::<render::UiHasPointer>()
-        .init_resource::<hud::EscMenuOpen>()
-        .add_systems(Startup, (render::spawn_camera, menu::setup_menu))
+        .init_resource::<render::ParticlePool>()
+        .init_resource::<controls::Rebind>()
+        .init_resource::<hud::Panels>()
+        .init_resource::<hud::Toasts>()
+        .init_resource::<lighting::PointLights>()
+        .init_resource::<entities::EntSprites>()
+        .add_systems(
+            Startup,
+            (assets::load_assets, render::spawn_camera, menu::setup_menu).chain(),
+        )
+        .add_systems(PreUpdate, controls::capture_binding)
+        .add_systems(
+            OnEnter(AppState::Menu),
+            |mut m: ResMut<audio::MusicTrack>, mut a: ResMut<audio::Ambience>| {
+                *m = audio::MusicTrack::Menu;
+                *a = audio::Ambience(None, None);
+            },
+        )
+        .add_systems(EguiPrimaryContextPass, ui::setup_ui.before(menu::menu_ui))
+        .add_systems(
+            EguiPrimaryContextPass,
+            ui::ui_sounds_and_fade.after(menu::menu_ui).after(hud::hud_ui),
+        )
         // Session lifecycle, in any state.
         .add_systems(
             Update,
@@ -43,6 +93,7 @@ fn main() {
             )
                 .chain(),
         )
+        .add_systems(Last, session::save_on_exit)
         // Menu.
         .add_systems(Update, menu::menu_steam_events.run_if(in_state(AppState::Menu)))
         .add_systems(
@@ -63,42 +114,55 @@ fn main() {
         // In game.
         .add_systems(
             OnEnter(AppState::InGame),
-            (player::spawn_local_player, render::spawn_world_view),
+            (
+                player::spawn_local_player,
+                render::spawn_world_view,
+                lighting::setup_lighting,
+                sky::spawn_sky,
+            ),
         )
-        .add_systems(OnExit(AppState::InGame), render::cleanup_world_view)
         .add_systems(
-            FixedUpdate,
-            session::step_world
-                .run_if(in_state(AppState::InGame).and_then(resource_exists::<session::Session>)),
+            OnExit(AppState::InGame),
+            (
+                render::cleanup_world_view,
+                render::reset_particle_pool,
+                entities::reset_entities,
+                |mut commands: Commands| commands.remove_resource::<player::LocalPlayer>(),
+            ),
         )
+        .add_systems(FixedUpdate, session::step_world.run_if(in_game()))
         .add_systems(
             Update,
             (
-                hud::toggle_esc_menu,
-                hud::ingame_steam_events,
-                player::use_tools,
-                player::move_player,
-                session::send,
-                player::sync_avatars,
-                player::follow_camera,
-                render::upload_dirty_chunks,
+                (
+                    hud::toggle_pause,
+                    hud::ingame_steam_events,
+                    player::use_tools,
+                    player::move_player,
+                    session::send,
+                    entities::extrapolate,
+                    events::present_events,
+                    events::soundscape,
+                )
+                    .chain(),
+                (
+                    avatars::sync_avatars,
+                    avatars::animate_avatars,
+                    entities::sync_entities,
+                    entities::animate_entities,
+                    player::follow_camera,
+                    render::upload_dirty_chunks,
+                    render::draw_sim_particles,
+                    sky::update_sky,
+                    lighting::update_lighting,
+                )
+                    .chain(),
             )
                 .chain()
                 .after(session::receive)
                 .before(session::end_session)
-                .run_if(
-                    in_state(AppState::InGame)
-                        .and_then(resource_exists::<session::Session>)
-                        .and_then(resource_exists::<player::LocalPlayer>),
-                ),
+                .run_if(playing()),
         )
-        .add_systems(
-            EguiPrimaryContextPass,
-            hud::hud_ui.run_if(
-                in_state(AppState::InGame)
-                    .and_then(resource_exists::<session::Session>)
-                    .and_then(resource_exists::<player::LocalPlayer>),
-            ),
-        )
+        .add_systems(EguiPrimaryContextPass, hud::hud_ui.run_if(playing()))
         .run();
 }

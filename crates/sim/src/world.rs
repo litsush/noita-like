@@ -1,16 +1,25 @@
-use crate::material::{Kind, Material};
+use crate::color::cell_rgba;
+use crate::material::{GRAVEL_SETTLED, INDESTRUCTIBLE, Kind, Material};
 use crate::rng::{Rng, hash2};
 
 /// Side length of a chunk in cells. Chunks are the unit of sleeping,
 /// rendering updates, and network replication.
 pub const CHUNK_SIZE: usize = 64;
+/// Random cells visited per chunk per tick, sleeping or not, for slow
+/// processes like plant growth and melting.
+const RANDOM_TICKS_PER_CHUNK: usize = 12;
+const MAX_PARTICLES: usize = 6000;
+/// Chain reactions carry over to later ticks beyond this.
+const MAX_EXPLOSIONS_PER_TICK: usize = 8;
+const PARTICLE_GRAVITY: f32 = 0.12;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Cell {
     pub mat: Material,
     /// Per-cell brightness variation so materials look grainy.
     pub shade: u8,
-    /// Remaining lifetime for fire/gases; unused (0) for everything else.
+    /// Material-specific state: lifetime for fire and gases, collapse
+    /// countdown for gravel. Replicated with the chunk.
     pub life: u8,
     /// Tick parity marker so a cell that moved isn't updated twice in one step.
     clock: u8,
@@ -32,42 +41,48 @@ impl Cell {
             clock: 0,
         }
     }
-
-    pub fn rgba(&self) -> [u8; 4] {
-        let props = self.mat.props();
-        if self.mat == Material::Empty {
-            return [0, 0, 0, 0];
-        }
-        let v = props.variance as i32;
-        let offset = if v == 0 {
-            0
-        } else {
-            (self.shade as i32 * v) / 255 - v / 2
-        };
-        let [mut r, mut g, mut b] = props.color.map(|c| c as i32 + offset);
-        let mut a = 255;
-        match self.mat.kind() {
-            Kind::Fire => {
-                // Young fire is bright yellow, old fire is dark red.
-                let t = self.life as i32 * 255 / Material::Fire.initial_life() as i32;
-                g = 40 + t * 180 / 255 + offset / 2;
-                b = 10 + t * 40 / 255;
-                r = 200 + offset.abs();
-            }
-            Kind::Gas => {
-                let max = self.mat.initial_life().max(1) as i32;
-                a = 60 + self.life as i32 * 140 / max;
-            }
-            Kind::Liquid if self.mat != Material::Lava => a = 220,
-            _ => {}
-        }
-        [clamp(r), clamp(g), clamp(b), clamp(a)]
-    }
 }
 
-#[inline]
-fn clamp(v: i32) -> u8 {
-    v.clamp(0, 255) as u8
+/// Something noteworthy happened in the simulation this tick. The game uses
+/// these for sound and particles.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SimEvent {
+    Explosion {
+        x: i32,
+        y: i32,
+        radius: i32,
+        destroyed: u32,
+    },
+    /// Water hit lava or molten metal.
+    Sizzle {
+        x: i32,
+        y: i32,
+    },
+    ObsidianFormed {
+        x: i32,
+        y: i32,
+    },
+    /// Settled gravel was disturbed and will fall shortly.
+    CollapseStarted {
+        x: i32,
+        y: i32,
+    },
+    /// Something caught fire.
+    Ignited {
+        x: i32,
+        y: i32,
+    },
+}
+
+/// A cell in ballistic flight (explosion debris, sprays). It lands back into
+/// the grid when it hits something.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Particle {
+    pub x: f32,
+    pub y: f32,
+    pub vx: f32,
+    pub vy: f32,
+    pub mat: Material,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -96,7 +111,27 @@ pub struct World {
     seed: u64,
     tick: u64,
     clock: u8,
+    events: Vec<SimEvent>,
+    particles: Vec<Particle>,
+    pending_explosions: Vec<(i32, i32, i32)>,
+    /// Chunk rectangle (inclusive) to simulate; `None` simulates everything.
+    region: Option<(usize, usize, usize, usize)>,
+    /// How readily grass spreads over bare dirt (0 = never). The colony
+    /// raises it as the atmosphere improves.
+    fertility: u8,
 }
+
+const NEIGHBOURS: [(i32, i32); 8] = [
+    (-1, -1),
+    (0, -1),
+    (1, -1),
+    (-1, 0),
+    (1, 0),
+    (-1, 1),
+    (0, 1),
+    (1, 1),
+];
+const ADJACENT: [(i32, i32); 4] = [(0, -1), (-1, 0), (1, 0), (0, 1)];
 
 impl World {
     /// Creates an empty world. Dimensions are rounded up to whole chunks.
@@ -123,7 +158,41 @@ impl World {
             seed,
             tick: 0,
             clock: 0,
+            events: Vec::new(),
+            particles: Vec::new(),
+            pending_explosions: Vec::new(),
+            region: None,
+            fertility: 0,
         }
+    }
+
+    /// Limits simulation to chunks within `radius` chunks of the given cells
+    /// (e.g. around each player). Chunks outside keep their pending wake-ups
+    /// and resume when the region reaches them. `None` simulates everything.
+    pub fn set_active_region(&mut self, centers: Option<&[(i32, i32)]>, radius: usize) {
+        self.region = centers.and_then(|c| {
+            let cs = CHUNK_SIZE as i32;
+            let xs = c
+                .iter()
+                .map(|p| (p.0 / cs).clamp(0, self.chunks_x as i32 - 1) as usize);
+            let ys = c
+                .iter()
+                .map(|p| (p.1 / cs).clamp(0, self.chunks_y as i32 - 1) as usize);
+            let (x0, x1) = (xs.clone().min()?, xs.max()?);
+            let (y0, y1) = (ys.clone().min()?, ys.max()?);
+            Some((
+                x0.saturating_sub(radius),
+                y0.saturating_sub(radius),
+                (x1 + radius).min(self.chunks_x - 1),
+                (y1 + radius).min(self.chunks_y - 1),
+            ))
+        });
+    }
+
+    #[inline]
+    fn in_region(&self, cx: usize, cy: usize) -> bool {
+        self.region
+            .is_none_or(|(x0, y0, x1, y1)| cx >= x0 && cx <= x1 && cy >= y0 && cy <= y1)
     }
 
     pub fn width(&self) -> usize {
@@ -144,6 +213,17 @@ impl World {
     pub fn tick(&self) -> u64 {
         self.tick
     }
+    pub fn set_fertility(&mut self, fertility: u8) {
+        self.fertility = fertility;
+    }
+    pub fn particles(&self) -> &[Particle] {
+        &self.particles
+    }
+
+    /// Returns and clears this tick's (and earlier undrained) events.
+    pub fn take_events(&mut self) -> Vec<SimEvent> {
+        std::mem::take(&mut self.events)
+    }
 
     #[inline]
     pub fn in_bounds(&self, x: i32, y: i32) -> bool {
@@ -160,10 +240,10 @@ impl World {
         self.in_bounds(x, y).then(|| self.cells[self.idx(x, y)])
     }
 
-    /// Material at a position; out of bounds reads as stone (the world is walled).
+    /// Material at a position; out of bounds reads as bedrock (the world is walled).
     #[inline]
     pub fn material(&self, x: i32, y: i32) -> Material {
-        self.get(x, y).map_or(Material::Stone, |c| c.mat)
+        self.get(x, y).map_or(Material::Bedrock, |c| c.mat)
     }
 
     #[inline]
@@ -173,44 +253,103 @@ impl World {
 
     /// Places a fresh cell of `mat`, giving it a random shade.
     pub fn set(&mut self, x: i32, y: i32, mat: Material) {
+        let life = mat.initial_life();
+        self.set_with_life(x, y, mat, life);
+    }
+
+    pub fn set_with_life(&mut self, x: i32, y: i32, mat: Material, life: u8) {
         if !self.in_bounds(x, y) {
             return;
         }
         let shade = self.rng.next_u8();
         let i = self.idx(x, y);
-        self.cells[i] = Cell::new(mat, shade);
+        self.cells[i] = Cell {
+            mat,
+            shade,
+            life,
+            clock: self.clock,
+        };
         self.mark_changed(x, y);
     }
 
     /// Fills a disc. `Material::Empty` digs everything; other materials only
-    /// fill empty or gaseous cells so painting doesn't overwrite terrain.
+    /// fill open cells so painting doesn't overwrite terrain.
     /// Returns true if anything changed.
     pub fn paint_circle(&mut self, cx: i32, cy: i32, radius: i32, mat: Material) -> bool {
         let mut changed = false;
-        for y in cy - radius..=cy + radius {
-            for x in cx - radius..=cx + radius {
-                let (dx, dy) = (x - cx, y - cy);
-                if dx * dx + dy * dy > radius * radius || !self.in_bounds(x, y) {
-                    continue;
-                }
-                let cur = self.material(x, y);
-                let replace = if mat == Material::Empty {
-                    cur != Material::Empty
-                } else {
-                    matches!(cur.kind(), Kind::Empty | Kind::Gas) && cur != mat
-                };
-                if replace {
-                    self.set(x, y, mat);
-                    changed = true;
-                }
+        for (x, y) in disc(cx, cy, radius) {
+            if !self.in_bounds(x, y) {
+                continue;
+            }
+            let cur = self.material(x, y);
+            let replace = if mat == Material::Empty {
+                cur != Material::Empty && cur.props().hardness != INDESTRUCTIBLE
+            } else {
+                cur.is_open() && cur != mat
+            };
+            if replace {
+                self.set(x, y, mat);
+                changed = true;
             }
         }
         changed
     }
 
-    /// Wakes every chunk touching the 3x3 neighbourhood of (x, y) and flags
-    /// the owning chunk for rendering and replication.
-    fn mark_changed(&mut self, x: i32, y: i32) {
+    /// Digs a disc with a pick of the given `power`. Harder materials are less
+    /// likely to break per call; liquids, gases and indestructible cells are
+    /// skipped. Returns what was removed.
+    pub fn dig(&mut self, cx: i32, cy: i32, radius: i32, power: u8) -> Vec<(i32, i32, Material)> {
+        let cells: Vec<(i32, i32)> = disc(cx, cy, radius).collect();
+        self.dig_cells(&cells, power)
+    }
+
+    /// Like [`World::dig`], for an explicit list of cells.
+    pub fn dig_cells(&mut self, cells: &[(i32, i32)], power: u8) -> Vec<(i32, i32, Material)> {
+        let mut out = Vec::new();
+        for &(x, y) in cells {
+            let m = self.material(x, y);
+            if !matches!(m.kind(), Kind::Solid | Kind::Powder) {
+                continue;
+            }
+            let hardness = m.props().hardness;
+            if hardness == INDESTRUCTIBLE {
+                continue;
+            }
+            let p = power as f32 / (power as f32 + hardness as f32 * 1.5);
+            if self.rng.next_f32() < p {
+                self.set(x, y, Material::Empty);
+                out.push((x, y, m));
+            }
+        }
+        out
+    }
+
+    /// Shakes settled gravel loose within `radius` (it will start to fall).
+    pub fn disturb(&mut self, cx: i32, cy: i32, radius: i32) {
+        for (x, y) in disc(cx, cy, radius) {
+            if let Some(c) = self.get(x, y)
+                && c.mat == Material::Gravel
+                && c.life == GRAVEL_SETTLED
+            {
+                let i = self.idx(x, y);
+                self.cells[i].life = 4 + self.rng.next_u8() % 30;
+                self.touch(x, y);
+                self.events.push(SimEvent::CollapseStarted { x, y });
+            }
+        }
+    }
+
+    /// Total heat of materials within `radius` (negative near ice).
+    pub fn heat_near(&self, cx: i32, cy: i32, radius: i32) -> i32 {
+        disc(cx, cy, radius)
+            .map(|(x, y)| self.get(x, y).map_or(0, |c| c.mat.props().heat as i32))
+            .sum()
+    }
+
+    /// Wakes and flags the chunk for a change that doesn't alter the material
+    /// (lifetimes, charge, countdowns).
+    #[inline]
+    fn touch(&mut self, x: i32, y: i32) {
         let cs = CHUNK_SIZE as i32;
         let cx0 = ((x - 1).max(0) / cs) as usize;
         let cy0 = ((y - 1).max(0) / cs) as usize;
@@ -226,17 +365,53 @@ impl World {
         c.net_dirty = true;
     }
 
+    /// A cell's material changed: wake the area and disturb settled gravel
+    /// next to it, which is what starts cave-ins.
+    fn mark_changed(&mut self, x: i32, y: i32) {
+        self.touch(x, y);
+        for (dx, dy) in ADJACENT {
+            let (nx, ny) = (x + dx, y + dy);
+            if !self.in_bounds(nx, ny) {
+                continue;
+            }
+            let i = self.idx(nx, ny);
+            let c = &mut self.cells[i];
+            if c.mat == Material::Gravel && c.life == GRAVEL_SETTLED {
+                c.life = 6 + self.rng.next_u8() % 18;
+                self.touch(nx, ny);
+                self.events.push(SimEvent::CollapseStarted { x: nx, y: ny });
+            }
+        }
+    }
+
+    /// Marks all gravel as settled. World generation calls this last so
+    /// pre-placed gravel waits for the player to disturb it.
+    pub fn settle_gravel(&mut self) {
+        for c in &mut self.cells {
+            if c.mat == Material::Gravel {
+                c.life = GRAVEL_SETTLED;
+            }
+        }
+    }
+
     /// Advances the simulation by one tick.
     pub fn step(&mut self) {
         self.tick += 1;
         self.clock = self.clock.wrapping_add(1);
-        for c in &mut self.chunks {
-            c.active = std::mem::take(&mut c.active_next);
+        for i in 0..self.chunks.len() {
+            let (cx, cy) = (i % self.chunks_x, i / self.chunks_x);
+            let inside = self.in_region(cx, cy);
+            let c = &mut self.chunks[i];
+            c.active = inside && std::mem::take(&mut c.active_next);
         }
+        let (y_top, y_bottom) = match self.region {
+            Some((_, y0, _, y1)) => (y0 * CHUNK_SIZE, (y1 + 1) * CHUNK_SIZE),
+            None => (0, self.height),
+        };
 
         // Bottom-up so falling cells move once per tick; alternate horizontal
         // direction per row and tick to avoid a directional bias.
-        for y in (0..self.height as i32).rev() {
+        for y in (y_top as i32..y_bottom as i32).rev() {
             let cy = y as usize / CHUNK_SIZE;
             let ltr = (self.tick as i32 + y) & 1 == 0;
             for i in 0..self.chunks_x {
@@ -255,17 +430,21 @@ impl World {
                 }
             }
         }
+
+        self.random_ticks();
+        self.step_particles();
+        self.process_explosions();
     }
 
     fn update_cell(&mut self, x: i32, y: i32) {
-        let i = self.idx(x, y);
-        let cell = self.cells[i];
+        let cell = self.cells[self.idx(x, y)];
         if cell.clock == self.clock {
             return;
         }
         match cell.mat.kind() {
-            Kind::Empty | Kind::Solid => {}
-            Kind::Powder => self.update_powder(x, y),
+            Kind::Empty => {}
+            Kind::Solid => {}
+            Kind::Powder => self.update_powder(x, y, cell),
             Kind::Liquid => self.update_liquid(x, y, cell),
             Kind::Gas => self.update_gas(x, y, cell),
             Kind::Fire => self.update_fire(x, y, cell),
@@ -298,26 +477,44 @@ impl World {
         true
     }
 
-    fn update_powder(&mut self, x: i32, y: i32) {
+    #[inline]
+    fn coin_dir(&mut self) -> i32 {
+        if self.rng.coin() { 1 } else { -1 }
+    }
+
+    fn update_powder(&mut self, x: i32, y: i32, cell: Cell) {
+        if cell.mat == Material::Gravel {
+            if cell.life == GRAVEL_SETTLED {
+                return;
+            }
+            if cell.life > 0 {
+                // Disturbed: creak for a moment before letting go.
+                let i = self.idx(x, y);
+                self.cells[i].life -= 1;
+                self.touch(x, y);
+                return;
+            }
+        }
         if self.try_move(x, y, x, y + 1) {
             return;
         }
-        let d = if self.rng.coin() { 1 } else { -1 };
+        let d = self.coin_dir();
         let _ = self.try_move(x, y, x + d, y + 1) || self.try_move(x, y, x - d, y + 1);
     }
 
     fn update_liquid(&mut self, x: i32, y: i32, cell: Cell) {
-        if cell.mat == Material::Lava && self.react_hot(x, y, 12) {
+        let props = cell.mat.props();
+        if props.heat > 0 && self.react_hot(x, y) {
             return;
         }
         if self.try_move(x, y, x, y + 1) {
             return;
         }
-        let d = if self.rng.coin() { 1 } else { -1 };
+        let d = self.coin_dir();
         if self.try_move(x, y, x + d, y + 1) || self.try_move(x, y, x - d, y + 1) {
             return;
         }
-        let reach = cell.mat.props().dispersion as i32;
+        let reach = props.dispersion as i32;
         for dir in [d, -d] {
             let mut target = None;
             for k in 1..=reach {
@@ -339,22 +536,31 @@ impl World {
     }
 
     fn update_gas(&mut self, x: i32, y: i32, mut cell: Cell) {
-        let i = self.idx(x, y);
-        if cell.life <= 1 {
-            // Some steam condenses back into water.
-            let next = if cell.mat == Material::Steam && self.rng.chance(40) {
-                Material::Water
-            } else {
-                Material::Empty
-            };
-            self.set(x, y, next);
+        if !cell.mat.is_persistent_gas() {
+            if cell.life <= 1 {
+                // Some steam condenses back into water.
+                let next = if cell.mat == Material::Steam && self.rng.chance(40) {
+                    Material::Water
+                } else {
+                    Material::Empty
+                };
+                self.set(x, y, next);
+                return;
+            }
+            cell.life -= 1;
+            let i = self.idx(x, y);
+            self.cells[i].life = cell.life;
+            self.touch(x, y);
+        } else if !self.rng.chance(110) {
+            // Heavy gas drifts lazily. It only keeps its chunk awake while
+            // something actually moves, so settled pockets go to sleep.
+            if self.material(x, y - 1).is_open() && self.material(x, y - 1) != Material::Spore {
+                self.touch(x, y);
+            }
             return;
         }
-        cell.life -= 1;
-        self.cells[i].life = cell.life;
-        self.mark_changed(x, y);
 
-        let d = if self.rng.coin() { 1 } else { -1 };
+        let d = self.coin_dir();
         if self.rng.chance(200) && self.try_move(x, y, x, y - 1) {
             return;
         }
@@ -364,11 +570,9 @@ impl World {
     }
 
     fn update_fire(&mut self, x: i32, y: i32, cell: Cell) {
-        let i = self.idx(x, y);
         let burn = 1 + (self.rng.next_u8() & 1);
         if cell.life <= burn {
-            let r = self.rng.next_u8();
-            let next = match r {
+            let next = match self.rng.next_u8() {
                 0..40 => Material::Smoke,
                 40..52 => Material::Ash,
                 _ => Material::Empty,
@@ -376,14 +580,18 @@ impl World {
             self.set(x, y, next);
             return;
         }
+        let i = self.idx(x, y);
         self.cells[i].life = cell.life - burn;
-        self.mark_changed(x, y);
+        self.touch(x, y);
 
-        if self.react_hot(x, y, 0) {
+        if self.react_hot(x, y) {
             return;
         }
-        // Flicker upwards.
-        if self.rng.chance(120) {
+        // Fire with nothing left to burn drifts upward and dies; fire on fuel stays put.
+        let fuelled = NEIGHBOURS
+            .iter()
+            .any(|(dx, dy)| self.material(x + dx, y + dy).props().flammability > 0);
+        if !fuelled && self.rng.chance(120) {
             let d = (self.rng.next_u8() % 3) as i32 - 1;
             if self.material(x + d, y - 1) == Material::Empty {
                 self.try_move(x, y, x + d, y - 1);
@@ -391,35 +599,285 @@ impl World {
         }
     }
 
-    /// Shared behaviour for fire and lava: ignite flammable neighbours and
-    /// react with water. `extra_ignite` boosts ignition odds (lava is hotter).
-    /// Returns true if this cell was consumed.
-    fn react_hot(&mut self, x: i32, y: i32, extra_ignite: u8) -> bool {
-        let is_lava = self.material(x, y) == Material::Lava;
+    /// Sets a cell alight. Spore gas flashes off quickly.
+    pub fn ignite(&mut self, x: i32, y: i32) {
+        let m = self.material(x, y);
+        if m == Material::Spore {
+            let life = 12 + self.rng.next_u8() % 14;
+            self.set_with_life(x, y, Material::Fire, life);
+        } else if m.props().flammability > 0 {
+            self.set(x, y, Material::Fire);
+            self.events.push(SimEvent::Ignited { x, y });
+        }
+    }
+
+    /// Shared behaviour for hot cells (fire, lava): react with
+    /// water and ice, and ignite flammable neighbours.
+    /// Returns true if this cell was consumed or transformed.
+    fn react_hot(&mut self, x: i32, y: i32) -> bool {
+        let me = self.material(x, y);
         for (dx, dy) in NEIGHBOURS {
             let (nx, ny) = (x + dx, y + dy);
-            let n = self.material(nx, ny);
             if !self.in_bounds(nx, ny) {
                 continue;
             }
-            if n == Material::Water {
-                if is_lava {
-                    self.set(x, y, Material::Stone);
+            let n = self.material(nx, ny);
+            match (me, n) {
+                (Material::Lava, Material::Water) => {
+                    self.set(x, y, Material::Obsidian);
                     self.set(nx, ny, Material::Steam);
-                } else {
-                    self.set(x, y, Material::Steam);
+                    self.events.push(SimEvent::Sizzle { x, y });
+                    self.events.push(SimEvent::ObsidianFormed { x, y });
+                    return true;
                 }
-                return true;
-            }
-            let flam = n.props().flammability;
-            if flam > 0 && self.rng.chance(flam.saturating_add(extra_ignite)) {
-                self.set(nx, ny, Material::Fire);
+                (Material::Fire, Material::Water) => {
+                    self.set(x, y, Material::Steam);
+                    return true;
+                }
+                (Material::Lava, Material::Ice) => {
+                    self.set(x, y, Material::Obsidian);
+                    self.set(nx, ny, Material::Water);
+                    self.events.push(SimEvent::ObsidianFormed { x, y });
+                    return true;
+                }
+                (_, Material::Ice) => {
+                    if self.rng.chance(30) {
+                        self.set(nx, ny, Material::Water);
+                    }
+                }
+                _ => {
+                    let flam = n.props().flammability;
+                    let bonus = if me == Material::Fire { 0 } else { 12 };
+                    if flam > 0 && self.rng.chance(flam.saturating_add(bonus)) {
+                        self.ignite(nx, ny);
+                    }
+                }
             }
         }
-        if is_lava && self.rng.chance(2) && self.material(x, y - 1) == Material::Empty {
+        if me == Material::Lava && self.rng.chance(2) && self.material(x, y - 1) == Material::Empty {
             self.set(x, y - 1, Material::Smoke);
         }
         false
+    }
+
+    // ---- slow processes --------------------------------------------------
+
+    fn random_ticks(&mut self) {
+        for cy in 0..self.chunks_y {
+            for cx in 0..self.chunks_x {
+                if !self.in_region(cx, cy) {
+                    continue;
+                }
+                for _ in 0..RANDOM_TICKS_PER_CHUNK {
+                    let r = self.rng.next_u64();
+                    let x = (cx * CHUNK_SIZE) as i32 + (r & 63) as i32;
+                    let y = (cy * CHUNK_SIZE) as i32 + ((r >> 8) & 63) as i32;
+                    self.random_tick(x, y);
+                }
+            }
+        }
+    }
+
+    fn random_tick(&mut self, x: i32, y: i32) {
+        let cell = self.cells[self.idx(x, y)];
+        match cell.mat {
+            Material::Fungus => {
+                let (dx, dy) = NEIGHBOURS[(self.rng.next_u8() % 8) as usize];
+                let (nx, ny) = (x + dx, y + dy);
+                if self.material(nx, ny) == Material::Empty
+                    && self.rng.chance(Material::Fungus.props().growth)
+                    && self.is_anchored(nx, ny)
+                    && self.count_adjacent(nx, ny, Material::Fungus) <= 1
+                {
+                    self.set(nx, ny, Material::Fungus);
+                }
+            }
+            Material::Ice => {
+                if ADJACENT
+                    .iter()
+                    .any(|(dx, dy)| self.material(x + dx, y + dy).props().heat > 0)
+                {
+                    self.set(x, y, Material::Water);
+                }
+            }
+            Material::Stone | Material::Basalt => {
+                // Heat cracks rock next to lava.
+                if self.rng.chance(60) && self.count_adjacent(x, y, Material::Lava) > 0 {
+                    self.set(x, y, Material::Gravel);
+                }
+            }
+            Material::Grass if self.fertility > 0 => {
+                // Grass creeps over bare dirt that has air above it.
+                let r = self.rng.next_u8();
+                let (nx, ny) = (x + (r % 5) as i32 - 2, y + ((r >> 4) % 3) as i32 - 1);
+                if self.material(nx, ny) == Material::Dirt
+                    && self.material(nx, ny - 1).is_open()
+                    && self.rng.chance(self.fertility)
+                {
+                    self.set(nx, ny, Material::Grass);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Next to a solid that isn't fungus (so fungus hugs surfaces).
+    fn is_anchored(&self, x: i32, y: i32) -> bool {
+        ADJACENT.iter().any(|(dx, dy)| {
+            let m = self.material(x + dx, y + dy);
+            m.kind() == Kind::Solid && m != Material::Fungus
+        })
+    }
+
+    fn count_adjacent(&self, x: i32, y: i32, mat: Material) -> usize {
+        ADJACENT
+            .iter()
+            .filter(|(dx, dy)| self.material(x + dx, y + dy) == mat)
+            .count()
+    }
+
+    // ---- particles -------------------------------------------------------
+
+    /// Launches a cell of `mat` from (x, y). Dropped if too many are in flight.
+    pub fn spawn_particle(&mut self, x: f32, y: f32, vx: f32, vy: f32, mat: Material) {
+        if self.particles.len() < MAX_PARTICLES && self.in_bounds(x as i32, y as i32) {
+            self.particles.push(Particle { x, y, vx, vy, mat });
+        }
+    }
+
+    fn step_particles(&mut self) {
+        let mut i = 0;
+        while i < self.particles.len() {
+            let mut p = self.particles[i];
+            p.vy = (p.vy + PARTICLE_GRAVITY).min(5.0);
+            let steps = p.vx.abs().max(p.vy.abs()).ceil().max(1.0) as i32;
+            let (sx, sy) = (p.vx / steps as f32, p.vy / steps as f32);
+            let mut done = None;
+            for _ in 0..steps {
+                let (nx, ny) = (p.x + sx, p.y + sy);
+                let (cx, cy) = (nx.floor() as i32, ny.floor() as i32);
+                if !self.in_bounds(cx, cy) {
+                    done = Some(false);
+                    break;
+                }
+                if !self.material(cx, cy).is_open() {
+                    done = Some(true);
+                    break;
+                }
+                p.x = nx;
+                p.y = ny;
+            }
+            match done {
+                Some(landed) => {
+                    if landed {
+                        let (x, y) = (p.x.floor() as i32, p.y.floor() as i32);
+                        if self.material(x, y).is_open() {
+                            self.set(x, y, p.mat);
+                        }
+                    }
+                    self.particles.swap_remove(i);
+                }
+                None => {
+                    self.particles[i] = p;
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    // ---- explosions ------------------------------------------------------
+
+    /// Queues an explosion; it happens at the end of the current/next tick.
+    pub fn explode(&mut self, x: i32, y: i32, radius: i32) {
+        self.pending_explosions.push((x, y, radius));
+    }
+
+    fn process_explosions(&mut self) {
+        let batch: Vec<_> = {
+            let n = self.pending_explosions.len().min(MAX_EXPLOSIONS_PER_TICK);
+            self.pending_explosions.drain(..n).collect()
+        };
+        for (x, y, r) in batch {
+            self.detonate(x, y, r);
+        }
+    }
+
+    fn detonate(&mut self, cx: i32, cy: i32, r: i32) {
+        let mut destroyed = 0;
+        let rf = r.max(1) as f32;
+        for (x, y) in disc(cx, cy, r) {
+            let Some(cell) = self.get(x, y) else { continue };
+            let m = cell.mat;
+            let props = m.props();
+            if m == Material::Empty || props.hardness == INDESTRUCTIBLE {
+                continue;
+            }
+            let (dx, dy) = ((x - cx) as f32, (y - cy) as f32);
+            let d = (dx * dx + dy * dy).sqrt() / rf;
+            let (nx, ny) = if d > 0.0 {
+                (dx / (d * rf), dy / (d * rf))
+            } else {
+                (0.0, -1.0)
+            };
+            let speed = 1.2 + self.rng.next_f32() * 2.5;
+            let fling = |w: &mut World, mat| {
+                w.spawn_particle(x as f32 + 0.5, y as f32 + 0.5, nx * speed, ny * speed - 0.8, mat)
+            };
+
+            match props.kind {
+                Kind::Liquid => {
+                    if self.rng.chance(90) {
+                        self.set(x, y, Material::Empty);
+                        fling(self, m);
+                    }
+                }
+                Kind::Gas if m == Material::Spore => self.ignite(x, y),
+                Kind::Solid | Kind::Powder => {
+                    let strength = (1.0 - d * d * 0.8) * 1.4 - props.hardness as f32 / 255.0 * 0.9;
+                    if self.rng.next_f32() >= strength {
+                        continue;
+                    }
+                    destroyed += 1;
+                    let roll = self.rng.next_u8();
+                    let next = if roll < 30 {
+                        let debris = match (props.kind, props.flammability > 0) {
+                            (Kind::Powder, _) => m,
+                            (_, true) => Material::Ash,
+                            _ => Material::Gravel,
+                        };
+                        self.set(x, y, Material::Empty);
+                        fling(self, debris);
+                        continue;
+                    } else if d < 0.5 && roll < 90 {
+                        Material::Fire
+                    } else if roll < 110 {
+                        Material::Smoke
+                    } else {
+                        Material::Empty
+                    };
+                    self.set(x, y, next);
+                }
+                _ => {}
+            }
+        }
+        // Embers.
+        for _ in 0..r * 2 {
+            let a = self.rng.next_f32() * std::f32::consts::TAU;
+            let s = 1.0 + self.rng.next_f32() * 2.5;
+            self.spawn_particle(
+                cx as f32,
+                cy as f32,
+                a.cos() * s,
+                a.sin() * s - 1.0,
+                Material::Fire,
+            );
+        }
+        self.events.push(SimEvent::Explosion {
+            x: cx,
+            y: cy,
+            radius: r,
+            destroyed,
+        });
     }
 
     // ---- change tracking -------------------------------------------------
@@ -444,14 +902,44 @@ impl World {
             .collect()
     }
 
-    /// Writes a chunk's pixels into an RGBA8 buffer covering the whole world.
-    pub fn write_chunk_rgba(&self, cx: usize, cy: usize, buf: &mut [u8]) {
+    /// Writes a chunk's pixels into an RGBA8 buffer `buf_width` pixels wide
+    /// whose top-left corner is world cell `origin`. The chunk must lie inside it.
+    pub fn write_chunk_rgba(
+        &self,
+        cx: usize,
+        cy: usize,
+        buf: &mut [u8],
+        buf_width: usize,
+        origin: (usize, usize),
+        frame: u32,
+    ) {
         for y in cy * CHUNK_SIZE..(cy + 1) * CHUNK_SIZE {
+            let row = (y - origin.1) * buf_width;
             for x in cx * CHUNK_SIZE..(cx + 1) * CHUNK_SIZE {
-                let i = y * self.width + x;
-                buf[i * 4..i * 4 + 4].copy_from_slice(&self.cells[i].rgba());
+                let o = (row + x - origin.0) * 4;
+                let rgba = cell_rgba(self.cells[y * self.width + x], x as i32, y as i32, frame);
+                buf[o..o + 4].copy_from_slice(&rgba);
             }
         }
+    }
+
+    /// Whether a chunk holds anything whose colour animates over time.
+    pub fn chunk_animates(&self, cx: usize, cy: usize) -> bool {
+        (cy * CHUNK_SIZE..(cy + 1) * CHUNK_SIZE).any(|y| {
+            let row = &self.cells[y * self.width + cx * CHUNK_SIZE..y * self.width + (cx + 1) * CHUNK_SIZE];
+            row.iter().any(|c| {
+                matches!(
+                    c.mat,
+                    Material::Water
+                        | Material::Lava
+                        | Material::Fungus
+                        | Material::Crystal
+                        | Material::Spore
+                        | Material::XeniteOre
+                        | Material::AuroriumOre
+                )
+            })
+        })
     }
 
     // ---- replication -----------------------------------------------------
@@ -512,28 +1000,46 @@ impl World {
     }
 }
 
-const NEIGHBOURS: [(i32, i32); 8] = [
-    (-1, -1),
-    (0, -1),
-    (1, -1),
-    (-1, 0),
-    (1, 0),
-    (-1, 1),
-    (0, 1),
-    (1, 1),
-];
+/// Cells of a filled circle.
+pub fn disc(cx: i32, cy: i32, r: i32) -> impl Iterator<Item = (i32, i32)> {
+    (cy - r..=cy + r).flat_map(move |y| {
+        (cx - r..=cx + r).filter_map(move |x| {
+            let (dx, dy) = (x - cx, y - cy);
+            (dx * dx + dy * dy <= r * r).then_some((x, y))
+        })
+    })
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn run(w: &mut World, ticks: usize) {
+        for _ in 0..ticks {
+            w.step();
+        }
+    }
+
+    fn count(w: &World, mat: Material) -> usize {
+        (0..w.height() as i32)
+            .flat_map(|y| (0..w.width() as i32).map(move |x| (x, y)))
+            .filter(|&(x, y)| w.material(x, y) == mat)
+            .count()
+    }
+
+    fn fill(w: &mut World, x0: i32, y0: i32, x1: i32, y1: i32, mat: Material) {
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                w.set(x, y, mat);
+            }
+        }
+    }
+
     #[test]
     fn sand_falls_and_piles() {
         let mut w = World::new(64, 64, 1);
         w.set(10, 0, Material::Sand);
-        for _ in 0..100 {
-            w.step();
-        }
+        run(&mut w, 100);
         assert_eq!(w.material(10, 63), Material::Sand);
         assert_eq!(w.material(10, 0), Material::Empty);
     }
@@ -542,10 +1048,7 @@ mod tests {
     fn water_spreads_flat() {
         let mut w = World::new(64, 64, 2);
         w.paint_circle(32, 10, 3, Material::Water);
-        for _ in 0..400 {
-            w.step();
-        }
-        // All water should have settled into the bottom row(s).
+        run(&mut w, 400);
         for y in 0..60 {
             for x in 0..64 {
                 assert_ne!(w.material(x, y), Material::Water, "water floating at {x},{y}");
@@ -554,12 +1057,203 @@ mod tests {
     }
 
     #[test]
-    fn chunks_fall_asleep() {
-        let mut w = World::new(128, 128, 3);
-        w.set(5, 120, Material::Stone);
-        for _ in 0..3 {
-            w.step();
+    fn sand_sinks_in_water() {
+        let mut w = World::new(64, 64, 3);
+        fill(&mut w, 0, 50, 63, 63, Material::Water);
+        w.set(20, 10, Material::Sand);
+        run(&mut w, 200);
+        assert_eq!(
+            w.material(20, 63),
+            Material::Sand,
+            "sand should sink to the bottom"
+        );
+    }
+
+    #[test]
+    fn water_and_lava_make_obsidian_and_steam() {
+        let mut w = World::new(64, 64, 4);
+        fill(&mut w, 10, 60, 20, 63, Material::Lava);
+        fill(&mut w, 10, 50, 20, 52, Material::Water);
+        run(&mut w, 60);
+        let events = w.take_events();
+        assert!(count(&w, Material::Obsidian) > 0);
+        assert!(events.iter().any(|e| matches!(e, SimEvent::Sizzle { .. })));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, SimEvent::ObsidianFormed { .. }))
+        );
+    }
+
+    #[test]
+    fn fire_ignites_flammables() {
+        let mut w = World::new(64, 64, 5);
+        fill(&mut w, 10, 50, 30, 63, Material::Wood);
+        w.set(10, 49, Material::Fire);
+        run(&mut w, 300);
+        assert!(count(&w, Material::Wood) < 21 * 14, "wood should burn");
+    }
+
+    #[test]
+    fn spore_gas_burns_away() {
+        let mut w = World::new(128, 128, 6);
+        fill(&mut w, 0, 100, 127, 127, Material::Stone);
+        fill(&mut w, 30, 60, 90, 99, Material::Spore);
+        let before = count(&w, Material::Spore);
+        w.set(60, 99, Material::Fire);
+        run(&mut w, 300);
+        assert!(count(&w, Material::Spore) < before / 2);
+    }
+
+    #[test]
+    fn explosion_destroys_terrain_but_not_plating() {
+        let mut w = World::new(64, 64, 7);
+        fill(&mut w, 0, 0, 63, 63, Material::Stone);
+        fill(&mut w, 30, 30, 34, 34, Material::Plating);
+        w.explode(20, 20, 10);
+        w.step();
+        assert!(count(&w, Material::Stone) < 64 * 64 - 25 - 150);
+        assert_eq!(count(&w, Material::Plating), 25);
+        let destroyed = w.take_events().iter().find_map(|e| match e {
+            SimEvent::Explosion { destroyed, .. } => Some(*destroyed),
+            _ => None,
+        });
+        assert!(destroyed.unwrap() > 100);
+    }
+
+    #[test]
+    fn heat_melts_ice() {
+        let mut w = World::new(64, 64, 10);
+        fill(&mut w, 0, 62, 63, 63, Material::Stone);
+        fill(&mut w, 20, 55, 30, 61, Material::Ice);
+        w.set(25, 54, Material::Fire);
+        fill(&mut w, 31, 58, 33, 61, Material::Lava);
+        run(&mut w, 200);
+        assert!(count(&w, Material::Ice) < 77);
+        assert!(
+            count(&w, Material::Water) + count(&w, Material::Steam) > 0 || count(&w, Material::Obsidian) > 0
+        );
+    }
+
+    #[test]
+    fn settled_gravel_holds_until_disturbed() {
+        let mut w = World::new(64, 64, 12);
+        fill(&mut w, 0, 20, 63, 29, Material::Gravel);
+        w.settle_gravel();
+        w.take_events();
+        run(&mut w, 100);
+        assert_eq!(count(&w, Material::Gravel), 64 * 10);
+        assert_eq!(w.material(30, 20), Material::Gravel, "ceiling holds");
+
+        w.set(30, 29, Material::Empty);
+        run(&mut w, 1500);
+        assert!(
+            w.take_events()
+                .iter()
+                .any(|e| matches!(e, SimEvent::CollapseStarted { .. }))
+        );
+        assert!(
+            (0..64).filter(|&x| w.material(x, 63) == Material::Gravel).count() > 40,
+            "disturbed gravel should collapse to the floor"
+        );
+    }
+
+    #[test]
+    fn digging_respects_hardness() {
+        let mut w = World::new(64, 64, 14);
+        fill(&mut w, 0, 0, 30, 63, Material::Dirt);
+        fill(&mut w, 31, 0, 63, 63, Material::Obsidian);
+        fill(&mut w, 0, 0, 5, 5, Material::Glass);
+        let mut dirt = 0;
+        let mut obsidian = 0;
+        for i in 0..20 {
+            dirt += w.dig(15, 10 + i * 2, 3, 40).len();
+            obsidian += w.dig(48, 10 + i * 2, 3, 40).len();
+            w.dig(2, 2, 3, 255);
         }
+        assert!(dirt > obsidian * 2, "dirt {dirt} vs obsidian {obsidian}");
+        assert_eq!(count(&w, Material::Glass), 36);
+    }
+
+    #[test]
+    fn fungus_grows_over_time() {
+        let mut w = World::new(64, 64, 15);
+        fill(&mut w, 0, 60, 63, 63, Material::Stone);
+        for x in [8, 24, 40, 56] {
+            w.set(x, 59, Material::Fungus);
+        }
+        run(&mut w, 4000);
+        assert!(
+            count(&w, Material::Fungus) > 6,
+            "got {}",
+            count(&w, Material::Fungus)
+        );
+    }
+
+    #[test]
+    fn grass_spreads_only_when_fertile() {
+        let mut w = World::new(64, 64, 22);
+        fill(&mut w, 0, 40, 63, 63, Material::Dirt);
+        fill(&mut w, 30, 40, 33, 40, Material::Grass);
+        run(&mut w, 3000);
+        assert_eq!(count(&w, Material::Grass), 4, "barren planet: grass stays put");
+        w.set_fertility(200);
+        run(&mut w, 6000);
+        assert!(
+            count(&w, Material::Grass) > 12,
+            "got {}",
+            count(&w, Material::Grass)
+        );
+        assert!(
+            (0..64).all(|x| w.material(x, 45) != Material::Grass),
+            "only the surface greens"
+        );
+    }
+
+    #[test]
+    fn particles_land_back_in_the_world() {
+        let mut w = World::new(64, 64, 16);
+        fill(&mut w, 0, 60, 63, 63, Material::Stone);
+        w.spawn_particle(10.0, 10.0, 1.0, -1.0, Material::Sand);
+        run(&mut w, 200);
+        assert!(w.particles().is_empty());
+        assert_eq!(count(&w, Material::Sand), 1);
+    }
+
+    #[test]
+    fn region_limits_simulation_but_keeps_wakeups() {
+        let mut w = World::new(64, 512, 20);
+        w.set(10, 10, Material::Sand);
+        w.set(10, 400, Material::Sand);
+        w.set_active_region(Some(&[(10, 10)]), 1);
+        run(&mut w, 100);
+        assert_eq!(w.material(10, 400), Material::Sand, "far sand is frozen");
+        assert_ne!(w.material(10, 10), Material::Sand, "near sand fell");
+        w.set_active_region(Some(&[(10, 400)]), 1);
+        run(&mut w, 200);
+        assert_eq!(
+            w.material(10, 511),
+            Material::Sand,
+            "far sand resumes when the region arrives"
+        );
+    }
+
+    #[test]
+    fn settled_gas_lets_chunks_sleep() {
+        let mut w = World::new(64, 64, 21);
+        fill(&mut w, 0, 0, 63, 63, Material::Stone);
+        fill(&mut w, 10, 10, 40, 30, Material::Spore);
+        run(&mut w, 200);
+        w.take_net_dirty();
+        run(&mut w, 5);
+        assert!(w.take_net_dirty().is_empty(), "sealed gas pocket should sleep");
+    }
+
+    #[test]
+    fn chunks_fall_asleep() {
+        let mut w = World::new(128, 128, 17);
+        w.set(5, 120, Material::Stone);
+        run(&mut w, 3);
         w.take_net_dirty();
         w.step();
         assert!(w.take_net_dirty().is_empty());
@@ -567,10 +1261,10 @@ mod tests {
 
     #[test]
     fn chunk_codec_roundtrip() {
-        let mut a = World::new(128, 64, 4);
+        let mut a = World::new(128, 64, 18);
         a.paint_circle(70, 30, 10, Material::Sand);
         a.set(65, 5, Material::Fire);
-        let mut b = World::new(128, 64, 4);
+        let mut b = World::new(128, 64, 18);
         for cy in 0..a.chunks_y() {
             for cx in 0..a.chunks_x() {
                 b.decode_chunk(cx, cy, &a.encode_chunk(cx, cy)).unwrap();
@@ -586,7 +1280,7 @@ mod tests {
 
     #[test]
     fn decode_rejects_garbage() {
-        let mut w = World::new(64, 64, 5);
+        let mut w = World::new(64, 64, 19);
         assert!(w.decode_chunk(0, 0, &[1, 2]).is_err());
         assert!(w.decode_chunk(0, 0, &[10, 1, 0]).is_err());
         assert!(w.decode_chunk(9, 0, &[]).is_err());

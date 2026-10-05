@@ -1,32 +1,42 @@
-//! The running game session: world, players, and the network role.
+//! The running game session: the cell world, the colony, and the network role.
 //!
-//! The host is authoritative over the world. It simulates, applies edits
-//! from clients, and streams changed chunks. Clients don't simulate cells;
-//! they own only their player's movement and send it to the host.
+//! The host is authoritative. It simulates the world and the colony, applies
+//! actions from clients, and streams changes to them. Clients own only their
+//! character's movement; everything else they hold is a replica.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use bevy::prelude::*;
-use sbct_net::protocol::{self, ClientMsg, Edit, HostMsg, PROTOCOL_VERSION, PlayerState};
+use sbct_net::protocol::{self, ClientMsg, HostMsg, PROTOCOL_VERSION, PoseUpdate};
 use sbct_net::{Delivery, NetEvent, PeerId, Transport};
-use sbct_sim::{Material, World, worldgen};
+use sbct_sim::World;
+use sbct_sim::colony::actions::Action;
+use sbct_sim::colony::geom::V2;
+use sbct_sim::colony::save::SaveFile;
+use sbct_sim::colony::{Colony, Event, Player, PlayerKey, Pose, PublicPlayer};
+use sbct_sim::planetgen;
 
 use crate::AppState;
 use crate::menu::{Connecting, MenuState};
-use crate::player::LocalPlayer;
+use crate::settings::data_dir;
 use crate::steam::SteamClient;
 
-pub const WORLD_WIDTH: usize = 1536;
-pub const WORLD_HEIGHT: usize = 768;
-/// How often positions and dirty chunks are sent (seconds).
+/// How often poses and dirty chunks are sent (seconds).
 const SEND_INTERVAL: f32 = 1.0 / 20.0;
-const CLIENT_TIMEOUT_SECS: f32 = 15.0;
-const MAX_EDIT_RADIUS: u8 = 8;
-/// Peer id used for the local player when there's no network (singleplayer).
-pub const OFFLINE_ID: PeerId = 1;
+/// How often changed entities, vitals and moving entities are sent.
+const ENTITY_INTERVAL: f32 = 1.0 / 12.0;
+const GLOBALS_INTERVAL: f32 = 0.25;
+const AUTOSAVE_SECS: f32 = 180.0;
+const CLIENT_TIMEOUT_SECS: f32 = 20.0;
+/// Clients are sent moving entities and effects within this many cells.
+const INTEREST_RADIUS: f32 = 520.0;
+pub const MAX_PLAYERS: usize = 8;
+/// Chunks simulated around each player.
+const ACTIVE_CHUNKS: usize = 5;
 
 pub enum Role {
-    /// Singleplayer, or a host with no transport.
+    /// Singleplayer.
     Offline,
     Host,
     Client {
@@ -34,83 +44,163 @@ pub enum Role {
     },
 }
 
-pub struct RemotePlayer {
-    pub name: String,
-    pub state: PlayerState,
+struct Peer {
+    key: PlayerKey,
+    /// The player revision last sent to them.
+    you_rev: u32,
 }
 
 #[derive(Resource)]
 pub struct Session {
     pub role: Role,
     transport: Option<Box<dyn Transport>>,
-    pub local_id: PeerId,
-    pub local_name: String,
+    /// This player's key.
+    pub me: PlayerKey,
     /// Steam lobby, if any, for the invite button.
     pub lobby: Option<u64>,
     pub world: Option<World>,
-    pub players: HashMap<PeerId, RemotePlayer>,
-    pub spawn: Vec2,
+    pub colony: Option<Colony>,
+    peers: HashMap<PeerId, Peer>,
+    /// Clients: public info about everyone online, as last sent by the host.
+    roster: HashMap<PlayerKey, PublicPlayer>,
+    roster_stamp: u64,
+    /// Events to present this frame (sounds, particles, toasts).
+    pub events: Vec<Event>,
     /// Client only: chunks received during the initial download.
     pub chunks_received: usize,
+    /// The file this world is saved to (hosts only).
+    pub save_name: Option<String>,
     since_heard: f32,
     send_timer: f32,
+    entity_timer: f32,
+    globals_timer: f32,
+    autosave_timer: f32,
+}
+
+pub fn saves_dir() -> PathBuf {
+    data_dir().join("saves")
+}
+
+/// Saved worlds, newest first.
+pub fn list_saves() -> Vec<String> {
+    let mut saves: Vec<(std::time::SystemTime, String)> = std::fs::read_dir(saves_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let path = e.path();
+            if path.extension()? != "sbct" {
+                return None;
+            }
+            let time = e.metadata().ok()?.modified().ok()?;
+            Some((time, path.file_stem()?.to_string_lossy().into_owned()))
+        })
+        .collect();
+    saves.sort_by_key(|s| std::cmp::Reverse(s.0));
+    saves.into_iter().map(|s| s.1).collect()
+}
+
+fn clean_save_name(name: &str) -> String {
+    let s: String = name
+        .chars()
+        .filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_'))
+        .take(40)
+        .collect();
+    if s.trim().is_empty() {
+        "world".into()
+    } else {
+        s.trim().to_string()
+    }
 }
 
 impl Session {
-    /// Starts hosting. `transport` is `None` for singleplayer.
-    pub fn host(
-        transport: Option<Box<dyn Transport>>,
-        local_id: PeerId,
-        local_name: String,
-        lobby: Option<u64>,
-        seed: u64,
-    ) -> Session {
-        let world = worldgen::generate(WORLD_WIDTH, WORLD_HEIGHT, seed);
-        let (sx, sy) = worldgen::find_spawn(&world, world.width() as i32 / 2);
+    fn new(role: Role, transport: Option<Box<dyn Transport>>, me: PlayerKey, lobby: Option<u64>) -> Session {
         Session {
-            role: if transport.is_some() {
-                Role::Host
-            } else {
-                Role::Offline
-            },
+            role,
             transport,
-            local_id,
-            local_name,
+            me,
             lobby,
-            chunks_received: world.chunks_x() * world.chunks_y(),
-            world: Some(world),
-            players: HashMap::new(),
-            spawn: Vec2::new(sx as f32, sy as f32),
+            world: None,
+            colony: None,
+            peers: HashMap::new(),
+            roster: HashMap::new(),
+            roster_stamp: 0,
+            events: Vec::new(),
+            chunks_received: 0,
+            save_name: None,
             since_heard: 0.0,
             send_timer: 0.0,
+            entity_timer: 0.0,
+            globals_timer: 0.0,
+            autosave_timer: 0.0,
         }
+    }
+
+    fn host_role(transport: &Option<Box<dyn Transport>>) -> Role {
+        if transport.is_some() {
+            Role::Host
+        } else {
+            Role::Offline
+        }
+    }
+
+    /// Starts a new world. `transport` is `None` for singleplayer.
+    pub fn host_new(
+        transport: Option<Box<dyn Transport>>,
+        me: PlayerKey,
+        name: String,
+        lobby: Option<u64>,
+        seed: u64,
+        save_name: &str,
+    ) -> Session {
+        let mut planet = planetgen::generate(seed);
+        let mut colony = Colony::found(&mut planet);
+        colony.join(me, name.clone());
+        let mut s = Session::new(Self::host_role(&transport), transport, me, lobby);
+        s.chunks_received = planet.world.chunks_x() * planet.world.chunks_y();
+        s.world = Some(planet.world);
+        s.colony = Some(colony);
+        s.save_name = Some(clean_save_name(save_name));
+        s
+    }
+
+    /// Loads a saved world and hosts it.
+    pub fn host_saved(
+        transport: Option<Box<dyn Transport>>,
+        me: PlayerKey,
+        name: String,
+        lobby: Option<u64>,
+        save_name: &str,
+    ) -> Result<Session, String> {
+        let path = saves_dir().join(format!("{save_name}.sbct"));
+        let bytes = std::fs::read(&path).map_err(|e| format!("Couldn't read {}: {e}", path.display()))?;
+        let (world, mut colony) = SaveFile::from_bytes(&bytes)
+            .and_then(|f| f.restore())
+            .map_err(|e| format!("Couldn't load {save_name}: {e}"))?;
+        colony.join(me, name.clone());
+        let mut s = Session::new(Self::host_role(&transport), transport, me, lobby);
+        s.chunks_received = world.chunks_x() * world.chunks_y();
+        s.world = Some(world);
+        s.colony = Some(colony);
+        s.save_name = Some(save_name.to_string());
+        Ok(s)
     }
 
     /// Connects to a host over an established transport and says hello.
     pub fn client(
         mut transport: Box<dyn Transport>,
         host: PeerId,
-        local_name: String,
+        name: String,
+        key: PlayerKey,
         lobby: Option<u64>,
     ) -> Session {
         let hello = ClientMsg::Hello {
             version: PROTOCOL_VERSION,
-            name: local_name.clone(),
+            name: name.clone(),
+            key,
         };
         transport.send(host, Delivery::Reliable, &protocol::encode(&hello));
-        Session {
-            role: Role::Client { host },
-            transport: Some(transport),
-            local_id: 0,
-            local_name,
-            lobby,
-            world: None,
-            players: HashMap::new(),
-            spawn: Vec2::ZERO,
-            chunks_received: 0,
-            since_heard: 0.0,
-            send_timer: 0.0,
-        }
+        Session::new(Role::Client { host }, Some(transport), key, lobby)
     }
 
     pub fn is_authority(&self) -> bool {
@@ -123,7 +213,7 @@ impl Session {
 
     /// True once the client has the whole world (always true for hosts).
     pub fn is_loaded(&self) -> bool {
-        self.world.is_some() && self.chunks_received >= self.total_chunks()
+        self.world.is_some() && self.colony.is_some() && self.chunks_received >= self.total_chunks()
     }
 
     pub fn describe(&self) -> String {
@@ -134,24 +224,51 @@ impl Session {
         }
     }
 
-    /// Paints locally and, on clients, asks the host to do the same.
-    /// The client applies it immediately so digging feels responsive; the
-    /// host's chunk updates overwrite it if they disagree.
-    pub fn edit(&mut self, edit: Edit) {
-        if let Some(world) = &mut self.world {
-            world.paint_circle(
-                edit.x,
-                edit.y,
-                edit.radius as i32,
-                Material::from_u8(edit.material),
-            );
+    pub fn player(&self) -> Option<&Player> {
+        self.colony.as_ref()?.players.get(&self.me)
+    }
+
+    /// Public info about everyone online (including this player).
+    pub fn roster(&self) -> Vec<PublicPlayer> {
+        match (&self.role, &self.colony) {
+            (Role::Client { .. }, _) => self.roster.values().cloned().collect(),
+            (_, Some(c)) => c.online().map(|p| p.public()).collect(),
+            _ => Vec::new(),
         }
-        if let Role::Client { host } = self.role {
-            self.send(
-                host,
-                Delivery::Reliable,
-                &protocol::encode(&ClientMsg::Edit(edit)),
-            );
+    }
+
+    /// Does something to the colony as this player: applied directly on the
+    /// host, sent to the host from a client.
+    pub fn act(&mut self, action: Action) {
+        match self.role {
+            Role::Client { host } => {
+                self.send(
+                    host,
+                    Delivery::Reliable,
+                    &protocol::encode(&ClientMsg::Action(action)),
+                );
+            }
+            _ => {
+                let me = self.me;
+                if let (Some(world), Some(colony)) = (&mut self.world, &mut self.colony)
+                    && let Err(reason) = colony.apply(world, me, action)
+                {
+                    colony.toast(Some(me), reason, false);
+                }
+            }
+        }
+    }
+
+    /// Records this player's pose (the client owns its own movement).
+    pub fn set_pose(&mut self, pose: Pose) {
+        let me = self.me;
+        let authority = self.is_authority();
+        if let Some(colony) = &mut self.colony {
+            if authority {
+                colony.set_pose(me, pose);
+            } else if let Some(p) = colony.players.get_mut(&me) {
+                p.pose = pose;
+            }
         }
     }
 
@@ -161,128 +278,260 @@ impl Session {
         }
     }
 
-    fn broadcast(&mut self, msg: &HostMsg, delivery: Delivery, except: Option<PeerId>) {
-        let bytes = protocol::encode(msg);
-        let ids: Vec<PeerId> = self
-            .players
-            .keys()
-            .copied()
-            .filter(|&id| Some(id) != except)
-            .collect();
-        for id in ids {
-            self.send(id, delivery, &bytes);
+    /// Writes the world to its save file. Hosts only.
+    pub fn save(&mut self) -> Result<(), String> {
+        let (Some(world), Some(colony), Some(name)) = (&self.world, &self.colony, &self.save_name) else {
+            return Ok(());
+        };
+        if !self.is_authority() {
+            return Ok(());
         }
+        let dir = saves_dir();
+        let bytes = SaveFile::capture(world, colony).to_bytes();
+        let result = (|| -> std::io::Result<()> {
+            std::fs::create_dir_all(&dir)?;
+            let tmp = dir.join(format!("{name}.sbct.tmp"));
+            std::fs::write(&tmp, bytes)?;
+            std::fs::rename(tmp, dir.join(format!("{name}.sbct")))
+        })();
+        result.map_err(|e| format!("Couldn't save to {}: {e}", dir.display()))
     }
 
     // ---- host ------------------------------------------------------------
 
     fn host_handle(&mut self, from: PeerId, msg: ClientMsg) {
         match msg {
-            ClientMsg::Hello { version, name } => {
-                if version != PROTOCOL_VERSION {
-                    let reason = format!("version mismatch (host {PROTOCOL_VERSION}, you {version})");
-                    self.send(
+            ClientMsg::Hello { version, name, key } => {
+                let reject = |s: &mut Session, reason: String| {
+                    s.send(
                         from,
                         Delivery::Reliable,
                         &protocol::encode(&HostMsg::Reject { reason }),
                     );
-                    return;
-                }
-                if self.players.contains_key(&from) {
-                    return;
-                }
-                self.host_welcome(from, sanitize_name(&name));
-            }
-            // Ignore anything from peers who haven't said hello.
-            _ if !self.players.contains_key(&from) => {}
-            ClientMsg::State(state) => {
-                if let Some(p) = self.players.get_mut(&from) {
-                    p.state = state;
-                }
-            }
-            ClientMsg::Edit(mut edit) => {
-                edit.radius = edit.radius.min(MAX_EDIT_RADIUS);
-                if let Some(world) = &mut self.world {
-                    world.paint_circle(
-                        edit.x,
-                        edit.y,
-                        edit.radius as i32,
-                        Material::from_u8(edit.material),
+                };
+                if version != PROTOCOL_VERSION {
+                    return reject(
+                        self,
+                        format!("version mismatch (host {PROTOCOL_VERSION}, you {version})"),
                     );
+                }
+                if self.peers.contains_key(&from) {
+                    return;
+                }
+                if self.peers.len() + 1 >= MAX_PLAYERS {
+                    return reject(self, format!("the colony is full ({MAX_PLAYERS} players)"));
+                }
+                if key == self.me || self.peers.values().any(|p| p.key == key) || key == 0 {
+                    return reject(self, "that player is already here".into());
+                }
+                self.host_welcome(from, key, sanitize_name(&name));
+            }
+            ClientMsg::Pose(pose) => {
+                if let (Some(peer), Some(colony)) = (self.peers.get(&from), &mut self.colony) {
+                    colony.set_pose(peer.key, pose);
+                }
+            }
+            ClientMsg::Action(action) => {
+                let Some(key) = self.peers.get(&from).map(|p| p.key) else {
+                    return;
+                };
+                if let (Some(world), Some(colony)) = (&mut self.world, &mut self.colony)
+                    && let Err(reason) = colony.apply(world, key, action)
+                {
+                    colony.toast(Some(key), reason, false);
                 }
             }
         }
     }
 
-    fn host_welcome(&mut self, id: PeerId, name: String) {
-        let world = self.world.as_ref().expect("host always has a world");
+    fn host_welcome(&mut self, id: PeerId, key: PlayerKey, name: String) {
+        let (Some(world), Some(colony)) = (&self.world, &mut self.colony) else {
+            return;
+        };
+        colony.join(key, name.clone());
+        colony.toast(None, format!("{name} joined the colony"), true);
         let mut out = vec![protocol::encode(&HostMsg::Welcome {
-            your_id: id,
+            key,
             width: world.width() as u32,
             height: world.height() as u32,
             seed: world.seed(),
-            spawn: (self.spawn.x, self.spawn.y),
+            colony: Box::new(colony.clone()),
         })];
         for cy in 0..world.chunks_y() {
             for cx in 0..world.chunks_x() {
-                let data = world.encode_chunk(cx, cy);
                 out.push(protocol::encode(&HostMsg::Chunk {
                     cx: cx as u16,
                     cy: cy as u16,
-                    data,
+                    data: world.encode_chunk(cx, cy),
                 }));
             }
-        }
-        out.push(protocol::encode(&HostMsg::PlayerJoined {
-            id: self.local_id,
-            name: self.local_name.clone(),
-        }));
-        for (&pid, p) in &self.players {
-            out.push(protocol::encode(&HostMsg::PlayerJoined {
-                id: pid,
-                name: p.name.clone(),
-            }));
         }
         for bytes in out {
             self.send(id, Delivery::Reliable, &bytes);
         }
-
         info!("{name} joined ({id})");
-        self.broadcast(
-            &HostMsg::PlayerJoined {
-                id,
-                name: name.clone(),
-            },
-            Delivery::Reliable,
-            None,
-        );
-        let state = PlayerState {
-            x: self.spawn.x,
-            y: self.spawn.y,
-            ..default()
-        };
-        self.players.insert(id, RemotePlayer { name, state });
+        self.peers.insert(id, Peer { key, you_rev: 0 });
     }
 
-    fn host_send(&mut self, me: PlayerState) {
+    fn host_drop(&mut self, id: PeerId) {
+        if let Some(peer) = self.peers.remove(&id)
+            && let Some(colony) = &mut self.colony
+        {
+            let name = colony
+                .players
+                .get(&peer.key)
+                .map_or(String::new(), |p| p.name.clone());
+            colony.leave(peer.key);
+            colony.toast(None, format!("{name} left"), false);
+            info!("{name} left");
+        }
+    }
+
+    fn host_send(&mut self, dt: f32) {
         let Some(world) = &mut self.world else { return };
         let dirty = world.take_net_dirty();
-        if self.players.is_empty() {
+        let Some(colony) = &mut self.colony else { return };
+
+        self.entity_timer += dt;
+        let entities_due = self.entity_timer >= ENTITY_INTERVAL;
+        if entities_due {
+            self.entity_timer = 0.0;
+        }
+        self.globals_timer += dt;
+        let globals_due = self.globals_timer >= GLOBALS_INTERVAL;
+        if globals_due {
+            self.globals_timer = 0.0;
+        }
+
+        // Events go to this player's presentation and to interested peers.
+        let events = colony.take_events();
+        let (changes, removed) = if entities_due {
+            colony.take_changes()
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        let me = self.me;
+        let relevant = |e: &Event, key: PlayerKey, at: V2| match e {
+            Event::Toast { to, .. } => to.is_none_or(|k| k == key),
+            Event::Fx { pos, .. } => *pos == V2::ZERO || pos.distance(at) < INTEREST_RADIUS,
+        };
+        let my_pos = colony.players.get(&me).map_or(V2::ZERO, |p| p.pose.pos);
+        self.events
+            .extend(events.iter().filter(|e| relevant(e, me, my_pos)).cloned());
+        if self.peers.is_empty() {
             return;
         }
+
+        let mut out: Vec<(Option<PeerId>, Delivery, Vec<u8>)> = Vec::new();
         for (cx, cy) in dirty {
-            let data = self.world.as_ref().unwrap().encode_chunk(cx, cy);
             let msg = HostMsg::Chunk {
                 cx: cx as u16,
                 cy: cy as u16,
-                data,
+                data: self.world.as_ref().unwrap().encode_chunk(cx, cy),
             };
-            self.broadcast(&msg, Delivery::Reliable, None);
+            out.push((None, Delivery::Reliable, protocol::encode(&msg)));
         }
-        let mut states: Vec<(PeerId, PlayerState)> =
-            self.players.iter().map(|(&id, p)| (id, p.state)).collect();
-        states.push((self.local_id, me));
-        self.broadcast(&HostMsg::Players(states), Delivery::Unreliable, None);
+        let poses: Vec<PoseUpdate> = colony
+            .online()
+            .map(|p| {
+                let s = p.stats();
+                PoseUpdate {
+                    key: p.key,
+                    pose: p.pose,
+                    hp: (p.hp / s.max_hp * 255.0).clamp(0.0, 255.0) as u8,
+                    o2: (p.o2 / s.o2_capacity * 255.0).clamp(0.0, 255.0) as u8,
+                }
+            })
+            .collect();
+        out.push((
+            None,
+            Delivery::Unreliable,
+            protocol::encode(&HostMsg::Poses(poses)),
+        ));
+
+        // The roster, whenever anyone's public state changed.
+        let stamp = colony.online().fold(colony.online().count() as u64, |acc, p| {
+            acc.wrapping_mul(31).wrapping_add(p.key ^ p.public_rev as u64)
+        });
+        if stamp != self.roster_stamp {
+            self.roster_stamp = stamp;
+            let roster = colony.online().map(|p| p.public()).collect();
+            out.push((
+                None,
+                Delivery::Reliable,
+                protocol::encode(&HostMsg::Roster(roster)),
+            ));
+        }
+        if !changes.is_empty() || !removed.is_empty() {
+            let msg = HostMsg::Ents {
+                upserts: changes,
+                removed,
+            };
+            out.push((None, Delivery::Reliable, protocol::encode(&msg)));
+        }
+        if globals_due {
+            out.push((
+                None,
+                Delivery::Unreliable,
+                protocol::encode(&HostMsg::Globals(colony.globals())),
+            ));
+        }
+
+        for (&id, peer) in self.peers.iter_mut() {
+            let Some(p) = colony.players.get(&peer.key) else {
+                continue;
+            };
+            if p.rev != peer.you_rev {
+                peer.you_rev = p.rev;
+                out.push((
+                    Some(id),
+                    Delivery::Reliable,
+                    protocol::encode(&HostMsg::You(Box::new(p.clone()))),
+                ));
+            }
+            let at = p.pose.pos;
+            if entities_due {
+                if let Some(v) = colony.vitals(peer.key) {
+                    out.push((
+                        Some(id),
+                        Delivery::Unreliable,
+                        protocol::encode(&HostMsg::Vitals(v)),
+                    ));
+                }
+                let motion = colony.motion_near(at, INTEREST_RADIUS);
+                if !motion.is_empty() {
+                    out.push((
+                        Some(id),
+                        Delivery::Unreliable,
+                        protocol::encode(&HostMsg::Motion(motion)),
+                    ));
+                }
+            }
+            let theirs: Vec<Event> = events
+                .iter()
+                .filter(|e| relevant(e, peer.key, at))
+                .cloned()
+                .collect();
+            if !theirs.is_empty() {
+                out.push((
+                    Some(id),
+                    Delivery::Reliable,
+                    protocol::encode(&HostMsg::Events(theirs)),
+                ));
+            }
+        }
+
+        let ids: Vec<PeerId> = self.peers.keys().copied().collect();
+        for (to, delivery, bytes) in out {
+            match to {
+                Some(id) => self.send(id, delivery, &bytes),
+                None => {
+                    for &id in &ids {
+                        self.send(id, delivery, &bytes);
+                    }
+                }
+            }
+        }
     }
 
     // ---- client ----------------------------------------------------------
@@ -291,16 +540,21 @@ impl Session {
     fn client_handle(&mut self, msg: HostMsg) -> Result<(), String> {
         match msg {
             HostMsg::Welcome {
-                your_id,
+                key,
                 width,
                 height,
                 seed,
-                spawn,
+                colony,
             } => {
-                info!("Welcomed by host as {your_id}; downloading {width}x{height} world");
-                self.local_id = your_id;
-                self.spawn = Vec2::new(spawn.0, spawn.1);
+                info!("Welcomed by host; downloading {width}x{height} world");
+                self.me = key;
                 self.world = Some(World::new(width as usize, height as usize, seed));
+                let mut colony = *colony;
+                // Only people the roster lists are online.
+                if let Some(p) = colony.players.get_mut(&key) {
+                    p.online = true;
+                }
+                self.colony = Some(colony);
             }
             HostMsg::Reject { reason } => return Err(format!("Host refused connection: {reason}")),
             HostMsg::Chunk { cx, cy, data } => {
@@ -310,36 +564,72 @@ impl Session {
                     .map_err(|_| "host sent a corrupt chunk".to_string())?;
                 self.chunks_received += 1;
             }
-            HostMsg::PlayerJoined { id, name } => {
-                if id != self.local_id {
-                    self.players.insert(
-                        id,
-                        RemotePlayer {
-                            name,
-                            state: default(),
-                        },
-                    );
+            _ if self.colony.is_none() => {}
+            HostMsg::Roster(list) => {
+                let colony = self.colony.as_mut().unwrap();
+                for p in colony.players.values_mut() {
+                    p.online = false;
+                }
+                self.roster.clear();
+                for public in list {
+                    let p = colony.players.entry(public.key).or_insert_with(|| {
+                        Player::new(public.key, public.name.clone(), public.color, V2::ZERO)
+                    });
+                    p.online = true;
+                    p.name = public.name.clone();
+                    p.color = public.color;
+                    if public.key != self.me {
+                        p.suit = public.suit;
+                        p.dead = public.dead.then_some(0.0);
+                    }
+                    self.roster.insert(public.key, public);
                 }
             }
-            HostMsg::PlayerLeft { id } => {
-                self.players.remove(&id);
-            }
-            HostMsg::Players(states) => {
-                for (id, state) in states {
-                    if let Some(p) = self.players.get_mut(&id) {
-                        p.state = state;
+            HostMsg::Poses(list) => {
+                let colony = self.colony.as_mut().unwrap();
+                for u in list {
+                    // Our own pose is ours to decide.
+                    if u.key == self.me {
+                        continue;
+                    }
+                    if let Some(p) = colony.players.get_mut(&u.key) {
+                        p.pose = u.pose;
+                        p.hp = u.hp as f32 / 255.0 * 100.0;
+                        p.o2 = u.o2 as f32 / 255.0 * 100.0;
                     }
                 }
             }
+            HostMsg::You(player) => {
+                let colony = self.colony.as_mut().unwrap();
+                let mut player = *player;
+                player.online = true;
+                // Keep our own pose unless the host moved us.
+                if let Some(old) = colony.players.get(&player.key)
+                    && old.warp == player.warp
+                {
+                    player.pose = old.pose;
+                }
+                colony.players.insert(player.key, player);
+            }
+            HostMsg::Vitals(v) => {
+                let me = self.me;
+                self.colony.as_mut().unwrap().apply_vitals(me, v);
+            }
+            HostMsg::Ents { upserts, removed } => {
+                self.colony.as_mut().unwrap().apply_changes(upserts, removed);
+            }
+            HostMsg::Motion(motion) => self.colony.as_mut().unwrap().apply_motion(&motion),
+            HostMsg::Globals(g) => self.colony.as_mut().unwrap().apply_globals(g),
+            HostMsg::Events(events) => self.events.extend(events),
         }
         Ok(())
     }
 }
 
 fn sanitize_name(name: &str) -> String {
-    let name: String = name.chars().filter(|c| !c.is_control()).take(32).collect();
+    let name: String = name.chars().filter(|c| !c.is_control()).take(24).collect();
     if name.trim().is_empty() {
-        "Player".into()
+        "Terraformer".into()
     } else {
         name
     }
@@ -350,7 +640,7 @@ fn sanitize_name(name: &str) -> String {
 pub struct EndSession(pub Option<String>);
 
 /// Receives and handles everything from the network.
-pub fn receive(mut session: ResMut<Session>, time: Res<Time>, mut commands: Commands) {
+pub fn receive(mut session: ResMut<Session>, time: Res<Time<Real>>, mut commands: Commands) {
     let Some(transport) = &mut session.transport else {
         return;
     };
@@ -365,12 +655,7 @@ pub fn receive(mut session: ResMut<Session>, time: Res<Time>, mut commands: Comm
                 Some(msg) => session.host_handle(from, msg),
                 None => warn!("dropping malformed message from {from}"),
             },
-            (Role::Host, NetEvent::Disconnected(id)) => {
-                if let Some(p) = session.players.remove(&id) {
-                    info!("{} left", p.name);
-                    session.broadcast(&HostMsg::PlayerLeft { id }, Delivery::Reliable, None);
-                }
-            }
+            (Role::Host, NetEvent::Disconnected(id)) => session.host_drop(id),
             (Role::Client { .. }, NetEvent::Message(_, bytes)) => {
                 let result = protocol::decode::<HostMsg>(&bytes)
                     .ok_or_else(|| "host sent a malformed message".to_string())
@@ -396,37 +681,53 @@ pub fn receive(mut session: ResMut<Session>, time: Res<Time>, mut commands: Comm
     }
 }
 
-/// Sends our state at a fixed rate: chunks + all players from the host,
-/// our own player from clients.
-pub fn send(mut session: ResMut<Session>, time: Res<Time>, player: Option<Res<LocalPlayer>>) {
-    session.send_timer += time.delta_secs();
+/// Sends state at a fixed rate: everything from the host, our pose from clients.
+pub fn send(mut session: ResMut<Session>, time: Res<Time<Real>>) {
+    let dt = time.delta_secs();
+    session.send_timer += dt;
     if session.send_timer < SEND_INTERVAL {
         return;
     }
-    session.send_timer = 0.0;
-    let me = player.map(|p| p.state).unwrap_or_default();
+    let elapsed = std::mem::take(&mut session.send_timer);
     match session.role {
-        Role::Offline => {}
-        Role::Host => session.host_send(me),
+        Role::Offline | Role::Host => session.host_send(elapsed),
         Role::Client { host } => {
-            if session.is_loaded() {
+            if session.is_loaded()
+                && let Some(pose) = session.player().map(|p| p.pose)
+            {
                 session.send(
                     host,
                     Delivery::Unreliable,
-                    &protocol::encode(&ClientMsg::State(me)),
+                    &protocol::encode(&ClientMsg::Pose(pose)),
                 );
+            }
+        }
+    }
+
+    if session.is_authority() {
+        session.autosave_timer += elapsed;
+        if session.autosave_timer > AUTOSAVE_SECS {
+            session.autosave_timer = 0.0;
+            if let Err(e) = session.save() {
+                warn!("{e}");
             }
         }
     }
 }
 
-/// Advances the cell simulation. Only the authority simulates.
-pub fn step_world(mut session: ResMut<Session>) {
-    if session.is_authority()
-        && let Some(world) = &mut session.world
-    {
-        world.step();
+/// Advances the cell simulation and the colony. Only the authority simulates.
+pub fn step_world(mut session: ResMut<Session>, time: Res<Time>) {
+    if !session.is_authority() {
+        return;
     }
+    let s = &mut *session;
+    let (Some(world), Some(colony)) = (&mut s.world, &mut s.colony) else {
+        return;
+    };
+    let centers: Vec<(i32, i32)> = colony.online().map(|p| p.pose.pos.cell()).collect();
+    world.set_active_region(Some(&centers), ACTIVE_CHUNKS);
+    world.step();
+    colony.step(world, time.delta_secs());
 }
 
 /// A Steam lobby to join once the current session has been torn down
@@ -434,11 +735,12 @@ pub fn step_world(mut session: ResMut<Session>) {
 #[derive(Resource)]
 pub struct PendingJoin(pub u64);
 
-/// Tears the session down (dropping the transport leaves the lobby /
-/// closes sockets) and returns to the main menu.
+/// Tears the session down (saving a hosted world; dropping the transport
+/// leaves the lobby and closes sockets) and returns to the main menu.
 pub fn end_session(
     mut commands: Commands,
     end: Res<EndSession>,
+    session: Option<ResMut<Session>>,
     mut menu: ResMut<MenuState>,
     mut next: ResMut<NextState<AppState>>,
     pending: Option<Res<PendingJoin>>,
@@ -447,9 +749,13 @@ pub fn end_session(
     if let Some(reason) = &end.0 {
         menu.error = Some(reason.clone());
     }
+    if let Some(mut session) = session
+        && let Err(e) = session.save()
+    {
+        menu.error = Some(e);
+    }
     commands.remove_resource::<EndSession>();
     commands.remove_resource::<Session>();
-    commands.remove_resource::<LocalPlayer>();
     commands.remove_resource::<Connecting>();
     if let (Some(pending), Some(steam)) = (pending, steam) {
         commands.remove_resource::<PendingJoin>();
@@ -461,21 +767,54 @@ pub fn end_session(
     }
 }
 
+/// Saves a hosted world when the window closes.
+pub fn save_on_exit(mut exit: MessageReader<AppExit>, session: Option<ResMut<Session>>) {
+    if exit.read().next().is_some()
+        && let Some(mut session) = session
+        && let Err(e) = session.save()
+    {
+        warn!("{e}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use sbct_net::tcp::{self, TcpClient, TcpHost};
+    use sbct_sim::Material;
+    use sbct_sim::colony::EntKind;
+    use sbct_sim::colony::actions::{Container, InvOp};
+    use sbct_sim::colony::geom::v2;
+    use sbct_sim::colony::items::Item;
 
     fn app_with(session: Session) -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .insert_resource(session)
-            .add_systems(Update, (receive, send).chain());
+            .add_systems(Update, (receive, step_world, send).chain());
         app
     }
 
-    #[test]
-    fn client_downloads_world_and_edits_reach_host() {
+    fn pump(host: &mut App, client: &mut App, mut done: impl FnMut(&Session, &Session) -> bool, what: &str) {
+        let start = std::time::Instant::now();
+        loop {
+            host.update();
+            client.update();
+            if done(
+                host.world().resource::<Session>(),
+                client.world().resource::<Session>(),
+            ) {
+                return;
+            }
+            assert!(start.elapsed().as_secs() < 20, "timed out waiting for {what}");
+            std::thread::sleep(std::time::Duration::from_millis(4));
+        }
+    }
+
+    fn pair() -> (App, App) {
+        // Tests must not write into the real saves folder.
+        // SAFETY: set before any thread reads it; every test sets the same value.
+        unsafe { std::env::set_var("SBCT_SAVE_DIR", std::env::temp_dir().join("sbct-session-test")) };
         let host_transport = TcpHost::bind(0).unwrap();
         let port = host_transport
             .describe()
@@ -484,64 +823,175 @@ mod tests {
             .unwrap()
             .parse::<u16>()
             .unwrap();
-        let mut host = app_with(Session::host(
+        let host = app_with(Session::host_new(
             Some(Box::new(host_transport)),
-            tcp::HOST_ID,
+            100,
             "host".into(),
             None,
             7,
+            "test",
         ));
         let client_transport = TcpClient::connect(&format!("127.0.0.1:{port}")).unwrap();
-        let mut client = app_with(Session::client(
+        let client = app_with(Session::client(
             Box::new(client_transport),
             tcp::HOST_ID,
             "guest".into(),
+            200,
             None,
         ));
+        (host, client)
+    }
 
-        let start = std::time::Instant::now();
-        while !client.world().resource::<Session>().is_loaded() {
-            assert!(start.elapsed().as_secs() < 10, "world download timed out");
-            host.update();
-            client.update();
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+    #[test]
+    fn client_joins_plays_and_stays_in_sync() {
+        let (mut host, mut client) = pair();
+        pump(
+            &mut host,
+            &mut client,
+            |_, c| c.is_loaded() && c.roster.len() == 2,
+            "world download",
+        );
 
         let (hs, cs) = (
             host.world().resource::<Session>(),
             client.world().resource::<Session>(),
         );
-        assert_eq!(hs.players.len(), 1);
-        assert!(
-            cs.players.contains_key(&tcp::HOST_ID),
-            "client should know the host player"
-        );
+        assert_eq!(cs.me, 200);
+        assert_eq!(hs.roster().len(), 2);
         let (hw, cw) = (hs.world.as_ref().unwrap(), cs.world.as_ref().unwrap());
         for cy in 0..hw.chunks_y() {
             for cx in 0..hw.chunks_x() {
                 assert_eq!(hw.encode_chunk(cx, cy), cw.encode_chunk(cx, cy));
             }
         }
+        let home = hs.colony.as_ref().unwrap().home;
+        assert!(cs.colony.as_ref().unwrap().dome(home).is_some());
 
-        // Dig a hole from the client; the host should apply it.
-        let (x, y) = (100, WORLD_HEIGHT as i32 - 20);
-        assert_ne!(hw.material(x, y), Material::Empty);
-        client.world_mut().resource_mut::<Session>().edit(Edit {
-            x,
-            y,
-            radius: 3,
-            material: 0,
-        });
+        // The guest takes seeds from the starter chest: the host applies it
+        // and both sides agree on the result.
+        let chest = Container::DomeChest(home, 0);
+        let spot = {
+            let c = hs.colony.as_ref().unwrap();
+            let e = &c.ents[&home];
+            v2(e.pos.x + 8.0, e.pos.y)
+        };
+        let mut pose = cs.player().unwrap().pose;
+        pose.pos = spot;
+        client.world_mut().resource_mut::<Session>().set_pose(pose);
+        pump(
+            &mut host,
+            &mut client,
+            |h, _| h.colony.as_ref().unwrap().players[&200].pose.pos == spot,
+            "pose",
+        );
+        client
+            .world_mut()
+            .resource_mut::<Session>()
+            .act(Action::Inv(InvOp::LootAll(chest)));
+        pump(
+            &mut host,
+            &mut client,
+            |h, c| {
+                let seeds = |s: &Session| s.colony.as_ref().unwrap().players[&200].inv.count(Item::Seed(0));
+                seeds(h) == 4
+                    && seeds(c) == 4
+                    && c.colony.as_ref().unwrap().dome(home).unwrap().1.chests[0].is_empty()
+            },
+            "loot to replicate",
+        );
+    }
+
+    impl Session {
+        fn test_dig(&mut self, x: i32, y: i32) {
+            self.act(Action::Dig { x, y });
+        }
+    }
+
+    #[test]
+    fn digging_from_a_client_reaches_the_host() {
+        let (mut host, mut client) = pair();
+        pump(
+            &mut host,
+            &mut client,
+            |_, c| c.is_loaded() && c.roster.len() == 2,
+            "world download",
+        );
+        let (dx, dy) = {
+            let c = host.world().resource::<Session>().colony.as_ref().unwrap();
+            (
+                c.profile.spawn_x + 160,
+                c.profile.surface_at(c.profile.spawn_x + 160),
+            )
+        };
+        let mut pose = client.world().resource::<Session>().player().unwrap().pose;
+        pose.pos = v2(dx as f32, dy as f32);
+        client.world_mut().resource_mut::<Session>().set_pose(pose);
+        let start = std::time::Instant::now();
+        loop {
+            client.world_mut().resource_mut::<Session>().test_dig(dx, dy + 3);
+            host.update();
+            client.update();
+            let h = host.world().resource::<Session>();
+            let c = client.world().resource::<Session>();
+            let inv = &c.colony.as_ref().unwrap().players[&200].inv;
+            let got = inv.count(Item::Dirt) + inv.count(Item::Sand) + inv.count(Item::Stone);
+            if h.world.as_ref().unwrap().material(dx, dy + 3) == Material::Empty
+                && c.world.as_ref().unwrap().material(dx, dy + 3) == Material::Empty
+                && got > 0
+            {
+                break;
+            }
+            assert!(start.elapsed().as_secs() < 20, "dig never replicated");
+            std::thread::sleep(std::time::Duration::from_millis(4));
+        }
+        // Creatures the host spawns show up on the client with their motion.
+        let id = {
+            let mut s = host.world_mut().resource_mut::<Session>();
+            let c = s.colony.as_mut().unwrap();
+            c.spawn(
+                v2(dx as f32 + 40.0, dy as f32 - 4.0),
+                EntKind::Creature(sbct_sim::colony::creatures::Creature::new(
+                    sbct_sim::colony::creatures::CreatureKind::Puffback,
+                )),
+            )
+        };
+        pump(
+            &mut host,
+            &mut client,
+            |_, c| c.colony.as_ref().unwrap().ents.contains_key(&id),
+            "creature",
+        );
+        // Leaving frees the slot and marks the player offline.
+        let key = client.world().resource::<Session>().me;
+        drop(client);
         let start = std::time::Instant::now();
         loop {
             host.update();
-            client.update();
-            let hw = host.world().resource::<Session>().world.as_ref().unwrap();
-            if hw.material(x, y) == Material::Empty {
+            let h = host.world().resource::<Session>();
+            if !h.colony.as_ref().unwrap().players[&key].online {
+                assert!(
+                    h.colony.as_ref().unwrap().players.contains_key(&key),
+                    "character is kept"
+                );
                 break;
             }
-            assert!(start.elapsed().as_secs() < 5, "edit never reached host");
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            assert!(start.elapsed().as_secs() < 10, "disconnect not noticed");
+            std::thread::sleep(std::time::Duration::from_millis(4));
         }
+    }
+
+    #[test]
+    fn hosted_worlds_save_and_load() {
+        unsafe { std::env::set_var("SBCT_SAVE_DIR", std::env::temp_dir().join("sbct-session-test")) };
+        let mut s = Session::host_new(None, 5, "solo".into(), None, 3, "My World!");
+        assert_eq!(s.save_name.as_deref(), Some("My World"));
+        s.colony.as_mut().unwrap().credits = 77;
+        s.save().unwrap();
+        assert!(list_saves().contains(&"My World".to_string()));
+        let loaded = Session::host_saved(None, 5, "solo".into(), None, "My World").unwrap();
+        assert_eq!(loaded.colony.as_ref().unwrap().credits, 77);
+        assert!(loaded.player().is_some_and(|p| p.online));
+        assert!(Session::host_saved(None, 5, "solo".into(), None, "nope").is_err());
+        let _ = std::fs::remove_file(saves_dir().join("My World.sbct"));
     }
 }

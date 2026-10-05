@@ -9,7 +9,7 @@ edition = "2024"
 [workspace.dependencies]
 sbct_sim = { path = "crates/sim" }
 sbct_net = { path = "crates/net" }
-bevy = "0.19"
+bevy = { version = "0.19", features = ["wav"] }
 bevy_egui = "0.42"
 steamworks = "0.13.1"
 serde = { version = "1", features = ["derive"] }
@@ -25,3 +25,7 @@ opt-level = 3
 # The simulation is the hot loop; keep it fast in debug builds too.
 [profile.dev.package.sbct_sim]
 opt-level = 3
+
+# Lighting and per-frame loops in the game crate need some optimisation too.
+[profile.dev.package.sbct]
+opt-level = 2
