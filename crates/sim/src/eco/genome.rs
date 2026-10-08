@@ -224,6 +224,23 @@ pub enum LimbTip {
     Hook,
     Eye,
     Spike,
+    /// Digits that can grip and punch.
+    Hand,
+}
+
+/// What lines the jaws. Only drawn for `Mouth::Jaws` and `Mouth::Maw`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Teeth {
+    #[default]
+    None,
+    /// Flat grinding teeth.
+    Flat,
+    /// Long fangs.
+    Canines,
+    /// Rows of triangular cutting teeth.
+    Shark,
+    /// Fine bristles that rake.
+    Bristles,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -300,7 +317,10 @@ pub struct BodyPlan {
     pub neck: f32,
     pub eyes: Vec<Eye>,
     pub mouth: Mouth,
+    pub teeth: Teeth,
     pub crest: Crest,
+    /// Horn length relative to size (0 for none).
+    pub horns: f32,
     pub shell: bool,
     /// Gas bladder radius (floaters).
     pub sac: f32,
@@ -333,7 +353,7 @@ impl BodyPlan {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Colors {
     pub base: Rgb,
     pub belly: Rgb,
@@ -640,12 +660,12 @@ fn food_substrates(h: Habitat) -> &'static [Substrate] {
 // ---------------------------------------------------------------------------
 // Bodies
 
-fn seg(r: f32, ry: f32) -> Seg {
+pub(crate) fn seg(r: f32, ry: f32) -> Seg {
     Seg { r, ry }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn limb(
+pub(crate) fn limb(
     kind: LimbKind,
     seg: i32,
     angle: f32,
@@ -669,7 +689,7 @@ fn limb(
 }
 
 /// Adds `pairs` leg pairs spread along the body.
-fn add_legs(rng: &mut Rng, b: &mut BodyPlan, pairs: usize, length: f32, tip: LimbTip, width: f32) {
+pub(crate) fn add_legs(rng: &mut Rng, b: &mut BodyPlan, pairs: usize, length: f32, tip: LimbTip, width: f32) {
     let n = b.segs.len();
     for i in 0..pairs {
         let seg = if pairs == 1 {
@@ -699,7 +719,7 @@ fn add_legs(rng: &mut Rng, b: &mut BodyPlan, pairs: usize, length: f32, tip: Lim
     }
 }
 
-fn base_body(size: f32) -> BodyPlan {
+pub(crate) fn base_body(size: f32) -> BodyPlan {
     BodyPlan {
         upright: false,
         segs: vec![seg(size, size * 0.8)],
@@ -710,7 +730,9 @@ fn base_body(size: f32) -> BodyPlan {
         neck: 0.0,
         eyes: Vec::new(),
         mouth: Mouth::Jaws,
+        teeth: Teeth::None,
         crest: Crest::None,
+        horns: 0.0,
         shell: false,
         sac: 0.0,
         wing: WingKind::Membrane,
@@ -721,7 +743,7 @@ fn base_body(size: f32) -> BodyPlan {
     }
 }
 
-fn tapering(n: usize, r0: f32, r1: f32, flat: f32) -> Vec<Seg> {
+pub(crate) fn tapering(n: usize, r0: f32, r1: f32, flat: f32) -> Vec<Seg> {
     (0..n)
         .map(|i| {
             let t = if n <= 1 { 0.0 } else { i as f32 / (n - 1) as f32 };
@@ -1241,6 +1263,9 @@ fn build_body(
             Crest::Sail,
         ])
     };
+    if b.crest == Crest::Horns {
+        b.horns = 1.0;
+    }
     b.shell = t.armor > 0.2;
 
     // Collision box: the front segment plus the head, never the trailing body.
@@ -1264,7 +1289,7 @@ fn build_body(
 // ---------------------------------------------------------------------------
 // Colour
 
-fn env_colour(biome: &Biome, habitat: Habitat, rng: &mut Rng) -> Rgb {
+pub(crate) fn env_colour(biome: &Biome, habitat: Habitat, rng: &mut Rng) -> Rgb {
     let p = &biome.palette;
     match habitat {
         Habitat::Ground | Habitat::Amphibious => {

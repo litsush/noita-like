@@ -449,6 +449,7 @@ pub fn end_session(
     }
     commands.remove_resource::<EndSession>();
     commands.remove_resource::<Session>();
+    commands.remove_resource::<crate::versus::Versus>();
     commands.remove_resource::<LocalPlayer>();
     commands.remove_resource::<Connecting>();
     if let (Some(pending), Some(steam)) = (pending, steam) {

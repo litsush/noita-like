@@ -4,6 +4,7 @@
 pub mod eco;
 pub mod material;
 pub mod rng;
+pub mod versus;
 pub mod world;
 pub mod worldgen;
 

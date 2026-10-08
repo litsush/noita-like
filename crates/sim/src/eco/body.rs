@@ -8,7 +8,7 @@
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
 use super::creature::{Creature, limb_instances};
-use super::genome::{Crest, LimbKind, LimbTip, Locomotion, Mouth, Species, WingKind};
+use super::genome::{Crest, LimbKind, LimbTip, Locomotion, Mouth, Species, Teeth, WingKind};
 use super::math::{V2, angle_diff, v2};
 use crate::world::World;
 
@@ -105,7 +105,7 @@ fn head_local(sp: &Species, s: f32) -> V2 {
 }
 
 /// World position and body angle of a segment.
-fn seg_world(c: &Creature, sp: &Species, i: usize) -> (V2, f32) {
+pub(crate) fn seg_world(c: &Creature, sp: &Species, i: usize) -> (V2, f32) {
     let f = frame(c);
     if sp.body.rope && i < c.anim.segs.len() {
         let p = c.anim.segs[i];
@@ -125,7 +125,7 @@ fn seg_world(c: &Creature, sp: &Species, i: usize) -> (V2, f32) {
 }
 
 /// World position of a limb's root.
-fn limb_root(c: &Creature, sp: &Species, li: usize, far: bool) -> V2 {
+pub(crate) fn limb_root(c: &Creature, sp: &Species, li: usize, far: bool) -> V2 {
     let l = &sp.body.limbs[li];
     let s = c.scale(sp);
     let f = frame(c);
@@ -174,6 +174,32 @@ fn raycast(world: &World, climb: bool, from: V2, dir: V2, max: f32) -> Option<V2
         p = n;
     }
     None
+}
+
+/// World position of the head centre (or the front segment if headless).
+pub fn head_world(c: &Creature, sp: &Species) -> V2 {
+    if sp.body.head_r > 0.0 {
+        frame(c).pt(head_local(sp, c.scale(sp)))
+    } else {
+        seg_world(c, sp, 0).0
+    }
+}
+
+/// Where the mouth is: the front of the head.
+pub fn mouth_world(c: &Creature, sp: &Species) -> V2 {
+    let f = frame(c);
+    let s = c.scale(sp);
+    let r = if sp.body.head_r > 0.0 {
+        sp.body.head_r * s
+    } else {
+        sp.body.segs[0].r * s
+    };
+    head_world(c, sp) + f.dir(0.15) * (r * 0.9)
+}
+
+/// Unit vector the creature faces, in world space (follows body tilt).
+pub fn forward(c: &Creature) -> V2 {
+    frame(c).dir(0.0)
 }
 
 /// Advances all animation state by `dt`.
@@ -270,14 +296,19 @@ pub fn animate(c: &mut Creature, sp: &Species, world: &World, dt: f32, flying: b
     let mut stepping = 0usize;
     let legs: usize = insts
         .iter()
-        .filter(|(li, _)| b.limbs[*li].kind == LimbKind::Leg)
+        .enumerate()
+        .filter(|(k, (li, _))| b.limbs[*li].kind == LimbKind::Leg && c.has_limb(*k))
         .count();
     stepping += insts
         .iter()
         .zip(&c.anim.feet)
         .filter(|((li, _), f)| f.t < 1.0 && b.limbs[*li].kind == LimbKind::Leg)
         .count();
+    let reach = c.anim.reach;
     for (k, &(li, far)) in insts.iter().enumerate() {
+        if !c.has_limb(k) {
+            continue;
+        }
         let l = &b.limbs[li];
         let root = limb_root(c, sp, li, far);
         let len = l.length * s;
@@ -340,7 +371,8 @@ pub fn animate(c: &mut Creature, sp: &Species, world: &World, dt: f32, flying: b
                 let seg_len = len / (joints - 1) as f32;
                 let mut base_dir = f.dir(l.angle);
                 let in_liquid = c.in_liquid;
-                let (amp, freq, droop) = match l.kind {
+                let aimed = reach.filter(|(rk, _)| *rk == k).map(|(_, p)| p);
+                let (mut amp, freq, mut droop) = match l.kind {
                     LimbKind::Tentacle => (0.45, 2.2, if in_liquid { 0.05 } else { 0.35 }),
                     LimbKind::Tail => (0.25, 3.0 + speed * 0.05, 0.12),
                     LimbKind::Antenna => (0.2, 4.0, -0.05),
@@ -351,6 +383,15 @@ pub fn animate(c: &mut Creature, sp: &Species, world: &World, dt: f32, flying: b
                 };
                 if l.kind == LimbKind::Arm && c.anim.attack > 0.0 {
                     base_dir = f.dir(0.1);
+                }
+                if let Some(target) = aimed {
+                    // Striking: the whole limb points at the target.
+                    let d = target - root;
+                    if d.len() > 0.5 {
+                        base_dir = d.norm();
+                    }
+                    amp *= 0.2;
+                    droop = 0.0;
                 }
                 if (in_liquid || flying)
                     && matches!(l.kind, LimbKind::Tentacle | LimbKind::Tail)
@@ -366,7 +407,7 @@ pub fn animate(c: &mut Creature, sp: &Species, world: &World, dt: f32, flying: b
                     dir = dir.rot(wave * 0.6);
                     dir = dir.lerp(v2(0.0, 1.0), droop * t).norm();
                     let ideal = chain[i - 1] + dir * seg_len;
-                    let mut p = chain[i].lerp(ideal, 0.45);
+                    let mut p = chain[i].lerp(ideal, if aimed.is_some() { 0.8 } else { 0.45 });
                     let d = p - chain[i - 1];
                     p = chain[i - 1] + d.norm() * seg_len;
                     if solid(world, climb, p) {
@@ -511,7 +552,7 @@ pub fn pose(c: &Creature, sp: &Species) -> Vec<Prim> {
     for (k, &(li, far)) in insts.iter().enumerate() {
         let l = &b.limbs[li];
         let behind = far || matches!(l.kind, LimbKind::Tail) || (l.kind == LimbKind::Tentacle && b.sac > 0.0);
-        if behind {
+        if behind && c.has_limb(k) {
             limb(&mut out, k, li, far);
         }
     }
@@ -689,23 +730,29 @@ pub fn pose(c: &Creature, sp: &Species) -> Vec<Prim> {
             }
             Mouth::Jaws => {
                 let down = v2(0.0, 1.0).rot(f.angle);
+                let gape = open * (1.5 + s * 0.3);
                 out.push(Prim::Line {
                     a: mouth_at - fwd * 1.5,
-                    b: mouth_at + down * open * 1.5,
+                    b: mouth_at + down * gape,
                     w0: 0.8,
                     w1: 0.8,
                     paint: Paint::Dark,
                 });
+                teeth(&mut out, b.teeth, mouth_at, fwd, down, gape, s);
             }
         }
-        if b.crest == Crest::Horns {
+        if b.mouth == Mouth::Maw {
+            let down = v2(0.0, 1.0).rot(f.angle);
+            teeth(&mut out, b.teeth, mouth_at, fwd, down, open * s * 0.3, s * 0.8);
+        }
+        if b.horns > 0.0 {
             let up = v2(0.0, -1.0).rot(f.angle);
             for side in [0.0, 1.0] {
                 let base = h + up * (b.head_ry * s * 0.7) - fwd * (side * 1.0);
                 out.push(Prim::Line {
                     a: base,
-                    b: base + (up - fwd * 0.6).norm() * (1.5 + s * 0.8),
-                    w0: 1.0,
+                    b: base + (up - fwd * 0.6).norm() * ((1.5 + s * 0.8) * b.horns),
+                    w0: 1.0 + b.horns * 0.3,
                     w1: 0.5,
                     paint: Paint::Fixed([225, 215, 190]),
                 });
@@ -749,7 +796,7 @@ pub fn pose(c: &Creature, sp: &Species) -> Vec<Prim> {
     for (k, &(li, far)) in insts.iter().enumerate() {
         let l = &b.limbs[li];
         let behind = far || matches!(l.kind, LimbKind::Tail) || (l.kind == LimbKind::Tentacle && b.sac > 0.0);
-        if !behind {
+        if !behind && c.has_limb(k) {
             limb(&mut out, k, li, far);
         }
     }
@@ -806,6 +853,17 @@ fn tip(out: &mut Vec<Prim>, kind: LimbTip, at: V2, dir: V2, s: f32, far: bool) {
                 paint,
             });
         }
+        LimbTip::Hand => {
+            for a in [-0.55, 0.0, 0.55] {
+                out.push(Prim::Line {
+                    a: at,
+                    b: at + dir.rot(a) * (k * 0.9),
+                    w0: 0.8,
+                    w1: 0.5,
+                    paint,
+                });
+            }
+        }
         LimbTip::Pincer => {
             out.push(Prim::Line {
                 a: at,
@@ -858,5 +916,81 @@ fn tip(out: &mut Vec<Prim>, kind: LimbTip, at: V2, dir: V2, s: f32, far: bool) {
             });
         }
         LimbTip::None => {}
+    }
+}
+
+/// Teeth along the upper jaw, growing with the gape.
+fn teeth(out: &mut Vec<Prim>, kind: Teeth, mouth_at: V2, fwd: V2, down: V2, gape: f32, s: f32) {
+    let ivory = Paint::Fixed([240, 236, 220]);
+    let jaw = mouth_at - fwd * 1.5;
+    let n = (s * 0.8).clamp(2.0, 6.0) as i32;
+    match kind {
+        Teeth::None => {}
+        Teeth::Flat => {
+            for i in 0..n {
+                let t = i as f32 / n as f32;
+                let p = jaw + fwd * (t * 2.0);
+                out.push(Prim::Dot {
+                    p: p + down * 0.4,
+                    r: 0.45,
+                    paint: ivory,
+                });
+            }
+        }
+        Teeth::Canines => {
+            let len = (0.9 + s * 0.35).max(1.0);
+            for (k, t) in [0.25, 0.75].into_iter().enumerate() {
+                let p = jaw + fwd * (t * 2.2);
+                out.push(Prim::Line {
+                    a: p,
+                    b: p + down * (len * if k == 0 { 1.0 } else { 0.8 }),
+                    w0: 0.9,
+                    w1: 0.3,
+                    paint: ivory,
+                });
+                if gape > 0.5 {
+                    // Lower fangs show when the mouth is open.
+                    let q = p + down * gape;
+                    out.push(Prim::Line {
+                        a: q,
+                        b: q - down * (len * 0.7),
+                        w0: 0.8,
+                        w1: 0.3,
+                        paint: ivory,
+                    });
+                }
+            }
+        }
+        Teeth::Shark => {
+            let len = (0.5 + s * 0.22).max(0.8);
+            for i in 0..n + 1 {
+                let t = i as f32 / n as f32;
+                let p = jaw + fwd * (t * 2.6);
+                out.push(Prim::Tri {
+                    p: [p - fwd * 0.4, p + fwd * 0.4, p + down * len],
+                    paint: ivory,
+                });
+                if gape > 0.5 {
+                    let q = p + down * gape;
+                    out.push(Prim::Tri {
+                        p: [q - fwd * 0.4, q + fwd * 0.4, q - down * len * 0.8],
+                        paint: ivory,
+                    });
+                }
+            }
+        }
+        Teeth::Bristles => {
+            for i in 0..n * 2 {
+                let t = i as f32 / (n * 2) as f32;
+                let p = jaw + fwd * (t * 2.6);
+                out.push(Prim::Line {
+                    a: p,
+                    b: p + down * (0.6 + s * 0.15) + fwd * 0.2,
+                    w0: 0.4,
+                    w1: 0.3,
+                    paint: ivory,
+                });
+            }
+        }
     }
 }

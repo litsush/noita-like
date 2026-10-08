@@ -5,6 +5,7 @@ mod player;
 mod render;
 mod session;
 mod steam;
+mod versus;
 
 use bevy::prelude::*;
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
@@ -17,21 +18,31 @@ pub enum AppState {
     InGame,
     /// The alien ecosystem sandbox.
     Ecosystem,
+    /// Alien Versus: designing, fighting, results.
+    Versus,
 }
 
 fn main() {
     let eco_dev = eco_view::EcoDevArgs::from_args();
+    // `--no-vsync` keeps unattended test runs moving when the window is hidden.
+    let no_vsync = std::env::args().any(|a| a == "--no-vsync");
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
-            title: "SBCT".into(),
+            title: "SBCT: Alien Versus".into(),
             resolution: (1280, 800).into(),
+            present_mode: if no_vsync {
+                bevy::window::PresentMode::AutoNoVsync
+            } else {
+                bevy::window::PresentMode::AutoVsync
+            },
             ..default()
         }),
         ..default()
     }))
     .add_plugins(EguiPlugin::default())
     .add_plugins(steam::SteamPlugin)
+    .add_plugins(versus::VersusPlugin)
     .init_state::<AppState>()
     .insert_resource(ClearColor(Color::srgb(0.45, 0.62, 0.85)))
     .insert_resource(Time::<Fixed>::from_hz(60.0))

@@ -20,6 +20,18 @@ Other flags: `--seed <n>`, `--host-lan <port>`, `--join-lan <host:port>`.
 
 Controls: A/D move, W/Space jump, left mouse dig, right mouse place, 1–9 or wheel to pick a material, Esc for the menu.
 
+## Alien Versus
+
+**Alien Versus** in the main menu is a competitive mode: each player spends points on a species, the species are dropped into a randomly generated arena, and they fight on their own while everyone watches. First to three round wins takes the match; after every round everyone gets more points to evolve (upgrades are never taken away).
+
+- **Designing**: 32 upgrades across body, movement, senses, weapons, defence, mind and numbers: size, vitality, regeneration, armour, spines, legs (none to eight), long legs, wings (insect, membrane, feather), spring legs, digging claws, grip pads, fins, eyes (none to six), big eyes, echolocation, feelers, teeth (bristles, flat, beak, mandibles, canines, shark), claws, arms, tails (whip, club, spike, stinger), horns, venom, spit (web, venom, acid, fire), tentacles, camouflage, ink, toxic flesh, intelligence, aggression, caution, pack mind, and how many individuals you field. Every upgrade is visible on the body: a bigger brain means a bigger head, echolocation grows ear-paddles, armour grows a shell.
+- **Fighting**: attacks are physically simulated. A bite or swing sweeps from the weapon's root through the world; it can clip terrain, whiff, or land on whichever body part is nearest. Every head, body segment and limb is its own hitbox with its own integrity: a torn-off wing grounds a flier, lost legs slow a runner, a crushed head is fatal. Charges and leaps slam; grabs hold; spit entangles, poisons, burns or sets fire.
+- **Minds**: each individual perceives through its own senses (eyes against light and camouflage, echolocation through walls, feelers through the ground), picks a tactic (rush, flank, kite, harass, ambush, dive, undermine, hold, retreat) and keeps score of how each has gone. Intelligence decides how much that record steers it, how fast it reconsiders, and whether it notices things like armour shrugging off bites and goes for the limbs instead.
+- **Watching**: an automatic camera frames the fight and punches in on big moments with slow motion, a letterbox, speed lines and callouts; the finishing blow gets an instant replay.
+- **Playing**: Host or Join a match over Steam (friends list, public lobbies, invites) or LAN, or Practice against a randomly designed species that evolves between rounds. Players who join mid-match watch until the next round.
+
+Test a match on one machine: `cargo run -- --versus-host-lan --name Ada` and `cargo run -- --versus-join-lan 127.0.0.1 --name Grace`. Dev flags: `--practice`, `--auto-ready` (random species, ready immediately), `--arena-seed <n>`, `--no-vsync`, plus `--screenshot`/`--after`/`--quit-after` from the ecosystem.
+
 ## Alien Ecosystem
 
 **Alien Ecosystem** in the main menu (or `cargo run -- --ecosystem`) opens a sandbox where a procedurally generated alien world is populated by a generated predator species (3–5 of them) and the prey species it hunts (10 of them), feeding on generated plants. Every scene is new: press **New Scene** (or N) to roll another planet.
@@ -50,13 +62,13 @@ Without Steam, the game still runs with LAN and singleplayer only.
 
 | Crate | Purpose |
 |---|---|
-| `crates/sim` | Engine-independent cell simulation: materials, chunked world with sleeping chunks, world generation, chunk run-length encoding. No Bevy, so it can run headless. `sim/src/eco/` holds the alien ecosystem: biomes, flora, species genomes, AI, navigation, physics, animation and its CPU renderer. |
+| `crates/sim` | Engine-independent cell simulation: materials, chunked world with sleeping chunks, world generation, chunk run-length encoding. No Bevy, so it can run headless. `sim/src/eco/` holds the alien ecosystem: biomes, flora, species genomes, AI, navigation, physics, animation and its CPU renderer. `sim/src/versus/` holds Alien Versus: the point-buy designer, body-part hitboxes, physics strikes, the combat AI, the arena, and the snapshot mirror everyone watches through. |
 | `crates/net` | Wire protocol (serde/bincode), a `Transport` trait, Steam transport (lobbies + relayed P2P), TCP transport (LAN/dev). No Bevy. |
-| `crates/game` | Bevy client: menu, session (host/client logic), rendering, player, HUD. |
+| `crates/game` | Bevy client: menu, session (host/client logic), rendering, player, HUD, and `versus/` (match session, designer, fight view, results). |
 
 ## Network model
 
-The host is authoritative. It runs the simulation at 60 Hz and applies edits from clients. At 20 Hz it sends changed 64×64 chunks, run-length encoded and reliable, plus everyone's positions (unreliable). Clients don't simulate cells. Each client controls its own player's movement and applies its own edits immediately (optimistic), and the host's chunk updates overwrite them if they disagree. On joining, a client downloads the full world.
+The host is authoritative. It runs the simulation at 60 Hz and applies edits from clients. In Alien Versus the host runs the arena and streams 20 Hz snapshots of every creature plus fight events and changed chunks; clients (and the host itself) watch through a mirror that smooths positions, animates limbs locally and keeps a short history for replays. Designs travel once, at round start, and every machine builds the same species and arena from them. At 20 Hz it sends changed 64×64 chunks, run-length encoded and reliable, plus everyone's positions (unreliable). Clients don't simulate cells. Each client controls its own player's movement and applies its own edits immediately (optimistic), and the host's chunk updates overwrite them if they disagree. On joining, a client downloads the full world.
 
 ## Roadmap ideas
 

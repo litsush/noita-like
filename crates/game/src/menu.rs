@@ -5,16 +5,20 @@ use std::sync::mpsc::{Receiver, channel};
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
+use sbct_net::protocol::GameMode;
 use sbct_net::steam::{FriendLobby, LobbyInfo, SteamEvent, Visibility};
 use sbct_net::tcp::{self, TcpClient, TcpHost};
 
 use crate::AppState;
 use crate::session::{EndSession, OFFLINE_ID, Session};
 use crate::steam::{SteamClient, SteamInbox, SteamStatus};
+use crate::versus::{Phase, Versus};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Main,
+    Sandbox,
+    Versus,
     Host,
     Join,
 }
@@ -28,6 +32,8 @@ pub enum NetMode {
 #[derive(Resource)]
 pub struct MenuState {
     pub screen: Screen,
+    /// What Host/Join will start.
+    pub mode: GameMode,
     pub error: Option<String>,
     pub name: String,
     pub host_mode: NetMode,
@@ -53,6 +59,7 @@ impl MenuState {
         };
         MenuState {
             screen: Screen::Main,
+            mode: GameMode::Versus,
             error: None,
             name: steam.map_or_else(|| "Player".into(), |s| s.my_name()),
             host_mode: mode,
@@ -84,9 +91,10 @@ fn random_seed() -> u64 {
 pub enum Connecting {
     CreatingLobby {
         seed: u64,
+        mode: GameMode,
     },
     JoiningLobby,
-    Tcp(Mutex<Receiver<Result<TcpClient, String>>>),
+    Tcp(Mutex<Receiver<Result<TcpClient, String>>>, GameMode),
     /// Transport is up; waiting for the welcome and the world download.
     Downloading,
 }
@@ -98,6 +106,7 @@ enum Action {
     JoinSteam(u64),
     JoinLan,
     Ecosystem,
+    Practice,
     Quit,
 }
 
@@ -132,17 +141,41 @@ fn action_from_args(menu: &mut MenuState) -> Option<Action> {
         Some(Action::Ecosystem)
     } else if args.iter().any(|a| a == "--singleplayer") {
         Some(Action::Singleplayer)
-    } else if args.iter().any(|a| a == "--host-lan") {
-        if let Some(port) = value("--host-lan") {
+    } else if args.iter().any(|a| a == "--practice") {
+        Some(Action::Practice)
+    } else if args.iter().any(|a| a == "--host-lan") || args.iter().any(|a| a == "--versus-host-lan") {
+        menu.mode = if args.iter().any(|a| a == "--versus-host-lan") {
+            GameMode::Versus
+        } else {
+            GameMode::Sandbox
+        };
+        if let Some(port) = value("--host-lan").or_else(|| value("--versus-host-lan")) {
             menu.port = port;
         }
         Some(Action::HostLan)
-    } else if let Some(addr) = value("--join-lan") {
+    } else if let Some(addr) = value("--join-lan").or_else(|| value("--versus-join-lan")) {
+        menu.mode = if value("--versus-join-lan").is_some() {
+            GameMode::Versus
+        } else {
+            GameMode::Sandbox
+        };
         menu.address = addr;
         Some(Action::JoinLan)
     } else {
         None
     }
+}
+
+/// Testing flags for versus: `--auto-ready` skips the designer with a random
+/// species, `--arena-seed <n>` fixes the arena.
+fn versus_flags(v: &mut Versus) {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let value = |flag: &str| {
+        let i = args.iter().position(|a| a == flag)?;
+        args.get(i + 1).filter(|v| !v.starts_with("--")).cloned()
+    };
+    v.auto_ready = args.iter().any(|a| a == "--auto-ready");
+    v.seed_override = value("--arena-seed").and_then(|s| s.parse().ok());
 }
 
 /// Handles Steam events while sitting in the menu: invites, lobby search
@@ -215,12 +248,16 @@ pub fn menu_ui(
         ui.vertical_centered(|ui| {
             ui.add_space(50.0);
             ui.label(
-                egui::RichText::new("SBCT")
-                    .size(72.0)
+                egui::RichText::new("ALIEN VERSUS")
+                    .size(64.0)
                     .strong()
                     .color(egui::Color32::from_rgb(230, 170, 70)),
             );
-            ui.label(egui::RichText::new("a falling-sand sandbox").size(16.0).italics());
+            ui.label(
+                egui::RichText::new("design a species · drop it in · watch it fight")
+                    .size(16.0)
+                    .italics(),
+            );
             ui.add_space(8.0);
             match (&steam, &status.error) {
                 (Some(s), _) => ui.colored_label(
@@ -246,6 +283,8 @@ pub fn menu_ui(
 
             match menu.screen {
                 Screen::Main => main_screen(ui, &mut menu, &mut action),
+                Screen::Versus => versus_screen(ui, &mut menu, &mut action),
+                Screen::Sandbox => sandbox_screen(ui, &mut menu, &mut action),
                 Screen::Host => host_screen(ui, &mut menu, steam.is_some(), &mut action),
                 Screen::Join => join_screen(ui, &mut menu, steam.as_deref(), &mut action),
             }
@@ -269,21 +308,65 @@ fn main_screen(ui: &mut egui::Ui, menu: &mut MenuState, action: &mut Option<Acti
         );
     });
     ui.add_space(16.0);
-    if big_button(ui, "Host Game") {
+    if big_button(ui, "Alien Versus") {
+        menu.screen = Screen::Versus;
+        menu.mode = GameMode::Versus;
+    }
+    if big_button(ui, "Alien Ecosystem") {
+        *action = Some(Action::Ecosystem);
+    }
+    if big_button(ui, "Sandbox") {
+        menu.screen = Screen::Sandbox;
+        menu.mode = GameMode::Sandbox;
+    }
+    ui.add_space(16.0);
+    if big_button(ui, "Quit") {
+        *action = Some(Action::Quit);
+    }
+}
+
+fn versus_screen(ui: &mut egui::Ui, menu: &mut MenuState, action: &mut Option<Action>) {
+    ui.heading("Alien Versus");
+    ui.weak("Spend points on a species, fight another player's, evolve between rounds.");
+    ui.add_space(12.0);
+    if big_button(ui, "Host match") {
         menu.screen = Screen::Host;
     }
-    if big_button(ui, "Join Game") {
+    if big_button(ui, "Join match") {
+        menu.screen = Screen::Join;
+    }
+    if big_button(ui, "Practice vs AI") {
+        *action = Some(Action::Practice);
+    }
+    ui.add_space(12.0);
+    if big_button(ui, "Back") {
+        menu.screen = Screen::Main;
+    }
+}
+
+fn sandbox_screen(ui: &mut egui::Ui, menu: &mut MenuState, action: &mut Option<Action>) {
+    ui.heading("Sandbox");
+    ui.weak("The falling-sand world: dig, build, and share it.");
+    ui.add_space(12.0);
+    if big_button(ui, "Host world") {
+        menu.screen = Screen::Host;
+    }
+    if big_button(ui, "Join world") {
         menu.screen = Screen::Join;
     }
     if big_button(ui, "Singleplayer") {
         *action = Some(Action::Singleplayer);
     }
-    if big_button(ui, "Alien Ecosystem") {
-        *action = Some(Action::Ecosystem);
+    ui.add_space(12.0);
+    if big_button(ui, "Back") {
+        menu.screen = Screen::Main;
     }
-    ui.add_space(16.0);
-    if big_button(ui, "Quit") {
-        *action = Some(Action::Quit);
+}
+
+fn back_screen(menu: &MenuState) -> Screen {
+    match menu.mode {
+        GameMode::Versus => Screen::Versus,
+        GameMode::Sandbox => Screen::Sandbox,
     }
 }
 
@@ -301,7 +384,10 @@ fn mode_tabs(ui: &mut egui::Ui, mode: &mut NetMode, steam_ok: bool) {
 }
 
 fn host_screen(ui: &mut egui::Ui, menu: &mut MenuState, steam_ok: bool, action: &mut Option<Action>) {
-    ui.heading("Host Game");
+    ui.heading(match menu.mode {
+        GameMode::Versus => "Host a match",
+        GameMode::Sandbox => "Host a world",
+    });
     mode_tabs(ui, &mut menu.host_mode, steam_ok);
     ui.add_space(12.0);
     egui::Grid::new("host")
@@ -327,9 +413,11 @@ fn host_screen(ui: &mut egui::Ui, menu: &mut MenuState, steam_ok: bool, action: 
                     ui.end_row();
                 }
             }
-            ui.label("World seed");
-            ui.add(egui::TextEdit::singleline(&mut menu.seed).desired_width(120.0));
-            ui.end_row();
+            if menu.mode == GameMode::Sandbox {
+                ui.label("World seed");
+                ui.add(egui::TextEdit::singleline(&mut menu.seed).desired_width(120.0));
+                ui.end_row();
+            }
         });
     ui.add_space(16.0);
     if big_button(ui, "Start") {
@@ -339,7 +427,7 @@ fn host_screen(ui: &mut egui::Ui, menu: &mut MenuState, steam_ok: bool, action: 
         });
     }
     if big_button(ui, "Back") {
-        menu.screen = Screen::Main;
+        menu.screen = back_screen(menu);
     }
 }
 
@@ -349,7 +437,10 @@ fn join_screen(
     steam: Option<&SteamClient>,
     action: &mut Option<Action>,
 ) {
-    ui.heading("Join Game");
+    ui.heading(match menu.mode {
+        GameMode::Versus => "Join a match",
+        GameMode::Sandbox => "Join a world",
+    });
     mode_tabs(ui, &mut menu.join_mode, steam.is_some());
     ui.add_space(12.0);
 
@@ -386,7 +477,7 @@ fn join_screen(
                         if menu.lobbies.is_empty() {
                             ui.weak("No public lobbies found.");
                         }
-                        for l in &menu.lobbies {
+                        for l in menu.lobbies.iter().filter(|l| l.mode == menu.mode.tag()) {
                             ui.horizontal(|ui| {
                                 ui.label(format!("{}  ({}/{})", l.name, l.members, l.max_members));
                                 if ui.button("Join").clicked() {
@@ -426,7 +517,7 @@ fn join_screen(
     }
     ui.add_space(8.0);
     if big_button(ui, "Back") {
-        menu.screen = Screen::Main;
+        menu.screen = back_screen(menu);
     }
 }
 
@@ -455,25 +546,42 @@ fn run_action(
             commands.insert_resource(Session::host(None, OFFLINE_ID, menu.name.clone(), None, seed()));
             commands.set_state(AppState::InGame);
         }
+        Action::Practice => {
+            let mut v = Versus::host(None, OFFLINE_ID, menu.name.clone(), None);
+            versus_flags(&mut v);
+            commands.insert_resource(v);
+            commands.set_state(AppState::Versus);
+        }
         Action::HostSteam => {
             let Some(steam) = steam else { return };
-            steam.create_lobby(menu.visibility, menu.max_players);
-            commands.insert_resource(Connecting::CreatingLobby { seed: seed() });
+            steam.create_lobby(menu.visibility, menu.max_players, menu.mode.tag());
+            commands.insert_resource(Connecting::CreatingLobby {
+                seed: seed(),
+                mode: menu.mode,
+            });
             commands.set_state(AppState::Connecting);
         }
         Action::HostLan => {
             let port = menu.port.trim().parse().unwrap_or(tcp::DEFAULT_PORT);
             match TcpHost::bind(port) {
-                Ok(host) => {
-                    commands.insert_resource(Session::host(
-                        Some(Box::new(host)),
-                        tcp::HOST_ID,
-                        menu.name.clone(),
-                        None,
-                        seed(),
-                    ));
-                    commands.set_state(AppState::InGame);
-                }
+                Ok(host) => match menu.mode {
+                    GameMode::Sandbox => {
+                        commands.insert_resource(Session::host(
+                            Some(Box::new(host)),
+                            tcp::HOST_ID,
+                            menu.name.clone(),
+                            None,
+                            seed(),
+                        ));
+                        commands.set_state(AppState::InGame);
+                    }
+                    GameMode::Versus => {
+                        let mut v = Versus::host(Some(Box::new(host)), tcp::HOST_ID, menu.name.clone(), None);
+                        versus_flags(&mut v);
+                        commands.insert_resource(v);
+                        commands.set_state(AppState::Versus);
+                    }
+                },
                 Err(e) => menu.error = Some(format!("Couldn't open port {port}: {e}")),
             }
         }
@@ -490,7 +598,7 @@ fn run_action(
                 let _ = tx
                     .send(TcpClient::connect(&addr).map_err(|e| format!("Couldn't connect to {addr}: {e}")));
             });
-            commands.insert_resource(Connecting::Tcp(Mutex::new(rx)));
+            commands.insert_resource(Connecting::Tcp(Mutex::new(rx), menu.mode));
             commands.set_state(AppState::Connecting);
         }
     }
@@ -503,28 +611,44 @@ pub fn connecting_update(
     steam: Option<Res<SteamClient>>,
     mut inbox: ResMut<SteamInbox>,
     session: Option<Res<Session>>,
+    versus: Option<Res<Versus>>,
     menu: Res<MenuState>,
 ) {
     let Some(connecting) = connecting else { return };
     let fail = |commands: &mut Commands, msg: String| commands.insert_resource(EndSession(Some(msg)));
 
     match &*connecting {
-        Connecting::CreatingLobby { seed } => {
+        Connecting::CreatingLobby { seed, mode } => {
             let Some(steam) = steam else { return };
             for event in std::mem::take(&mut inbox.0) {
                 match event {
                     SteamEvent::LobbyCreated(Ok(lobby)) => {
                         info!("Created lobby {lobby}");
                         let transport = steam.transport(lobby, steam.my_id());
-                        commands.insert_resource(Session::host(
-                            Some(Box::new(transport)),
-                            steam.my_id(),
-                            steam.my_name(),
-                            Some(lobby),
-                            *seed,
-                        ));
                         commands.remove_resource::<Connecting>();
-                        commands.set_state(AppState::InGame);
+                        match mode {
+                            GameMode::Sandbox => {
+                                commands.insert_resource(Session::host(
+                                    Some(Box::new(transport)),
+                                    steam.my_id(),
+                                    steam.my_name(),
+                                    Some(lobby),
+                                    *seed,
+                                ));
+                                commands.set_state(AppState::InGame);
+                            }
+                            GameMode::Versus => {
+                                let mut v = Versus::host(
+                                    Some(Box::new(transport)),
+                                    steam.my_id(),
+                                    steam.my_name(),
+                                    Some(lobby),
+                                );
+                                versus_flags(&mut v);
+                                commands.insert_resource(v);
+                                commands.set_state(AppState::Versus);
+                            }
+                        }
                     }
                     SteamEvent::LobbyCreated(Err(e)) => {
                         fail(&mut commands, format!("Couldn't create lobby: {e}"))
@@ -546,12 +670,21 @@ pub fn connecting_update(
                         }
                         info!("Entered lobby {lobby}, host {host}");
                         let transport = steam.transport(lobby, host);
-                        commands.insert_resource(Session::client(
-                            Box::new(transport),
-                            host,
-                            steam.my_name(),
-                            Some(lobby),
-                        ));
+                        // The lobby says which game it's running.
+                        match GameMode::from_tag(&steam.lobby_mode(lobby)) {
+                            GameMode::Sandbox => commands.insert_resource(Session::client(
+                                Box::new(transport),
+                                host,
+                                steam.my_name(),
+                                Some(lobby),
+                            )),
+                            GameMode::Versus => commands.insert_resource(Versus::client(
+                                Box::new(transport),
+                                host,
+                                steam.my_name(),
+                                Some(lobby),
+                            )),
+                        }
                         commands.insert_resource(Connecting::Downloading);
                     }
                     SteamEvent::LobbyEntered(Err(e)) => fail(&mut commands, e),
@@ -559,16 +692,24 @@ pub fn connecting_update(
                 }
             }
         }
-        Connecting::Tcp(rx) => {
+        Connecting::Tcp(rx, mode) => {
             let result = rx.lock().unwrap().try_recv();
             match result {
                 Ok(Ok(client)) => {
-                    commands.insert_resource(Session::client(
-                        Box::new(client),
-                        tcp::HOST_ID,
-                        menu.name.clone(),
-                        None,
-                    ));
+                    match mode {
+                        GameMode::Sandbox => commands.insert_resource(Session::client(
+                            Box::new(client),
+                            tcp::HOST_ID,
+                            menu.name.clone(),
+                            None,
+                        )),
+                        GameMode::Versus => {
+                            let mut v =
+                                Versus::client(Box::new(client), tcp::HOST_ID, menu.name.clone(), None);
+                            versus_flags(&mut v);
+                            commands.insert_resource(v);
+                        }
+                    }
                     commands.insert_resource(Connecting::Downloading);
                 }
                 Ok(Err(e)) => fail(&mut commands, e),
@@ -579,6 +720,9 @@ pub fn connecting_update(
             if session.is_some_and(|s| s.is_loaded()) {
                 commands.remove_resource::<Connecting>();
                 commands.set_state(AppState::InGame);
+            } else if versus.is_some_and(|v| v.phase != Phase::Connecting) {
+                commands.remove_resource::<Connecting>();
+                commands.set_state(AppState::Versus);
             }
         }
     }
@@ -598,7 +742,7 @@ pub fn connecting_ui(
             let text = match connecting.as_deref() {
                 Some(Connecting::CreatingLobby { .. }) => "Creating Steam lobby…".to_string(),
                 Some(Connecting::JoiningLobby) => "Joining Steam lobby…".to_string(),
-                Some(Connecting::Tcp(_)) => "Connecting…".to_string(),
+                Some(Connecting::Tcp(..)) => "Connecting…".to_string(),
                 Some(Connecting::Downloading) | None => match &session {
                     Some(s) if s.world.is_some() => {
                         format!("Downloading world {}/{}", s.chunks_received, s.total_chunks())

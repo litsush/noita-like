@@ -38,6 +38,8 @@ pub struct LobbyInfo {
     pub name: String,
     pub members: usize,
     pub max_members: usize,
+    /// "sandbox" or "versus".
+    pub mode: String,
 }
 
 #[derive(Clone, Debug)]
@@ -95,24 +97,37 @@ impl Steam {
         self.client.friends().name()
     }
 
-    pub fn create_lobby(&self, visibility: Visibility, max_members: u32) {
+    /// `mode` tags the lobby ("sandbox" or "versus") so joiners know what
+    /// they're getting into.
+    pub fn create_lobby(&self, visibility: Visibility, max_members: u32, mode: &str) {
         let ty = match visibility {
             Visibility::Public => LobbyType::Public,
             Visibility::FriendsOnly => LobbyType::FriendsOnly,
             Visibility::InviteOnly => LobbyType::Private,
         };
         let (tx, client) = (self.tx.clone(), self.client.clone());
+        let mode = mode.to_string();
         self.client
             .matchmaking()
             .create_lobby(ty, max_members.min(250), move |res| {
                 let res = res.map(|lobby| {
                     let mm = client.matchmaking();
                     mm.set_lobby_data(lobby, GAME_KEY, GAME_VALUE);
-                    mm.set_lobby_data(lobby, "name", &format!("{}'s world", client.friends().name()));
+                    let what = if mode == "versus" { "arena" } else { "world" };
+                    mm.set_lobby_data(lobby, "name", &format!("{}'s {what}", client.friends().name()));
+                    mm.set_lobby_data(lobby, "mode", &mode);
                     lobby.raw()
                 });
                 let _ = tx.send(SteamEvent::LobbyCreated(res.map_err(|e| e.to_string())));
             });
+    }
+
+    /// The mode tag of a lobby we're in or looking at.
+    pub fn lobby_mode(&self, lobby: u64) -> String {
+        self.client
+            .matchmaking()
+            .lobby_data(LobbyId::from_raw(lobby), "mode")
+            .unwrap_or_else(|| "sandbox".into())
     }
 
     pub fn join_lobby(&self, lobby: u64) {
@@ -151,6 +166,7 @@ impl Steam {
                     name: mm.lobby_data(l, "name").unwrap_or_else(|| "Unnamed".into()),
                     members: mm.lobby_member_count(l),
                     max_members: mm.lobby_member_limit(l).unwrap_or(0),
+                    mode: mm.lobby_data(l, "mode").unwrap_or_else(|| "sandbox".into()),
                 })
                 .collect();
             let _ = tx.send(SteamEvent::LobbyList(list));

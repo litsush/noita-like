@@ -43,6 +43,8 @@ pub struct Anim {
     pub blink: f32,
     /// Which surface a clinging creature is stuck to (unit vector).
     pub surface: V2,
+    /// A limb instance to aim at a world point (striking with an arm or tail).
+    pub reach: Option<(usize, V2)>,
 }
 
 /// What a creature has noticed this think.
@@ -195,6 +197,9 @@ pub struct Creature {
     pub kills: u32,
     /// Last movement command, for the inspector.
     pub last_cmd: MoveCmd,
+    /// Per limb instance: false once the limb has been torn off. Empty
+    /// means every limb is intact.
+    pub limb_ok: Vec<bool>,
 }
 
 impl Creature {
@@ -241,6 +246,7 @@ impl Creature {
             noise: 0.0,
             kills: 0,
             last_cmd: MoveCmd::default(),
+            limb_ok: Vec::new(),
         };
         c.health = c.max_health(species);
         c.brain.last_pos = pos;
@@ -264,6 +270,12 @@ impl Creature {
 
     pub fn alive(&self) -> bool {
         self.dead.is_none()
+    }
+
+    /// Whether limb instance `k` (see [`limb_instances`]) is still attached.
+    #[inline]
+    pub fn has_limb(&self, k: usize) -> bool {
+        self.limb_ok.get(k).copied().unwrap_or(true)
     }
 }
 

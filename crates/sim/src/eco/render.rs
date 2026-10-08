@@ -4,13 +4,14 @@
 
 use std::f32::consts::{PI, TAU};
 
+use super::biome::Biome;
 use super::body::{self, Paint, Prim};
-use super::creature::Creature;
+use super::creature::{Carcass, Creature, Egg};
 use super::flora::{FloraSpecies, GrowthForm, Plant};
 use super::genome::{Colors, Pattern, Species, SpitKind};
 use super::math::{Rgb, V2, mix, scale, v2};
-use super::nav::TILE;
-use super::{Ecosystem, IconKind};
+use super::nav::{NavGrid, TILE};
+use super::{Ecosystem, Icon, IconKind, Particle, Projectile};
 use crate::material::{Kind, Material};
 use crate::rng::hash2;
 use crate::world::World;
@@ -19,6 +20,39 @@ use crate::world::World;
 pub struct DrawOpts {
     pub selected: Option<u32>,
     pub show_paths: bool,
+}
+
+/// Everything the renderer needs for one frame. The ecosystem sandbox and
+/// the versus arena both build one of these.
+pub struct Scene<'a> {
+    pub seed: u64,
+    pub biome: &'a Biome,
+    pub world: &'a World,
+    pub nav: &'a NavGrid,
+    pub time: f32,
+    pub tick: u64,
+    /// Fraction of the day: 0 midnight, 0.25 dawn, 0.5 noon, 0.75 dusk.
+    pub day_phase: f32,
+    pub daylight: f32,
+    pub dusk: f32,
+    pub flora: &'a [FloraSpecies],
+    pub plants: &'a [Plant],
+    pub carcasses: &'a [Carcass],
+    pub eggs: &'a [Egg],
+    pub species: &'a [Species],
+    pub creatures: &'a [Creature],
+    pub projectiles: &'a [Projectile],
+    pub particles: &'a [Particle],
+    pub icons: &'a [Icon],
+    /// Extra primitives drawn over the creatures (severed limbs, strike
+    /// trails), with their colour and whether they glow.
+    pub extras: &'a [(Prim, Rgb, bool)],
+}
+
+impl Scene<'_> {
+    fn creature(&self, id: u32) -> Option<&Creature> {
+        self.creatures.iter().find(|c| c.id == id)
+    }
 }
 
 pub struct Renderer {
@@ -105,16 +139,41 @@ impl Renderer {
     }
 
     pub fn draw(&mut self, eco: &Ecosystem, opts: &DrawOpts) {
+        let scene = Scene {
+            seed: eco.seed,
+            biome: &eco.biome,
+            world: &eco.world,
+            nav: &eco.nav,
+            time: eco.time,
+            tick: eco.tick,
+            day_phase: eco.day_phase(),
+            daylight: eco.daylight(),
+            dusk: eco.dusk(),
+            flora: &eco.flora,
+            plants: &eco.plants,
+            carcasses: &eco.carcasses,
+            eggs: &eco.eggs,
+            species: &eco.species,
+            creatures: &eco.creatures,
+            projectiles: &eco.projectiles,
+            particles: &eco.particles,
+            icons: &eco.icons,
+            extras: &[],
+        };
+        self.draw_scene(&scene, opts);
+    }
+
+    pub fn draw_scene(&mut self, eco: &Scene, opts: &DrawOpts) {
         let (w, h) = (self.w, self.h);
         self.emissive.clear();
         for e in self.emit.iter_mut() {
             *e = [0.0; 3];
         }
-        let daylight = eco.daylight();
-        let dusk = eco.dusk();
-        let biome = &eco.biome;
+        let daylight = eco.daylight;
+        let dusk = eco.dusk;
+        let biome = eco.biome;
         let pal = &biome.palette;
-        let phase = eco.day_phase();
+        let phase = eco.day_phase;
 
         // ---- background --------------------------------------------------
         let sky_top = blend(
@@ -245,10 +304,10 @@ impl Renderer {
         };
 
         // ---- life ----------------------------------------------------------
-        for p in &eco.plants {
-            draw_plant(&mut target, p, &eco.flora[p.flora], eco.time, &eco.world);
+        for p in eco.plants {
+            draw_plant(&mut target, p, &eco.flora[p.flora], eco.time, eco.world);
         }
-        for k in &eco.carcasses {
+        for k in eco.carcasses {
             let sp = &eco.species[k.species];
             let s = k.scale * sp.stats.size;
             let rot = (k.age / 60.0).min(1.0);
@@ -278,7 +337,7 @@ impl Renderer {
                 }
             }
         }
-        for e in &eco.eggs {
+        for e in eco.eggs {
             let glow = eco.species[e.species].colors.glow;
             raster_ellipse(&mut target, e.pos - v2(0.0, 1.5), 1.3, 1.8, 0.0, |u, v, edge| {
                 let speck = hash2(e.id as u64, (u * 2.0) as i32, (v * 2.0) as i32).is_multiple_of(5);
@@ -294,11 +353,14 @@ impl Renderer {
                 )
             });
         }
-        for c in &eco.creatures {
+        for c in eco.creatures {
             let sp = &eco.species[c.species];
             draw_creature(&mut target, c, sp);
         }
-        for p in &eco.projectiles {
+        for (prim, col, glow) in eco.extras {
+            draw_prim(&mut target, prim, *col, *glow);
+        }
+        for p in eco.projectiles {
             let (col, glow) = match p.kind {
                 SpitKind::Acid => (pal.mat(Material::Acid), true),
                 SpitKind::Fire => ([255, 170, 50], true),
@@ -308,7 +370,7 @@ impl Renderer {
             raster_dot(&mut target, p.pos, 1.3, col, glow);
             raster_line(&mut target, p.pos, p.pos - p.vel * 0.02, 1.0, 0.6, col, glow);
         }
-        for p in &eco.particles {
+        for p in eco.particles {
             let a = (p.life / p.max_life).clamp(0.0, 1.0);
             let (x, y) = p.pos.cell();
             if p.glow {
@@ -374,7 +436,7 @@ impl Renderer {
         }
 
         // ---- overlays ------------------------------------------------------
-        for icon in &eco.icons {
+        for icon in eco.icons {
             self.icon(icon.pos, icon.kind, (icon.life * 2.0).min(1.0));
         }
         if let Some(id) = opts.selected
@@ -433,7 +495,7 @@ impl Renderer {
         }
     }
 
-    fn compute_light(&mut self, eco: &Ecosystem, daylight: f32) {
+    fn compute_light(&mut self, eco: &Scene, daylight: f32) {
         let (tw, th) = (self.tw, self.th);
         let sky = 0.16 + 0.84 * daylight;
         let cave = eco.biome.cave_ambient;
@@ -672,6 +734,16 @@ fn pattern(c: &Colors, u: f32, v: f32, rx: f32, ry: f32, seed: u64) -> Rgb {
         c.belly
     } else {
         c.base
+    }
+}
+
+/// Draws one primitive in a flat colour.
+fn draw_prim(t: &mut Target, prim: &Prim, col: Rgb, glow: bool) {
+    match *prim {
+        Prim::Ellipse { c, rx, ry, angle, .. } => raster_ellipse(t, c, rx, ry, angle, |_, _, _| (col, glow)),
+        Prim::Line { a, b, w0, w1, .. } => raster_line(t, a, b, w0, w1, col, glow),
+        Prim::Tri { p, .. } => raster_tri(t, p, col, glow),
+        Prim::Dot { p, r, .. } => raster_dot(t, p, r, col, glow),
     }
 }
 
