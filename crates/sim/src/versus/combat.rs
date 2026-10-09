@@ -26,10 +26,15 @@ pub enum Tactic {
     Hold,
     Retreat,
     Search,
+    Forage,
+    /// Keep away and out of sight: how the weaponless fight.
+    Evade,
+    /// Sit tight somewhere quiet until something turns up.
+    Hide,
 }
 
 impl Tactic {
-    pub const ALL: [Tactic; 10] = [
+    pub const ALL: [Tactic; 13] = [
         Tactic::Rush,
         Tactic::Flank,
         Tactic::Kite,
@@ -40,6 +45,9 @@ impl Tactic {
         Tactic::Hold,
         Tactic::Retreat,
         Tactic::Search,
+        Tactic::Forage,
+        Tactic::Evade,
+        Tactic::Hide,
     ];
 
     pub fn index(self) -> usize {
@@ -62,6 +70,9 @@ impl Tactic {
             Tactic::Hold => "holding ground",
             Tactic::Retreat => "retreating",
             Tactic::Search => "searching",
+            Tactic::Forage => "foraging",
+            Tactic::Evade => "evading",
+            Tactic::Hide => "hiding",
         }
     }
 }
@@ -90,6 +101,18 @@ pub enum CombatAction {
     Spit(V2),
     Leap(V2),
     Ink,
+    /// Eat the food source with this id (a plant, or a fallen fighter).
+    Eat(u32),
+}
+
+/// Something to eat, as the arena lists it for hungry brains.
+#[derive(Clone, Copy, Debug)]
+pub struct Food {
+    pub id: u32,
+    pub pos: V2,
+    /// Energy on offer.
+    pub amount: f32,
+    pub meat: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -116,6 +139,14 @@ pub struct CombatBrain {
     pub detour: Option<(V2, f32)>,
     pub label: &'static str,
     pub action: CombatAction,
+    /// Spotted the target before it spotted us: the first strike lands as
+    /// an ambush. Set when the target is acquired, spent on the first blow.
+    pub surprise: bool,
+    pub surprise_until: f32,
+    /// When the target was last in view, for drifting the search.
+    pub lost_at: f32,
+    /// The food we're heading for.
+    pub food: Option<Food>,
 }
 
 impl CombatBrain {
@@ -139,6 +170,10 @@ impl CombatBrain {
             detour: None,
             label: "",
             action: CombatAction::None,
+            surprise: false,
+            surprise_until: 0.0,
+            lost_at: 0.0,
+            food: None,
         }
     }
 
@@ -209,6 +244,9 @@ pub struct EnemySnap {
     /// Best weak spot to aim at, if the brain is clever enough to use it.
     pub weak_spot: Option<V2>,
     pub head: V2,
+    /// Who it has in view right now, if anyone.
+    pub aware: Option<u32>,
+    pub energy: f32,
     /// Every intact part: centre, kind (0 head, 1 body, 2 limb), health
     /// fraction, index into the species' part layout.
     pub parts: Vec<(V2, u8, f32, u8)>,
@@ -231,6 +269,10 @@ pub struct Ctx<'a> {
     /// Where the enemy teams started, to search towards.
     pub enemy_side: V2,
     pub centre: V2,
+    /// Where the nearest living enemy actually is. A long search drifts
+    /// towards it, so two animals never spend a whole round apart.
+    pub enemy_hint: Option<V2>,
+    pub food: &'a [Food],
 }
 
 fn away_from(c: &Creature, from: V2, dist: f32) -> V2 {
@@ -267,6 +309,10 @@ pub fn detect(
     }
     if lo.tremor && eff.feelers_ok && (e.on_ground || e.burrowed) && e.vel.len() > 3.0 && d < 75.0 {
         return Some(0.8);
+    }
+    // A nose finds them through walls and camouflage, roughly.
+    if lo.nose > 0.0 && d < lo.nose {
+        return Some(0.6);
     }
     if e.burrowed {
         return None;
@@ -341,9 +387,17 @@ pub fn think(
     }
     match best {
         Some((id, _)) => {
-            brain.target = Some(id);
             let e = &seen.iter().find(|(e, _)| e.id == id).unwrap().0;
+            // Caught them unawares: the first blow is an ambush. Sharp eyes
+            // earn this far more often than dull ones.
+            let fresh = brain.target != Some(id) || now - brain.lost_at > 3.0;
+            if fresh && e.aware != Some(c.id) && !frenzy {
+                brain.surprise = true;
+                brain.surprise_until = now + 6.0;
+            }
+            brain.target = Some(id);
             brain.last_seen = Some((e.pos, now));
+            brain.lost_at = now;
         }
         None => {
             if brain.last_seen.is_some_and(|(_, t)| now - t > 7.0) {
@@ -352,7 +406,76 @@ pub fn think(
             // Keep the id so memory makes sense, but we don't know where it is.
         }
     }
+    if brain.surprise
+        && (now > brain.surprise_until
+            || seen
+                .iter()
+                .any(|(e, _)| Some(e.id) == brain.target && e.aware == Some(c.id)))
+    {
+        brain.surprise = false;
+    }
     brain.ranged_pain *= 0.9;
+
+    // Hunger. A grazer with nothing in sight eats whenever it can; anything
+    // starving goes for food unless the enemy is on top of it.
+    let visible_now = best.is_some();
+    let nearest_enemy = seen
+        .iter()
+        .map(|(e, _)| e.pos.dist(c.pos))
+        .fold(f32::MAX, f32::min);
+    let grazer = !lo.diet.eats_meat();
+    let hungry = c.energy < 0.45 || (grazer && c.energy < 0.8 && !visible_now);
+    if hungry && !(frenzy && c.energy > 0.3) {
+        let safe = !visible_now || nearest_enemy > 45.0 || c.energy < 0.15;
+        let food = ctx
+            .food
+            .iter()
+            .filter(|f| {
+                if f.meat {
+                    lo.diet.eats_meat()
+                } else {
+                    lo.diet.eats_fruit()
+                }
+            })
+            .filter(|f| f.amount > 0.02)
+            .filter(|f| {
+                // Smelled, seen, or remembered.
+                let d = f.pos.dist(c.pos);
+                d < lo.nose.max(55.0 + lo.sight * 0.5) || brain.food.is_some_and(|k| k.id == f.id)
+            })
+            .min_by(|a, b| a.pos.dist(c.pos).total_cmp(&b.pos.dist(c.pos)))
+            .copied();
+        if safe && let Some(f) = food {
+            brain.food = Some(f);
+            brain.set_tactic(Tactic::Forage, now);
+            brain.label = "foraging";
+            return;
+        }
+    }
+    if brain.tactic == Tactic::Forage {
+        let done = c.energy > 0.9
+            || brain
+                .food
+                .is_none_or(|f| !ctx.food.iter().any(|g| g.id == f.id && g.amount > 0.02));
+        let threatened = visible_now && nearest_enemy < 35.0 && c.energy > 0.15;
+        if !(done || threatened || frenzy && c.energy > 0.3) {
+            return;
+        }
+        brain.food = None;
+    }
+
+    // Nothing to fight with: live by not being caught. Outlast them.
+    let can_fight = !lo.weapons.is_empty() || lo.spit.is_some();
+    if !can_fight {
+        let still_running = brain.tactic == Tactic::Evade && now - brain.lost_at < 6.0;
+        let t = if visible_now || still_running {
+            Tactic::Evade
+        } else {
+            Tactic::Hide
+        };
+        brain.set_tactic(t, now);
+        return;
+    }
 
     // Learn where to hit.
     if intel >= 0.25 && brain.blocked >= 3.0 && brain.blocked > brain.landed * 0.8 {
@@ -515,10 +638,20 @@ pub fn act(
                 _ => {
                     // Sweep the arena: somewhere new, biased towards the
                     // enemy's side, that this body can actually stand in.
+                    // The longer the search drags on, the more it homes in
+                    // on where the enemy really is.
                     let arrived = c.brain.spot.is_none_or(|sp| sp.dist(c.pos) < 10.0);
                     if arrived || c.brain.timer > 10.0 || c.brain.stuck >= 3.0 {
-                        let toward_enemy = ctx.enemy_side.x > c.pos.x;
-                        c.brain.spot = Some(search_spot(ctx.world, rng, c.pos, toward_enemy, lo));
+                        let lost_for = ctx.time - brain.lost_at;
+                        let instinct = ((lost_for - 8.0) / 30.0).clamp(0.0, 1.0);
+                        let toward = ctx.enemy_hint.unwrap_or(ctx.enemy_side);
+                        let mut spot = search_spot(ctx.world, rng, c.pos, toward.x > c.pos.x, lo);
+                        if let Some(h) = ctx.enemy_hint {
+                            // Lean the sweep towards them, then straight at them.
+                            let lean = spot.lerp(h, instinct);
+                            spot = if instinct >= 0.99 { h } else { lean };
+                        }
+                        c.brain.spot = Some(spot);
                         c.brain.timer = 0.0;
                         c.brain.stuck = 0.0;
                         c.brain.path.clear();
@@ -531,6 +664,107 @@ pub fn act(
             it.fly = lo.fly && eff.can_fly;
             it.dig = lo.dig && c.burrowed;
             it.sneak = lo.camouflage > 0.0 && brain.last_seen.is_some();
+            it
+        }
+        Tactic::Forage => {
+            let Some(food) = brain.food else {
+                brain.label = "looking for food";
+                return intent(None, 0.0);
+            };
+            brain.label = if c.energy < 0.2 { "starving" } else { "foraging" };
+            let reach = s * 1.1 + 4.0;
+            let d = food.pos.dist(c.pos);
+            if d < reach {
+                brain.action = CombatAction::Eat(food.id);
+                let mut it = intent(None, 0.0);
+                it.sneak = true;
+                if (c.facing > 0.0) != (food.pos.x > c.pos.x) && (food.pos.x - c.pos.x).abs() > 1.0 {
+                    c.facing = (food.pos.x - c.pos.x).signum();
+                }
+                it
+            } else {
+                let mut it = intent(Some(food.pos), 0.9);
+                it.fly = lo.fly && eff.can_fly && d > 20.0;
+                it.sneak = lo.camouflage > 0.0;
+                it.dig = lo.dig && c.burrowed;
+                it
+            }
+        }
+        Tactic::Hide => {
+            // Somewhere out of the enemy's way; stay still so camouflage works.
+            brain.label = "hiding";
+            let threat = ctx.enemy_hint.unwrap_or(ctx.enemy_side);
+            let exposed = c
+                .brain
+                .spot
+                .is_none_or(|sp| ctx.time - brain.since > 25.0 && line_of_sight(ctx.world, threat, sp));
+            if exposed || c.brain.stuck >= 3.0 {
+                let mut best: Option<(V2, f32)> = None;
+                for _ in 0..16 {
+                    let p = search_spot(ctx.world, rng, c.pos, threat.x < c.pos.x, lo);
+                    let d = p.dist(threat);
+                    let hidden = !line_of_sight(ctx.world, threat, p);
+                    let score = d + if hidden { 80.0 } else { 0.0 } - p.dist(c.pos) * 0.3;
+                    if best.is_none_or(|b| score > b.1) {
+                        best = Some((p, score));
+                    }
+                }
+                c.brain.spot = best.map(|b| b.0);
+                c.brain.stuck = 0.0;
+                brain.since = ctx.time;
+            }
+            let spot = c.brain.spot.unwrap_or(c.pos);
+            let mut it = if spot.dist(c.pos) > 6.0 {
+                intent(Some(spot), 0.9)
+            } else {
+                intent(None, 0.0)
+            };
+            it.sneak = true;
+            it.fly = lo.fly && eff.can_fly && spot.dist(c.pos) > 20.0;
+            it.dig = lo.dig;
+            it
+        }
+        Tactic::Evade => {
+            brain.label = "evading";
+            let from = target.map(|t| t.pos).or(brain.last_seen.map(|l| l.0));
+            let Some(from) = from else {
+                return intent(None, 0.0);
+            };
+            let d = from.dist(c.pos);
+            if lo.ink && d < 30.0 && c.ink_cd <= 0.0 {
+                brain.action = CombatAction::Ink;
+            }
+            if lo.leap > 0.0 && d < 25.0 && c.on_ground && c.leap_cd <= 0.0 {
+                let dir = (c.pos - from).norm();
+                brain.action = CombatAction::Leap((dir + v2(0.0, -0.6)).norm());
+            }
+            // Head for somewhere far, out of their sight, that we can stand in.
+            let fresh = c
+                .brain
+                .spot
+                .is_none_or(|sp| sp.dist(c.pos) < 8.0 || sp.dist(from) < d * 0.8 || c.brain.stuck >= 3.0);
+            if fresh {
+                let mut best: Option<(V2, f32)> = None;
+                for _ in 0..14 {
+                    let p = search_spot(ctx.world, rng, c.pos, from.x < c.pos.x, lo);
+                    let far = p.dist(from);
+                    let hidden = !line_of_sight(ctx.world, from, p);
+                    let score = far + if hidden { 60.0 } else { 0.0 } - p.dist(c.pos) * 0.5;
+                    if best.is_none_or(|b| score > b.1) {
+                        best = Some((p, score));
+                    }
+                }
+                c.brain.spot = Some(best.map_or_else(|| away_from(c, from, 70.0), |b| b.0));
+                c.brain.stuck = 0.0;
+            }
+            let mut it = intent(c.brain.spot, 1.25);
+            it.fly = lo.fly && eff.can_fly;
+            it.dig = lo.dig;
+            if d < 18.0 {
+                // Too close for a plan: just get away.
+                it.goal = Some(away_from(c, from, 40.0));
+                it.direct = true;
+            }
             it
         }
         Tactic::Retreat => {
@@ -609,11 +843,18 @@ pub fn act(
 /// Out of a liquid or fire: the nearest dry, open spot to stand on.
 fn escape_hazard(c: &Creature, lo: &Loadout, eff: &Effects, ctx: &Ctx) -> Option<Intent> {
     let world = ctx.world;
-    let here = world.material(c.pos.x as i32, c.pos.y as i32);
-    let harmful = matches!(here.kind(), crate::material::Kind::Liquid) && !lo.swim
-        || here == Material::Lava
-        || (here == Material::Acid && !(lo.swim && c.in_liquid && false));
+    // The body centre and the feet: a shallow pool burns from below.
+    let feet = c.pos + v2(0.0, lo.size * 0.9);
+    let bad = |m: Material| {
+        m == Material::Lava
+            || m == Material::Acid
+            || (matches!(m.kind(), crate::material::Kind::Liquid) && !lo.swim)
+    };
+    let harmful = [c.pos, feet, feet - v2(0.0, 1.0)]
+        .iter()
+        .any(|p| bad(world.material(p.x as i32, p.y as i32)));
     let drowning = c.in_liquid && c.breath < 0.7 && !lo.swim;
+
     if !(harmful || drowning || c.status.burning > 0.0) {
         return None;
     }
@@ -742,7 +983,39 @@ fn fight(
     s: f32,
 ) -> Intent {
     let d = t.pos.dist(c.pos);
-    let lead = t.pos + t.vel * 0.2;
+    let mut lead = t.pos + t.vel * 0.2;
+    // Packs fan out: each member takes its own side and distance so they
+    // don't pile up on one spot, and nobody crowds a packmate.
+    let mut mates: Vec<u32> = allies
+        .iter()
+        .filter(|a| a.targeting == Some(t.id))
+        .map(|a| a.id)
+        .collect();
+    mates.push(c.id);
+    mates.sort_unstable();
+    let slot = mates.iter().position(|&id| id == c.id).unwrap_or(0);
+    if mates.len() > 1 {
+        let side = if slot % 2 == 0 { 1.0 } else { -1.0 };
+        let ring = (slot / 2) as f32;
+        let off = v2(side * (s * 1.6 + 3.0 + ring * 7.0), -ring * 5.0);
+        lead = t.pos + t.vel * 0.2 + off;
+    }
+    let sep = s * 2.4 + 5.0;
+    let crowd: V2 = allies
+        .iter()
+        .filter(|a| a.pos.dist(c.pos) < sep)
+        .map(|a| {
+            let away = c.pos - a.pos;
+            if away.len() < 0.1 {
+                v2(if c.id.is_multiple_of(2) { 1.0 } else { -1.0 }, 0.0)
+            } else {
+                away.norm() * (sep - a.pos.dist(c.pos))
+            }
+        })
+        .fold(V2::ZERO, |acc, v| acc + v);
+    if crowd.len() > 0.5 {
+        lead += crowd;
+    }
     // Reach measured from the body centre: the weapon's own offset plus its reach.
     let longest = lo
         .weapons
@@ -989,6 +1262,6 @@ fn fight(
             }
             it
         }
-        Tactic::Search | Tactic::Retreat => intent(None, 0.0),
+        Tactic::Search | Tactic::Retreat | Tactic::Forage | Tactic::Evade | Tactic::Hide => intent(None, 0.0),
     }
 }

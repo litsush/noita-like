@@ -4,6 +4,7 @@
 //! The host runs the arena and streams snapshots; everyone, host included,
 //! watches through a mirror of it. See `sbct_sim::versus`.
 
+pub mod icons;
 pub mod session;
 pub mod ui;
 pub mod view;
@@ -38,7 +39,11 @@ impl Plugin for VersusPlugin {
             )
             .add_systems(
                 EguiPrimaryContextPass,
-                ui::ui.run_if(in_state(AppState::Versus).and_then(resource_exists::<Versus>)),
+                ui::ui.after(crate::theme::setup).run_if(
+                    in_state(AppState::Versus)
+                        .and_then(resource_exists::<Versus>)
+                        .and_then(crate::theme::ready),
+                ),
             );
     }
 }

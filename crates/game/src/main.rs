@@ -1,3 +1,4 @@
+mod audio;
 mod eco_view;
 mod hud;
 mod menu;
@@ -5,6 +6,7 @@ mod player;
 mod render;
 mod session;
 mod steam;
+mod theme;
 mod versus;
 
 use bevy::prelude::*;
@@ -27,28 +29,40 @@ fn main() {
     // `--no-vsync` keeps unattended test runs moving when the window is hidden.
     let no_vsync = std::env::args().any(|a| a == "--no-vsync");
     let mut app = App::new();
-    app.add_plugins(DefaultPlugins.set(WindowPlugin {
-        primary_window: Some(Window {
-            title: "SBCT: Alien Versus".into(),
-            resolution: (1280, 800).into(),
-            present_mode: if no_vsync {
-                bevy::window::PresentMode::AutoNoVsync
-            } else {
-                bevy::window::PresentMode::AutoVsync
-            },
-            ..default()
-        }),
-        ..default()
-    }))
+    app.add_plugins(
+        DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "SBCT: Alien Versus".into(),
+                    resolution: (1280, 800).into(),
+                    present_mode: if no_vsync {
+                        bevy::window::PresentMode::AutoNoVsync
+                    } else {
+                        bevy::window::PresentMode::AutoVsync
+                    },
+                    ..default()
+                }),
+                ..default()
+            })
+            // Assets live at the repository root, two levels above this
+            // crate (and above a built binary in target/<profile>/).
+            .set(AssetPlugin {
+                file_path: "../../assets".into(),
+                ..default()
+            }),
+    )
     .add_plugins(EguiPlugin::default())
     .add_plugins(steam::SteamPlugin)
+    .add_plugins(audio::AudioPlugin)
     .add_plugins(versus::VersusPlugin)
     .init_state::<AppState>()
     .insert_resource(ClearColor(Color::srgb(0.45, 0.62, 0.85)))
     .insert_resource(Time::<Fixed>::from_hz(60.0))
     .init_resource::<render::UiHasPointer>()
     .init_resource::<hud::EscMenuOpen>()
+    .init_resource::<theme::ThemeReady>()
     .add_systems(Startup, (render::spawn_camera, menu::setup_menu))
+    .add_systems(EguiPrimaryContextPass, theme::setup)
     // Session lifecycle, in any state.
     .add_systems(
         Update,
@@ -62,7 +76,9 @@ fn main() {
     .add_systems(Update, menu::menu_steam_events.run_if(in_state(AppState::Menu)))
     .add_systems(
         EguiPrimaryContextPass,
-        menu::menu_ui.run_if(in_state(AppState::Menu)),
+        menu::menu_ui
+            .after(theme::setup)
+            .run_if(in_state(AppState::Menu).and_then(theme::ready)),
     )
     // Connecting.
     .add_systems(
@@ -73,7 +89,9 @@ fn main() {
     )
     .add_systems(
         EguiPrimaryContextPass,
-        menu::connecting_ui.run_if(in_state(AppState::Connecting)),
+        menu::connecting_ui
+            .after(theme::setup)
+            .run_if(in_state(AppState::Connecting).and_then(theme::ready)),
     )
     // In game.
     .add_systems(
@@ -108,10 +126,11 @@ fn main() {
     )
     .add_systems(
         EguiPrimaryContextPass,
-        hud::hud_ui.run_if(
+        hud::hud_ui.after(theme::setup).run_if(
             in_state(AppState::InGame)
                 .and_then(resource_exists::<session::Session>)
-                .and_then(resource_exists::<player::LocalPlayer>),
+                .and_then(resource_exists::<player::LocalPlayer>)
+                .and_then(theme::ready),
         ),
     )
     // Alien ecosystem.
@@ -130,9 +149,13 @@ fn main() {
     )
     .add_systems(
         EguiPrimaryContextPass,
-        eco_view::eco_ui
-            .run_if(in_state(AppState::Ecosystem).and_then(resource_exists::<eco_view::EcoScene>)),
+        eco_view::eco_ui.after(theme::setup).run_if(
+            in_state(AppState::Ecosystem)
+                .and_then(resource_exists::<eco_view::EcoScene>)
+                .and_then(theme::ready),
+        ),
     );
+
     if eco_dev.screenshot.is_some() || eco_dev.quit_after.is_some() {
         app.add_systems(Update, eco_view::eco_dev);
     }

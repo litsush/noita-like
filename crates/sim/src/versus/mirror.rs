@@ -1,11 +1,12 @@
 //! A watcher's copy of the arena, driven by snapshots and events from the
 //! authoritative [`super::Arena`]. It smooths positions between snapshots,
-//! runs the procedural animation and particles locally, keeps a short
-//! history for instant replays, and knows what to shout about.
+//! runs the procedural animation and particles locally, and knows what to
+//! shout about and what to play a sound for.
 
 use crate::eco::biome::{self, Biome};
 use crate::eco::body::{self, Paint, Prim};
 use crate::eco::creature::{Creature, init_anim, limb_instances};
+use crate::eco::flora::{FloraSpecies, Plant};
 use crate::eco::genome::{LimbKind, Species, SpitKind};
 use crate::eco::math::{Rgb, V2, mix, scale, v2};
 use crate::eco::nav::NavGrid;
@@ -18,10 +19,7 @@ use crate::world::{DecodeError, World};
 use super::combat::Tactic;
 use super::design::{Design, Loadout, build_teams};
 use super::parts::{self, PartDef};
-use super::{FightEvent, Snapshot};
-
-/// Snapshots kept for replays (at 20 per simulated second).
-const HISTORY: usize = 140;
+use super::{FightEvent, Snapshot, grow_plants};
 
 pub struct WatchedTeam {
     pub player: String,
@@ -56,30 +54,35 @@ pub struct Callout {
     pub big: bool,
 }
 
-struct Replay {
-    frames: Vec<Snapshot>,
-    /// Fractional frame index.
-    at: f32,
-}
+/// A sound the watcher should play: its name and a volume.
+pub type SoundCue = (&'static str, f32);
 
 pub struct Mirror {
     pub seed: u64,
     pub biome: Biome,
     pub world: World,
     pub nav: NavGrid,
+    pub flora: Vec<FloraSpecies>,
+    pub plants: Vec<Plant>,
+    /// The living plants, for drawing.
+    drawn_plants: Vec<Plant>,
     pub teams: Vec<WatchedTeam>,
     pub species: Vec<Species>,
     pub creatures: Vec<Creature>,
-    /// Per creature, matching `creatures`: health fraction, part fractions, tactic.
+    /// Per creature, matching `creatures`: health fraction, part fractions,
+    /// tactic, energy, flight stamina.
     pub health: Vec<f32>,
     pub parts: Vec<Vec<u8>>,
     pub tactics: Vec<Tactic>,
+    pub energy: Vec<f32>,
+    pub stamina: Vec<f32>,
     targets: Vec<(V2, V2)>,
     pub projectiles: Vec<Projectile>,
     pub particles: Vec<Particle>,
     pub gibs: Vec<Gib>,
     pub extras: Vec<(Prim, Rgb, bool)>,
     pub callouts: Vec<Callout>,
+    pub sounds: Vec<SoundCue>,
     pub time: f32,
     pub clock: f32,
     pub time_scale: f32,
@@ -89,9 +92,6 @@ pub struct Mirror {
     pub flash: f32,
     pub focus: Option<(V2, f32)>,
     pub finished: bool,
-    history: Vec<Snapshot>,
-    replay: Option<Replay>,
-    pub replaying: bool,
     fresh: bool,
     rng: Rng,
     nav_timer: f32,
@@ -103,6 +103,7 @@ impl Mirror {
         for _ in 0..90 {
             world.step();
         }
+        let (flora, plants) = grow_plants(seed, &biome, &world);
         let teams: Vec<WatchedTeam> = build_teams(designs, Some(&biome))
             .into_iter()
             .zip(designs)
@@ -124,18 +125,24 @@ impl Mirror {
             biome,
             world,
             nav,
+            drawn_plants: plants.clone(),
+            flora,
+            plants,
             teams,
             species,
             creatures: Vec::new(),
             health: Vec::new(),
             parts: Vec::new(),
             tactics: Vec::new(),
+            energy: Vec::new(),
+            stamina: Vec::new(),
             targets: Vec::new(),
             projectiles: Vec::new(),
             particles: Vec::new(),
             gibs: Vec::new(),
             extras: Vec::new(),
             callouts: Vec::new(),
+            sounds: Vec::new(),
             time: 0.0,
             clock: 0.0,
             time_scale: 1.0,
@@ -144,9 +151,6 @@ impl Mirror {
             flash: 0.0,
             focus: None,
             finished: false,
-            history: Vec::new(),
-            replay: None,
-            replaying: false,
             fresh: true,
             rng: Rng::new(seed ^ 0x717),
             nav_timer: 0.0,
@@ -178,17 +182,6 @@ impl Mirror {
 
     /// Feeds a snapshot from the host.
     pub fn apply(&mut self, snap: &Snapshot) {
-        self.history.push(snap.clone());
-        if self.history.len() > HISTORY {
-            self.history.remove(0);
-        }
-        if self.replaying {
-            return;
-        }
-        self.apply_now(snap);
-    }
-
-    fn apply_now(&mut self, snap: &Snapshot) {
         self.time = snap.time;
         self.clock = snap.clock;
         self.time_scale = snap.time_scale;
@@ -207,6 +200,8 @@ impl Mirror {
                     self.health.push(1.0);
                     self.parts.push(Vec::new());
                     self.tactics.push(Tactic::Search);
+                    self.energy.push(1.0);
+                    self.stamina.push(1.0);
                     self.targets.push((v2(n.x, n.y), V2::ZERO));
                     self.creatures.len() - 1
                 }
@@ -233,6 +228,7 @@ impl Mirror {
             c.status.burning = n.burning as f32 / 40.0;
             c.webbed = n.webbed as f32 / 60.0;
             c.health = n.health as f32 / 255.0 * self.species[n.team as usize].stats.max_health;
+            c.energy = n.energy as f32 / 255.0;
             let limbs = limb_instances(&self.species[n.team as usize]).len();
             c.limb_ok = (0..limbs).map(|k| n.limbs & (1 << k.min(31)) != 0).collect();
             c.anim.reach = if n.reach_limb == 255 {
@@ -243,6 +239,8 @@ impl Mirror {
             self.health[idx] = n.health as f32 / 255.0;
             self.parts[idx] = n.parts.clone();
             self.tactics[idx] = Tactic::from_index(n.tactic as usize);
+            self.energy[idx] = n.energy as f32 / 255.0;
+            self.stamina[idx] = n.stamina as f32 / 255.0;
         }
         self.projectiles = snap
             .projectiles
@@ -262,6 +260,19 @@ impl Mirror {
                 damage: 0.0,
             })
             .collect();
+        let mut plants_changed = false;
+        for (p, (growth, fruit)) in self.plants.iter_mut().zip(&snap.plants) {
+            let dead = *growth == 0;
+            if dead != p.dead {
+                plants_changed = true;
+            }
+            p.dead = dead;
+            p.growth = *growth as f32 / 255.0;
+            p.fruit = *fruit as f32;
+        }
+        if plants_changed || fresh {
+            self.drawn_plants = self.plants.iter().filter(|p| !p.dead).cloned().collect();
+        }
         self.fresh = false;
     }
 
@@ -273,7 +284,20 @@ impl Mirror {
         self.species.get(team).map_or([200, 200, 200], |s| s.colors.base)
     }
 
+    fn blood_of(&self, victim: u32) -> Rgb {
+        self.creature_index(victim)
+            .map(|i| {
+                mix(
+                    self.species[self.creatures[i].species].colors.accent,
+                    [150, 20, 40],
+                    0.5,
+                )
+            })
+            .unwrap_or([150, 30, 40])
+    }
+
     /// Reacts to something that happened: particles, gibs, callouts, cues.
+    /// Only the finishing blow gets the full treatment.
     pub fn apply_event(&mut self, ev: &FightEvent) {
         match ev {
             FightEvent::Hit {
@@ -285,48 +309,42 @@ impl Mirror {
                 victim,
                 heavy,
                 blocked,
+                surprise,
                 ..
             } => {
                 let at = v2(*x, *y);
-                let colour = self
-                    .creature_index(*victim)
-                    .map(|i| {
-                        mix(
-                            self.species[self.creatures[i].species].colors.accent,
-                            [150, 20, 40],
-                            0.5,
-                        )
-                    })
-                    .unwrap_or([150, 30, 40]);
-                let n = (*damage / 2.0).clamp(3.0, 16.0) as usize;
+                let colour = self.blood_of(*victim);
+                let n = (*damage / 2.0).clamp(3.0, 12.0) as usize;
                 let dir = v2(*dx, *dy);
                 if *blocked {
-                    self.spark(at, 6, [255, 240, 200]);
+                    self.spark(at, 5, [255, 240, 200]);
                     self.callout("blocked", Some(at), [220, 220, 230], false, 0.7);
+                    self.sound("blocked", 0.7);
                 } else {
-                    self.burst(at, dir, n, colour, 0.7);
+                    self.burst(at, dir, n, colour, 0.6);
+                    self.sound(if *heavy { "hit_heavy" } else { "hit" }, 0.8);
                 }
-                if *heavy {
-                    self.shake = self.shake.max(0.6);
-                    self.flash = self.flash.max(0.25);
-                    self.focus = Some((at, 0.6));
+                if *surprise {
+                    self.callout("AMBUSH", Some(at), [255, 230, 120], false, 1.1);
+                    self.sound("surprise", 0.9);
+                } else if *heavy {
                     self.callout(&format!("{:.0}", damage), Some(at), [255, 230, 120], false, 0.9);
                 }
             }
             FightEvent::Clip { x, y } => {
                 let at = v2(*x, *y);
-                self.spark(at, 10, [255, 220, 150]);
-                self.callout("clipped the terrain", Some(at), [255, 200, 120], false, 1.1);
-                self.shake = self.shake.max(0.25);
+                self.spark(at, 8, [255, 220, 150]);
+                self.callout("clipped the terrain", Some(at), [255, 200, 120], false, 1.0);
+                self.sound("clip", 0.6);
             }
-            FightEvent::Miss { .. } => {}
+            FightEvent::Miss { .. } => {
+                self.sound("whoosh", 0.35);
+            }
             FightEvent::Clash { x, y } => {
                 let at = v2(*x, *y);
-                self.spark(at, 22, [255, 250, 220]);
-                self.callout("CLASH", Some(at), [255, 240, 200], true, 1.2);
-                self.shake = self.shake.max(0.7);
-                self.flash = self.flash.max(0.4);
-                self.focus = Some((at, 0.8));
+                self.spark(at, 14, [255, 250, 220]);
+                self.callout("clash", Some(at), [255, 240, 200], false, 0.9);
+                self.sound("clash", 0.8);
             }
             FightEvent::Sever {
                 victim,
@@ -335,29 +353,18 @@ impl Mirror {
                 x,
                 y,
             } => {
+                // Plain: the limb falls off and that's that.
                 let at = v2(*x, *y);
                 if let Some(i) = self.creature_index(*victim) {
                     self.spawn_gib(i, *limb as usize, at);
                     if let Some(ok) = self.creatures[i].limb_ok.get_mut(*limb as usize) {
                         *ok = false;
                     }
-                    let colour = mix(
-                        self.species[self.creatures[i].species].colors.accent,
-                        [150, 20, 40],
-                        0.5,
-                    );
-                    self.burst(at, v2(0.0, -1.0), 24, colour, 1.1);
+                    let colour = self.blood_of(*victim);
+                    self.burst(at, v2(0.0, -1.0), 10, colour, 0.8);
                 }
-                self.callout(
-                    &format!("{} TORN OFF", name.to_uppercase()),
-                    None,
-                    [255, 120, 110],
-                    true,
-                    1.6,
-                );
-                self.shake = self.shake.max(0.9);
-                self.flash = self.flash.max(0.5);
-                self.focus = Some((at, 1.0));
+                self.callout(&format!("{name} torn off"), Some(at), [255, 160, 140], false, 1.0);
+                self.sound("sever", 0.7);
             }
             FightEvent::Kill {
                 victim,
@@ -368,65 +375,110 @@ impl Mirror {
                 ..
             } => {
                 let at = v2(*x, *y);
-                let colour = self
-                    .creature_index(*victim)
-                    .map(|i| {
-                        mix(
-                            self.species[self.creatures[i].species].colors.accent,
-                            [150, 20, 40],
-                            0.5,
-                        )
-                    })
-                    .unwrap_or([150, 30, 40]);
-                self.burst(at, v2(0.0, -1.0), 30, colour, 1.2);
-                self.shake = self.shake.max(1.0);
-                self.flash = self.flash.max(0.6);
-                self.focus = Some((at, if *last { 2.0 } else { 1.2 }));
+                let colour = self.blood_of(*victim);
                 if *last {
-                    self.callout("FINISHING BLOW", None, [255, 90, 80], true, 2.4);
+                    // The one moment that gets the works.
+                    self.burst(at, v2(0.0, -1.0), 36, colour, 1.3);
+                    self.shake = self.shake.max(1.0);
+                    self.flash = self.flash.max(0.6);
+                    self.focus = Some((at, 2.2));
+                    self.callout("FINISHING BLOW", None, [255, 90, 80], true, 2.6);
+                    self.sound("finish", 1.0);
                     self.finished = true;
                 } else {
+                    self.burst(at, v2(0.0, -1.0), 14, colour, 0.9);
                     let text = if cause.starts_with("felled") {
-                        "DOWN".to_string()
+                        "down".to_string()
                     } else {
-                        cause.to_uppercase()
+                        cause.clone()
                     };
-                    self.callout(&text, None, [255, 150, 120], true, 1.4);
+                    self.callout(&text, Some(at), [255, 150, 120], false, 1.2);
+                    self.sound("down", 0.8);
                 }
             }
             FightEvent::Slam { x, y, damage } => {
                 let at = v2(*x, *y);
-                self.spark(at, 8, [230, 220, 200]);
-                self.burst(at, v2(0.0, -1.0), 8, [120, 100, 80], 0.6);
-                self.shake = self.shake.max(0.5);
+                self.spark(at, 6, [230, 220, 200]);
+                self.burst(at, v2(0.0, -1.0), 6, [120, 100, 80], 0.5);
                 if *damage > 8.0 {
-                    self.callout("SLAM", Some(at), [255, 230, 160], false, 0.9);
+                    self.callout("slam", Some(at), [255, 230, 160], false, 0.8);
                 }
+                self.sound("slam", 0.7);
             }
-            FightEvent::Spit { .. } => {}
+            FightEvent::Spit { .. } => {
+                self.sound("spit", 0.5);
+            }
             FightEvent::Grab { x, y } => {
                 self.callout("grabbed", Some(v2(*x, *y)), [220, 200, 255], false, 0.9);
+                self.sound("grab", 0.6);
             }
             FightEvent::Ink { x, y } => {
                 self.burst(v2(*x, *y), v2(0.0, -1.0), 20, [40, 40, 50], 1.0);
+                self.sound("ink", 0.6);
             }
             FightEvent::Poisoned { victim } => {
                 if let Some(i) = self.creature_index(*victim) {
                     let p = self.creatures[i].pos;
                     self.callout("poisoned", Some(p), [150, 230, 100], false, 0.9);
+                    self.sound("poison", 0.5);
+                }
+            }
+            FightEvent::Eat {
+                x, y, meat, plant, ..
+            } => {
+                let at = v2(*x, *y);
+                let colour = match plant {
+                    Some(pi) => self
+                        .plants
+                        .get(*pi as usize)
+                        .map_or([200, 120, 120], |p| self.flora[p.flora].fruit),
+                    None => [150, 40, 50],
+                };
+                if let Some(p) = plant.and_then(|pi| self.plants.get_mut(pi as usize)) {
+                    p.bitten = 0.4;
+                    p.fruit = (p.fruit - 1.0).max(0.0);
+                }
+                self.burst(at, v2(0.0, -1.0), 3, colour, 0.5);
+                self.sound(if *meat { "eat_meat" } else { "eat" }, 0.5);
+            }
+            FightEvent::Starving { victim } => {
+                if let Some(i) = self.creature_index(*victim) {
+                    let p = self.creatures[i].pos;
+                    self.callout("starving", Some(p), [255, 190, 90], false, 1.3);
+                    self.sound("starving", 0.6);
                 }
             }
             FightEvent::Frenzy => {
-                self.callout("FRENZY", None, [255, 200, 60], true, 2.2);
-                self.flash = self.flash.max(0.5);
-                self.shake = self.shake.max(0.5);
+                self.callout("FRENZY", None, [255, 200, 60], true, 2.0);
+                self.sound("frenzy", 0.9);
             }
             FightEvent::RoundOver { .. } => {}
         }
     }
 
+    fn sound(&mut self, name: &'static str, volume: f32) {
+        self.sounds.push((name, volume));
+    }
+
+    /// Hands over the sounds queued since the last call.
+    pub fn take_sounds(&mut self) -> Vec<SoundCue> {
+        std::mem::take(&mut self.sounds)
+    }
+
     fn callout(&mut self, text: &str, pos: Option<V2>, colour: Rgb, big: bool, life: f32) {
         if big && self.callouts.iter().any(|c| c.big && c.text == text) {
+            return;
+        }
+        // The same words near the same spot just get refreshed, not stacked.
+        if let Some(p) = pos
+            && let Some(c) = self
+                .callouts
+                .iter_mut()
+                .find(|c| c.text == text && c.pos.is_some_and(|q| q.dist(p) < 14.0))
+        {
+            c.life = life;
+            c.max_life = life;
+            c.pos = Some(p);
             return;
         }
         self.callouts.push(Callout {
@@ -515,24 +567,7 @@ impl Mirror {
     /// Advances presentation by `real_dt` seconds.
     pub fn advance(&mut self, real_dt: f32) {
         let real_dt = real_dt.min(0.1);
-        if let Some(r) = &mut self.replay {
-            // 20 snapshots per simulated second, played at a third speed.
-            r.at += real_dt * 20.0 * 0.33;
-            let i = r.at as usize;
-            if i >= r.frames.len() {
-                self.replay = None;
-                self.replaying = false;
-                // Catch up to the live state.
-                if let Some(last) = self.history.last().cloned() {
-                    self.apply_now(&last);
-                }
-            } else {
-                let frame = r.frames[i].clone();
-                self.apply_now(&frame);
-                self.time_scale = 0.33;
-            }
-        }
-        let dt = real_dt * self.time_scale.max(if self.replaying { 0.33 } else { 0.0 });
+        let dt = real_dt * self.time_scale.max(0.0);
         self.nav_timer += real_dt;
         if self.nav_timer > 0.5 {
             self.nav_timer = 0.0;
@@ -550,6 +585,18 @@ impl Mirror {
             // Fade the host's attack/hurt timers like the arena would.
             c.anim.attack = (c.anim.attack - dt).max(0.0);
             c.anim.hurt = (c.anim.hurt - dt).max(0.0);
+            c.anim.eat = (c.anim.eat - dt).max(0.0);
+        }
+        for p in self.drawn_plants.iter_mut() {
+            p.bitten = (p.bitten - dt).max(0.0);
+            if let Some(src) = self.plants.iter().find(|q| q.id == p.id) {
+                p.fruit = src.fruit;
+                p.growth = src.growth;
+                p.bitten = p.bitten.max(src.bitten);
+            }
+        }
+        for p in self.plants.iter_mut() {
+            p.bitten = (p.bitten - dt).max(0.0);
         }
         // Particles and gibs.
         for p in self.particles.iter_mut() {
@@ -630,29 +677,6 @@ impl Mirror {
         }
     }
 
-    /// Starts an instant replay of the last few seconds (the finish).
-    pub fn start_replay(&mut self) {
-        if self.history.len() < 10 {
-            return;
-        }
-        let n = self.history.len();
-        let start = n.saturating_sub(90);
-        let frames: Vec<Snapshot> = self.history[start..].to_vec();
-        self.replay = Some(Replay { frames, at: 0.0 });
-        self.replaying = true;
-        self.callouts.clear();
-        self.gibs.clear();
-        self.particles.clear();
-    }
-
-    pub fn stop_replay(&mut self) {
-        self.replay = None;
-        self.replaying = false;
-        if let Some(last) = self.history.last().cloned() {
-            self.apply_now(&last);
-        }
-    }
-
     pub fn alive(&self, team: usize) -> usize {
         self.creatures
             .iter()
@@ -672,6 +696,22 @@ impl Mirror {
             / n
     }
 
+    /// Average energy of a team's survivors, 0..1.
+    pub fn team_energy(&self, team: usize) -> f32 {
+        let alive: Vec<f32> = self
+            .creatures
+            .iter()
+            .zip(&self.energy)
+            .filter(|(c, _)| c.species == team && c.alive())
+            .map(|(_, e)| *e)
+            .collect();
+        if alive.is_empty() {
+            0.0
+        } else {
+            alive.iter().sum::<f32>() / alive.len() as f32
+        }
+    }
+
     pub fn scene(&self) -> Scene<'_> {
         Scene {
             seed: self.seed,
@@ -683,8 +723,8 @@ impl Mirror {
             day_phase: self.day_phase(),
             daylight: self.daylight(),
             dusk: self.dusk(),
-            flora: &[],
-            plants: &[],
+            flora: &self.flora,
+            plants: &self.drawn_plants,
             carcasses: &[],
             eggs: &[],
             species: &self.species,

@@ -4,8 +4,10 @@
 //! emits [`Snapshot`]s and [`FightEvent`]s, and everyone (host included)
 //! watches through a [`mirror::Mirror`] fed by those.
 
+pub mod balance;
 pub mod combat;
 pub mod design;
+
 pub mod mirror;
 pub mod parts;
 
@@ -15,6 +17,7 @@ use crate::eco::biome::{self, Biome, HEIGHT, WIDTH};
 use crate::eco::body;
 use crate::eco::brain::{self, Intent};
 use crate::eco::creature::{Creature, limb_instances};
+use crate::eco::flora::{self, FloraSpecies, GrowthForm, Plant, Substrate};
 use crate::eco::genome::{Habitat, LimbKind, LimbTip, Locomotion, Species, SpitKind};
 use crate::eco::math::{V2, mix, v2};
 use crate::eco::nav::NavGrid;
@@ -24,7 +27,7 @@ use crate::material::{Kind, Material};
 use crate::rng::Rng;
 use crate::world::World;
 
-use combat::{CombatAction, CombatBrain, EnemySnap, Me, Tactic};
+use combat::{CombatAction, CombatBrain, EnemySnap, Food, Me, Tactic};
 use design::{Design, Loadout, Weapon, WeaponKind, build_teams};
 use parts::{PartDef, PartKind};
 
@@ -33,11 +36,20 @@ pub use crate::eco::DT;
 /// Round length in simulated seconds.
 pub const ROUND_TIME: f32 = 120.0;
 /// When the frenzy starts: everyone sees everyone and nobody retreats.
-pub const FRENZY_AT: f32 = 60.0;
-/// Rounds to win the match.
-pub const ROUNDS_TO_WIN: u8 = 3;
+pub const FRENZY_AT: f32 = 75.0;
+/// No hits for this long starts the frenzy early.
+pub const NO_HIT_FRENZY: f32 = 60.0;
+/// A frenzy with no hits for this long ends the round on health.
+pub const STANDOFF_SECS: f32 = 40.0;
+
+/// Rounds in a match unless the host picks otherwise.
+pub const DEFAULT_ROUNDS: u8 = 3;
 /// Snapshots per simulated second.
 pub const SNAPSHOT_HZ: f32 = 20.0;
+/// Energy from one fruit.
+pub const FRUIT_ENERGY: f32 = 0.22;
+/// Plants the arena aims to have.
+pub const PLANT_TARGET: usize = 44;
 
 pub struct Team {
     pub player: String,
@@ -78,6 +90,13 @@ pub struct Fighter {
     pub dealt: f32,
     pub taken: f32,
     pub kills: u32,
+    /// Seconds of flight left; empty wings are grounded until they recover.
+    pub stamina: f32,
+    pub winded: bool,
+    /// Meal left on the body once dead.
+    pub meat: f32,
+    pub eat_t: f32,
+    pub starving: bool,
 }
 
 /// What happened, for the watchers.
@@ -94,6 +113,8 @@ pub enum FightEvent {
         part: u8,
         heavy: bool,
         blocked: bool,
+        /// Landed on something that hadn't noticed the attacker.
+        surprise: bool,
     },
     Clip {
         x: f32,
@@ -144,6 +165,17 @@ pub enum FightEvent {
     Poisoned {
         victim: u32,
     },
+    Eat {
+        who: u32,
+        x: f32,
+        y: f32,
+        meat: bool,
+        /// Index into the arena's plant list, for the bite animation.
+        plant: Option<u16>,
+    },
+    Starving {
+        victim: u32,
+    },
     Frenzy,
     RoundOver {
         winner: Option<u8>,
@@ -177,6 +209,9 @@ pub struct CreatureNet {
     pub reach_x: f32,
     pub reach_y: f32,
     pub angle: f32,
+    /// 0..255 of a full tank, and of full flight stamina.
+    pub energy: u8,
+    pub stamina: u8,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -196,6 +231,9 @@ pub struct Snapshot {
     pub frenzy: bool,
     pub creatures: Vec<CreatureNet>,
     pub projectiles: Vec<ProjNet>,
+    /// Per plant, in the arena's order: growth and whole fruit; growth 0
+    /// means it died.
+    pub plants: Vec<(u8, u8)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -212,6 +250,7 @@ enum Pending {
     Strike { attacker: usize },
     Spit { attacker: usize, at: V2 },
     Ink { attacker: usize },
+    Eat { attacker: usize, id: u32 },
 }
 
 pub struct Arena {
@@ -219,6 +258,8 @@ pub struct Arena {
     pub biome: Biome,
     pub world: World,
     pub nav: NavGrid,
+    pub flora: Vec<FloraSpecies>,
+    pub plants: Vec<Plant>,
     pub teams: Vec<Team>,
     pub fighters: Vec<Fighter>,
     pub projectiles: Vec<Projectile>,
@@ -235,8 +276,9 @@ pub struct Arena {
     hitstop: f32,
     /// Real seconds since the round ended.
     pub over_for: f32,
-    /// Clock time of the last landed hit.
+    /// Clock time of the last landed hit, and when the frenzy began.
     last_hit: f32,
+    frenzy_at: f32,
     acc: f32,
     day0: f32,
     rng: Rng,
@@ -303,6 +345,7 @@ impl Arena {
         for _ in 0..90 {
             world.step();
         }
+        let (flora, plants) = grow_plants(seed, &biome, &world);
         let mut rng = Rng::new(seed ^ 0xA2E7A);
         let n = designs.len().max(1);
         let zone = WIDTH as f32 / n as f32;
@@ -329,6 +372,8 @@ impl Arena {
             biome,
             world,
             nav,
+            flora,
+            plants,
             teams,
             fighters: Vec::new(),
             projectiles: Vec::new(),
@@ -344,6 +389,7 @@ impl Arena {
             hitstop: 0.0,
             over_for: 0.0,
             last_hit: 0.0,
+            frenzy_at: 0.0,
             acc: 0.0,
             day0,
             rng,
@@ -351,7 +397,10 @@ impl Arena {
         };
         for ti in 0..arena.teams.len() {
             let count = arena.teams[ti].loadout.count;
-            let zone_x = (zone * ti as f32 + 14.0, zone * (ti as f32 + 1.0) - 14.0);
+            // The middle of each team's slice of the arena, so sides start
+            // well apart.
+            let pad = (zone * 0.22).max(14.0);
+            let zone_x = (zone * ti as f32 + pad, zone * (ti as f32 + 1.0) - pad);
             for _ in 0..count {
                 let p = arena.spawn_point(ti, zone_x);
                 let id = arena.next_id;
@@ -365,6 +414,7 @@ impl Arena {
                 c.leap_cd = 0.0;
                 c.ink_cd = 0.0;
                 let parts = arena.teams[ti].parts.iter().map(|d| d.max_hp).collect();
+                let stamina = arena.teams[ti].loadout.stamina;
                 arena.fighters.push(Fighter {
                     c,
                     team: ti,
@@ -380,6 +430,11 @@ impl Arena {
                     dealt: 0.0,
                     taken: 0.0,
                     kills: 0,
+                    stamina,
+                    winded: false,
+                    meat: 0.0,
+                    eat_t: 0.0,
+                    starving: false,
                 });
             }
         }
@@ -493,7 +548,7 @@ impl Arena {
             self.slowmo -= real_dt;
             0.2
         } else if self.over() {
-            0.35
+            0.5
         } else {
             1.0
         };
@@ -527,10 +582,15 @@ impl Arena {
         if self.tick.is_multiple_of(30) {
             self.nav.rebuild(&self.world);
         }
-        if !self.frenzy && !self.over() && (self.clock > FRENZY_AT || self.clock - self.last_hit > 35.0) {
+        if !self.frenzy
+            && !self.over()
+            && (self.clock > FRENZY_AT || self.clock - self.last_hit > NO_HIT_FRENZY)
+        {
             self.frenzy = true;
+            self.frenzy_at = self.clock;
             self.events.push(FightEvent::Frenzy);
         }
+        self.step_plants();
         self.step_fighters();
         self.step_projectiles();
         self.step_bodies();
@@ -590,6 +650,11 @@ impl Arena {
                     stunned: f.c.status.stun > 0.0 || f.c.status.grabbed_by.is_some(),
                     weak_spot: weak,
                     head: body::head_world(&f.c, sp),
+                    aware: f
+                        .brain
+                        .target
+                        .filter(|_| f.brain.last_seen.is_some() && self.time - f.brain.lost_at < 1.5),
+                    energy: f.c.energy,
                     parts: team
                         .parts
                         .iter()
@@ -618,8 +683,35 @@ impl Arena {
             .collect()
     }
 
+    /// Everything edible right now: fruit on plants, meat on the fallen.
+    fn food(&self) -> Vec<Food> {
+        let mut out: Vec<Food> = self
+            .plants
+            .iter()
+            .filter(|p| !p.dead && p.fruit >= 1.0)
+            .map(|p| Food {
+                id: p.id,
+                pos: p.food_point(&self.flora[p.flora]),
+                amount: p.fruit.floor() * FRUIT_ENERGY,
+                meat: false,
+            })
+            .collect();
+        for f in &self.fighters {
+            if !f.c.alive() && f.meat > 0.02 {
+                out.push(Food {
+                    id: f.c.id,
+                    pos: f.c.pos,
+                    amount: f.meat,
+                    meat: true,
+                });
+            }
+        }
+        out
+    }
+
     fn step_fighters(&mut self) {
         let snaps = self.snaps();
+        let food = self.food();
         let gravity = 300.0 * self.biome.gravity;
         let time = self.time;
         let frenzy = self.frenzy;
@@ -634,6 +726,14 @@ impl Arena {
             }
             let team_i = self.fighters[fi].team;
             let light = self.light_at(self.fighters[fi].c.pos);
+            let enemy_hint = snaps
+                .iter()
+                .filter(|s| s.team != team_i)
+                .min_by(|a, b| {
+                    let p = self.fighters[fi].c.pos;
+                    a.pos.dist(p).total_cmp(&b.pos.dist(p))
+                })
+                .map(|s| s.pos);
             let enemy_side = {
                 let mine = self.teams[team_i].spawn;
                 let mut sum = V2::ZERO;
@@ -665,7 +765,11 @@ impl Arena {
                 size: sp.stats.size,
             };
             update_timers(f, lo, sp, rng);
-            let eff = parts::effects(&f.c, sp, defs, &f.parts);
+            let mut eff = parts::effects(&f.c, sp, defs, &f.parts);
+            eff.can_fly = eff.can_fly && !f.winded;
+            if f.c.energy <= 0.0 {
+                eff.speed *= 0.7;
+            }
             let enemies: Vec<EnemySnap> = snaps.iter().filter(|s| s.team != team_i).cloned().collect();
             let allies: Vec<EnemySnap> = snaps
                 .iter()
@@ -680,6 +784,8 @@ impl Arena {
                 gravity,
                 enemy_side,
                 centre,
+                enemy_hint,
+                food: &food,
             };
             f.brain.think -= DT;
             if f.brain.think <= 0.0 && !over {
@@ -839,6 +945,13 @@ impl Arena {
             brain::track_progress(&mut f.c, &it, DT);
             body::animate(&mut f.c, sp, world, DT, mode == Mode::Fly);
             let (dps, cause) = physics::environment(&mut f.c, sp, world, DT, rng);
+            // Puddles too small for the pathfinder to notice shouldn't be
+            // a death sentence; acid burns slowly here.
+            let dps = if cause == Some("dissolved in acid") {
+                dps * 0.35
+            } else {
+                dps
+            };
             if dps > 0.0 {
                 f.c.health -= dps * DT;
                 f.taken += dps * DT;
@@ -849,6 +962,51 @@ impl Arena {
             let speed = f.c.vel.len();
             f.c.still = if speed < 2.0 { f.c.still + DT } else { 0.0 };
             f.c.noise = (speed / sp.stats.speed.max(1.0)).min(1.2);
+            // Energy: everything burns it, sprinting and flying fastest.
+            let rate = if mode == Mode::Fly {
+                1.7
+            } else if speed > sp.stats.speed * 0.9 {
+                1.5
+            } else if speed < 2.0 {
+                0.6
+            } else if f.c.burrowed {
+                0.8
+            } else {
+                1.0
+            };
+            f.c.energy = (f.c.energy - lo.metabolism * rate * DT).max(0.0);
+            if f.c.energy <= 0.0 {
+                if !f.starving {
+                    f.starving = true;
+                    self.events.push(FightEvent::Starving { victim: f.c.id });
+                }
+                let maxh = sp.stats.max_health;
+                f.c.health -= maxh * 0.015 * DT;
+                f.taken += maxh * 0.015 * DT;
+                f.c.hurt_timer = f.c.hurt_timer.max(0.5);
+                if f.c.health <= 0.0 {
+                    f.c.dead = Some("starved");
+                }
+            } else if f.c.energy > 0.15 {
+                f.starving = false;
+            }
+            // Flight stamina: wings tire in the air and rest on the ground.
+            if lo.stamina > 0.0 {
+                if mode == Mode::Fly {
+                    f.stamina = (f.stamina - DT).max(0.0);
+                    if f.stamina <= 0.0 {
+                        f.winded = true;
+                        f.c.flying = false;
+                    }
+                } else if f.c.on_ground || f.c.clinging || f.c.burrowed {
+                    f.stamina = (f.stamina + DT * 0.6).min(lo.stamina);
+                } else {
+                    f.stamina = (f.stamina + DT * 0.2).min(lo.stamina);
+                }
+                if f.winded && f.stamina > lo.stamina * 0.4 {
+                    f.winded = false;
+                }
+            }
             f.charging = lo.weapon(WeaponKind::Horn).is_some()
                 && speed > 28.0
                 && matches!(f.brain.tactic, Tactic::Rush | Tactic::Flank | Tactic::Dive);
@@ -938,12 +1096,15 @@ impl Arena {
                     }
                 }
                 CombatAction::Spit(at) => {
-                    if f.spit_cd <= 0.0 && lo.spit.is_some() {
+                    if f.spit_cd <= 0.0 && lo.spit.is_some() && f.c.energy > 0.0 {
                         f.spit_cd = lo.spit_cooldown;
                         f.c.anim.attack = 0.3;
+                        // Venom and acid take something to make.
+                        f.c.energy = (f.c.energy - 0.02).max(0.0);
                         pending.push(Pending::Spit { attacker: fi, at });
                     }
                 }
+
                 CombatAction::Leap(dir) => {
                     if f.c.leap_cd <= 0.0 && (f.c.on_ground || f.c.clinging || f.c.burrowed) {
                         f.c.leap_cd = 2.2 - lo.leap * 0.4;
@@ -957,6 +1118,13 @@ impl Arena {
                     if f.c.ink_cd <= 0.0 {
                         f.c.ink_cd = 12.0;
                         pending.push(Pending::Ink { attacker: fi });
+                    }
+                }
+                CombatAction::Eat(id) => {
+                    if f.eat_t <= 0.0 && f.strike.is_none() {
+                        f.eat_t = 0.75;
+                        f.c.anim.eat = 0.35;
+                        pending.push(Pending::Eat { attacker: fi, id });
                     }
                 }
             }
@@ -997,7 +1165,6 @@ impl Arena {
                         let mid = self.fighters[*a].c.pos.lerp(self.fighters[*b].c.pos, 0.5);
                         self.events.push(FightEvent::Clash { x: mid.x, y: mid.y });
                         self.dust(mid, [255, 240, 180], 14, 0.5);
-                        self.drama(0.5, 0.06);
                     }
                 }
             }
@@ -1020,7 +1187,92 @@ impl Arena {
                         y: y as f32,
                     });
                 }
+                Pending::Eat { attacker, id } => self.eat(attacker, id),
             }
+        }
+    }
+
+    /// A bite of fruit or meat, if `id` is still edible and in reach.
+    fn eat(&mut self, ai: usize, id: u32) {
+        let team = self.fighters[ai].team;
+        let lo = &self.teams[team].loadout;
+        let diet = lo.diet;
+        let reach = lo.size * 1.1 + 5.0;
+        let pos = self.fighters[ai].c.pos;
+        let who = self.fighters[ai].c.id;
+        let share = if diet == design::Diet::Omnivore { 0.7 } else { 1.0 };
+        if let Some(pi) = self.plants.iter().position(|p| p.id == id) {
+            let p = &mut self.plants[pi];
+            let fl = &self.flora[p.flora];
+            if p.dead || p.fruit < 1.0 || p.food_point(fl).dist(pos) > reach || !diet.eats_fruit() {
+                return;
+            }
+            p.fruit -= 1.0;
+            p.bitten = 0.4;
+            let at = p.food_point(fl);
+            let col = fl.fruit;
+            let f = &mut self.fighters[ai];
+            f.c.energy = (f.c.energy + FRUIT_ENERGY * share).min(1.0);
+            self.dust(at, col, 3, 0.5);
+            self.events.push(FightEvent::Eat {
+                who,
+                x: at.x,
+                y: at.y,
+                meat: false,
+                plant: Some(pi as u16),
+            });
+            return;
+        }
+        let Some(ci) = self.fighters.iter().position(|f| f.c.id == id && !f.c.alive()) else {
+            return;
+        };
+        if !diet.eats_meat() || self.fighters[ci].meat <= 0.02 || self.fighters[ci].c.pos.dist(pos) > reach {
+            return;
+        }
+        let bite = self.fighters[ci].meat.min(0.12);
+        self.fighters[ci].meat -= bite;
+        let at = self.fighters[ci].c.pos;
+        let col = mix(
+            self.teams[self.fighters[ci].team].species.colors.accent,
+            [150, 20, 40],
+            0.5,
+        );
+        let f = &mut self.fighters[ai];
+        f.c.energy = (f.c.energy + bite * share).min(1.0);
+        self.dust(at, col, 2, 0.5);
+        self.events.push(FightEvent::Eat {
+            who,
+            x: at.x,
+            y: at.y,
+            meat: true,
+            plant: None,
+        });
+    }
+
+    /// Fruit ripens quickly so grazers always have something to find.
+    fn step_plants(&mut self) {
+        let mut burnt = Vec::new();
+        for (i, p) in self.plants.iter_mut().enumerate() {
+            if p.dead {
+                continue;
+            }
+            let fl = &self.flora[p.flora];
+            p.growth = (p.growth + 0.02 * DT).min(1.0);
+            p.fruit = (p.fruit + fl.max_fruit as f32 / 25.0 * DT).min(fl.max_fruit as f32);
+            p.bitten = (p.bitten - DT).max(0.0);
+            p.check_timer -= DT;
+            if p.check_timer <= 0.0 {
+                p.check_timer = 1.0;
+                if flora::plant_hazard(&self.world, fl, p).is_some() {
+                    p.dead = true;
+                    burnt.push(i);
+                }
+            }
+        }
+        for i in burnt {
+            let at = self.plants[i].base();
+            let col = self.flora[self.plants[i].flora].leaf;
+            self.dust(at, col, 4, 0.6);
         }
     }
 
@@ -1145,8 +1397,19 @@ impl Arena {
             return;
         };
         let dir = path.norm();
-        let dmg = w.damage * self.rng.range(0.85, 1.15);
+        let mut dmg = w.damage * self.rng.range(0.85, 1.15);
         let venom = w.venom && self.teams[attacker_team].loadout.venom > 0.0;
+        // An ambush: they never saw it coming. Keen eyes earn these.
+        let aid = self.fighters[ai].c.id;
+        let unaware = {
+            let t = &self.fighters[ti];
+            t.brain.target != Some(aid) || self.time - t.brain.lost_at > 1.5
+        };
+        let surprise = self.fighters[ai].brain.surprise && unaware;
+        if surprise {
+            dmg *= 1.75;
+        }
+        self.fighters[ai].brain.surprise = false;
         self.damage(
             ti,
             contact.part,
@@ -1158,7 +1421,14 @@ impl Arena {
             Some(ai),
             false,
             venom,
+            surprise,
         );
+        if surprise && self.fighters[ti].c.alive() {
+            let t = &mut self.fighters[ti];
+            t.c.status.stun = t.c.status.stun.max(0.5);
+            t.brain.target = Some(aid);
+            t.brain.lost_at = self.time;
+        }
         if w.grab && self.fighters[ti].c.alive() {
             let aid = self.fighters[ai].c.id;
             let t = &mut self.fighters[ti];
@@ -1188,6 +1458,7 @@ impl Arena {
         from: Option<usize>,
         ranged: bool,
         venom: bool,
+        surprise: bool,
     ) {
         let tteam = self.fighters[ti].team;
         let def = self.teams[tteam].parts[part].clone();
@@ -1226,9 +1497,11 @@ impl Arena {
         let kb = dir * (knockback * actual * (amass / tmass).sqrt() * 0.9).min(95.0);
         t.c.vel += kb + v2(0.0, -kb.len() * 0.25);
         if venom {
-            t.c.status.poison = t.c.status.poison.max(6.0);
+            let dose = if ranged { 4.0 } else { 6.0 };
+            t.c.status.poison = t.c.status.poison.max(dose);
             self.events.push(FightEvent::Poisoned { victim: t.c.id });
         }
+
         let heavy = actual > maxh * 0.16;
         if heavy {
             t.c.status.stun = t.c.status.stun.max(0.25);
@@ -1271,11 +1544,19 @@ impl Arena {
             },
             heavy,
             blocked: blocked_frac > 0.35,
+            surprise,
         });
         if let Some(ai) = from {
+            let ateam = self.fighters[ai].team;
+            let eats_meat = self.teams[ateam].loadout.diet.eats_meat();
+            let amax = self.teams[ateam].species.stats.max_health;
             let a = &mut self.fighters[ai];
             a.dealt += actual;
             a.brain.dealt(actual, blocked_frac);
+            // A bloody mouthful keeps a hunter going.
+            if eats_meat && !ranged {
+                a.c.energy = (a.c.energy + 0.3 * actual / amax).min(1.0);
+            }
             // Spines and toxic flesh punish contact.
             if !ranged && (spines > 0.0 || toxic) {
                 let hurt = dmg * spines * 0.4;
@@ -1298,10 +1579,7 @@ impl Arena {
                 x: at.x,
                 y: at.y,
             });
-            self.dust(at, blood, 18, 1.0);
-            self.drama(0.8, 0.1);
-        } else if heavy {
-            self.drama(0.35, 0.05);
+            self.dust(at, blood, 12, 1.0);
         }
         if dead {
             let killer_team = from.map(|ai| self.fighters[ai].team as u8);
@@ -1317,8 +1595,14 @@ impl Arena {
                 "slain".to_string()
             };
             self.fighters[ti].c.dead = Some("killed");
+            self.fighters[ti].meat = self.teams[tteam].loadout.size * 0.09;
             if let Some(ai) = from {
                 self.fighters[ai].kills += 1;
+                let ateam = self.fighters[ai].team;
+                if self.teams[ateam].loadout.diet.eats_meat() {
+                    let a = &mut self.fighters[ai];
+                    a.c.energy = (a.c.energy + 0.25).min(1.0);
+                }
             }
             let last = self
                 .teams
@@ -1336,7 +1620,9 @@ impl Arena {
                 y: vpos.y,
                 last,
             });
-            self.drama(if last { 1.6 } else { 0.9 }, 0.12);
+            if last {
+                self.drama(1.6, 0.12);
+            }
         }
     }
 
@@ -1442,15 +1728,16 @@ impl Arena {
                     p.damage,
                     dir,
                     0.6,
-                    0.3,
+                    0.15,
                     ai,
                     true,
                     p.kind == SpitKind::Venom,
+                    false,
                 );
                 if self.fighters[ti].c.alive() {
                     let lava_proof = self.teams[self.fighters[ti].team].species.traits.lava_proof;
                     if p.kind == SpitKind::Fire && !lava_proof {
-                        self.fighters[ti].c.status.burning = 3.0;
+                        self.fighters[ti].c.status.burning = 1.5;
                     }
                     if p.kind == SpitKind::Web {
                         self.fighters[ti].c.webbed = 2.0;
@@ -1523,6 +1810,7 @@ impl Arena {
                             Some(hitter),
                             false,
                             false,
+                            false,
                         );
                         self.fighters[hitter].c.vel *= 0.4;
                         self.events.push(FightEvent::Slam {
@@ -1530,9 +1818,6 @@ impl Arena {
                             y: c.at.y,
                             damage: dmg,
                         });
-                        if charging {
-                            self.drama(0.4, 0.05);
-                        }
                         continue;
                     }
                 }
@@ -1611,6 +1896,7 @@ impl Arena {
                 self.fighters[i].c.pos,
             );
             self.fighters[i].c.dead = Some("reported");
+            self.fighters[i].meat = self.teams[team].loadout.size * 0.09;
             let last = self
                 .teams
                 .iter()
@@ -1627,7 +1913,9 @@ impl Arena {
                 y: pos.y,
                 last,
             });
-            self.drama(if last { 1.4 } else { 0.6 }, 0.08);
+            if last {
+                self.drama(1.4, 0.08);
+            }
         }
         // Dead bodies keep falling but do nothing else; put back displaced soil.
         for f in self.fighters.iter_mut() {
@@ -1648,6 +1936,21 @@ impl Arena {
             .count()
     }
 
+    /// Average energy of a team's survivors, 0..1.
+    pub fn team_energy(&self, team: usize) -> f32 {
+        let alive: Vec<f32> = self
+            .fighters
+            .iter()
+            .filter(|f| f.team == team && f.c.alive())
+            .map(|f| f.c.energy)
+            .collect();
+        if alive.is_empty() {
+            0.0
+        } else {
+            alive.iter().sum::<f32>() / alive.len() as f32
+        }
+    }
+
     /// Total health fraction of a team, 0..1.
     pub fn team_health(&self, team: usize) -> f32 {
         let t = &self.teams[team];
@@ -1666,29 +1969,43 @@ impl Arena {
         }
         let standing: Vec<usize> = (0..self.teams.len()).filter(|&t| self.alive(t) > 0).collect();
         // Out of time, or a stand-off nobody can break.
-        let timeout = self.clock >= ROUND_TIME || (self.frenzy && self.clock - self.last_hit > 45.0);
+        let standoff = self.frenzy
+            && self.clock - self.last_hit > STANDOFF_SECS
+            && self.clock - self.frenzy_at > STANDOFF_SECS;
+        let timeout = self.clock >= ROUND_TIME || standoff;
         if standing.len() > 1 && !timeout {
             return;
         }
         let winner = if standing.len() == 1 {
             Some(standing[0] as u8)
         } else if timeout {
-            // Most health left wins; a dead heat is a draw.
-            let mut best: Option<(usize, f32)> = None;
+            // Most health left wins; a dead heat goes to the better-fed
+            // side, and a dead heat on both is a draw.
+            let condition: Vec<(f32, f32)> = (0..self.teams.len())
+                .map(|t| (self.team_health(t), self.team_energy(t)))
+                .collect();
+            let mut best: Option<usize> = None;
             let mut tie = false;
-            for t in 0..self.teams.len() {
-                let h = self.team_health(t);
+            for (t, &(h, e)) in condition.iter().enumerate() {
                 match best {
-                    Some((_, bh)) if (h - bh).abs() < 0.02 => tie = true,
-                    Some((_, bh)) if h > bh => {
-                        best = Some((t, h));
-                        tie = false;
+                    None => best = Some(t),
+                    Some(b) => {
+                        let (bh, be) = condition[b];
+                        if (h - bh).abs() < 0.02 {
+                            if (e - be).abs() < 0.05 {
+                                tie = true;
+                            } else if e > be {
+                                best = Some(t);
+                                tie = false;
+                            }
+                        } else if h > bh {
+                            best = Some(t);
+                            tie = false;
+                        }
                     }
-                    None => best = Some((t, h)),
-                    _ => {}
                 }
             }
-            if tie { None } else { best.map(|(t, _)| t as u8) }
+            if tie { None } else { best.map(|t| t as u8) }
         } else {
             None
         };
@@ -1794,6 +2111,29 @@ impl Arena {
                         reach_x: c.anim.reach.map_or(0.0, |(_, p)| p.x),
                         reach_y: c.anim.reach.map_or(0.0, |(_, p)| p.y),
                         angle: c.anim.angle,
+                        energy: (c.energy.clamp(0.0, 1.0) * 255.0) as u8,
+                        stamina: {
+                            let full = self.teams[f.team].loadout.stamina;
+                            if full > 0.0 {
+                                ((f.stamina / full).clamp(0.0, 1.0) * 255.0) as u8
+                            } else {
+                                255
+                            }
+                        },
+                    }
+                })
+                .collect(),
+            plants: self
+                .plants
+                .iter()
+                .map(|p| {
+                    if p.dead {
+                        (0, 0)
+                    } else {
+                        (
+                            (p.growth.clamp(0.0, 1.0) * 255.0).max(1.0) as u8,
+                            p.fruit.floor() as u8,
+                        )
                     }
                 })
                 .collect(),
@@ -1825,6 +2165,7 @@ fn update_timers(f: &mut Fighter, lo: &Loadout, sp: &Species, rng: &mut Rng) {
         *cd -= DT;
     }
     f.spit_cd -= DT;
+    f.eat_t = (f.eat_t - DT).max(0.0);
     f.stagger = (f.stagger - DT).max(0.0);
     f.grab_t = (f.grab_t - DT).max(0.0);
     f.slam_cd = (f.slam_cd - DT).max(0.0);
@@ -1840,7 +2181,7 @@ fn update_timers(f: &mut Fighter, lo: &Loadout, sp: &Species, rng: &mut Rng) {
             c.dead = Some("succumbed to venom");
         }
     }
-    if lo.regen > 0.0 && c.hurt_timer <= 0.0 && c.health > 0.0 {
+    if lo.regen > 0.0 && c.hurt_timer <= 0.0 && c.health > 0.0 && c.energy > 0.0 {
         let maxh = sp.stats.max_health;
         c.health = (c.health + maxh * lo.regen * DT).min(maxh);
         for (hp, d) in f.parts.iter_mut().zip(&sp.body.segs) {
@@ -1921,6 +2262,70 @@ pub fn loco_word(l: Locomotion) -> &'static str {
     l.label()
 }
 
+/// The arena's plant life, grown the same way on every machine from the
+/// seed and the settled world. Every arena gets fruit: the biome's own
+/// flora first, then a hardy bush on whatever solid ground is left.
+pub fn grow_plants(seed: u64, biome: &Biome, world: &World) -> (Vec<FloraSpecies>, Vec<Plant>) {
+    let mut rng = Rng::new(seed ^ 0xF00D);
+    let mut flora = flora::biome_flora(&mut rng, biome);
+    flora.retain(|f| f.substrate != Substrate::Seabed);
+    let mut plants: Vec<Plant> = Vec::new();
+    let mut next_id = 1_000_000u32;
+    let mut push =
+        |plants: &mut Vec<Plant>, fi: usize, max_fruit: f32, x: i32, y: i32, dir: i32, rng: &mut Rng| {
+            if plants.iter().any(|p| (p.x - x).abs() < 4 && (p.y - y).abs() < 4) {
+                return;
+            }
+            plants.push(Plant {
+                id: next_id,
+                flora: fi,
+                x,
+                y,
+                dir,
+                growth: rng.range(0.7, 1.0),
+                fruit: rng.range(max_fruit * 0.5, max_fruit),
+                seed: rng.next_u64() as u32,
+                dead: false,
+                check_timer: rng.range(0.0, 1.0),
+                seed_timer: 1.0e9,
+                bitten: 0.0,
+            });
+            next_id += 1;
+        };
+    for (fi, fl) in flora.iter().enumerate() {
+        let n = match fl.substrate {
+            Substrate::Ground => 22,
+            _ => 10,
+        };
+        for _ in 0..n {
+            if let Some((x, y, dir)) = flora::find_spot(world, fl, &mut rng, None, 8) {
+                let mf = fl.max_fruit as f32;
+
+                push(&mut plants, fi, mf, x, y, dir, &mut rng);
+            }
+        }
+    }
+    // Not enough soil here: a bush that roots in bare rock.
+    if plants.len() < PLANT_TARGET {
+        let hardy = flora::make_flora(&mut rng, biome, GrowthForm::Bush, Substrate::Ground);
+        flora.push(hardy);
+        let fi = flora.len() - 1;
+        let mut tries = 0;
+        while plants.len() < PLANT_TARGET && tries < 4000 {
+            tries += 1;
+            let x = rng.int(4, WIDTH as i32 - 5);
+            let y = rng.int(3, HEIGHT as i32 - 4);
+            let open = (0..4).all(|k| world.material(x, y - k) == Material::Empty);
+            let floor = world.material(x, y + 1);
+            if open && floor.is_solid_for_player() && floor.kind() != Kind::Liquid {
+                let mf = flora[fi].max_fruit as f32;
+                push(&mut plants, fi, mf, x, y, -1, &mut rng);
+            }
+        }
+    }
+    (flora, plants)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1983,7 +2388,20 @@ mod tests {
         let at = arena.fighters[1].c.pos;
         let mut severed = false;
         for _ in 0..40 {
-            arena.damage(1, leg, at, 6.0, v2(1.0, 0.0), 1.0, 0.0, Some(0), false, false);
+            arena.damage(
+                1,
+                leg,
+                at,
+                6.0,
+                v2(1.0, 0.0),
+                1.0,
+                0.0,
+                Some(0),
+                false,
+                false,
+                false,
+            );
+
             if arena
                 .take_events()
                 .iter()

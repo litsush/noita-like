@@ -12,6 +12,7 @@ use sbct_net::tcp::{self, TcpClient, TcpHost};
 use crate::AppState;
 use crate::session::{EndSession, OFFLINE_ID, Session};
 use crate::steam::{SteamClient, SteamInbox, SteamStatus};
+use crate::theme::{self, ACID, BLOOD, DIM, GOLD, RAISED};
 use crate::versus::{Phase, Versus};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -225,11 +226,10 @@ fn screen_ui(ctx: &egui::Context) -> egui::Ui {
     )
 }
 
-const BUTTON: [f32; 2] = [260.0, 44.0];
+const BUTTON: egui::Vec2 = egui::vec2(300.0, 44.0);
 
 fn big_button(ui: &mut egui::Ui, text: &str) -> bool {
-    ui.add_sized(BUTTON, egui::Button::new(egui::RichText::new(text).size(20.0)))
-        .clicked()
+    theme::big_button(ui, &text.to_uppercase(), BUTTON, RAISED).clicked()
 }
 
 pub fn menu_ui(
@@ -247,33 +247,24 @@ pub fn menu_ui(
     egui::CentralPanel::default().show(&mut root, |ui| {
         ui.vertical_centered(|ui| {
             ui.add_space(50.0);
-            ui.label(
-                egui::RichText::new("ALIEN VERSUS")
-                    .size(64.0)
-                    .strong()
-                    .color(egui::Color32::from_rgb(230, 170, 70)),
-            );
+            ui.label(theme::title("ALIEN VERSUS", 48.0, GOLD));
+            ui.add_space(6.0);
             ui.label(
                 egui::RichText::new("design a species · drop it in · watch it fight")
-                    .size(16.0)
-                    .italics(),
+                    .size(20.0)
+                    .color(DIM),
             );
             ui.add_space(8.0);
             match (&steam, &status.error) {
-                (Some(s), _) => ui.colored_label(
-                    egui::Color32::LIGHT_GREEN,
-                    format!("Steam: signed in as {}", s.my_name()),
-                ),
-                (None, Some(e)) => ui.colored_label(
-                    egui::Color32::from_rgb(230, 120, 90),
-                    format!("Steam unavailable (LAN only): {e}"),
-                ),
+                (Some(s), _) => ui.colored_label(ACID, format!("Steam: signed in as {}", s.my_name())),
+                (None, Some(e)) => ui.colored_label(BLOOD, format!("Steam unavailable (LAN only): {e}")),
                 _ => ui.label(""),
             };
             if let Some(err) = menu.error.clone() {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    ui.colored_label(egui::Color32::from_rgb(255, 110, 110), err);
+                    ui.add_space(ui.available_width() / 2.0 - 200.0);
+                    ui.colored_label(BLOOD, err);
                     if ui.small_button("x").clicked() {
                         menu.error = None;
                     }
@@ -326,7 +317,7 @@ fn main_screen(ui: &mut egui::Ui, menu: &mut MenuState, action: &mut Option<Acti
 }
 
 fn versus_screen(ui: &mut egui::Ui, menu: &mut MenuState, action: &mut Option<Action>) {
-    ui.heading("Alien Versus");
+    ui.label(theme::title("ALIEN VERSUS", 16.0, GOLD));
     ui.weak("Spend points on a species, fight another player's, evolve between rounds.");
     ui.add_space(12.0);
     if big_button(ui, "Host match") {
@@ -345,7 +336,7 @@ fn versus_screen(ui: &mut egui::Ui, menu: &mut MenuState, action: &mut Option<Ac
 }
 
 fn sandbox_screen(ui: &mut egui::Ui, menu: &mut MenuState, action: &mut Option<Action>) {
-    ui.heading("Sandbox");
+    ui.label(theme::title("SANDBOX", 16.0, GOLD));
     ui.weak("The falling-sand world: dig, build, and share it.");
     ui.add_space(12.0);
     if big_button(ui, "Host world") {
@@ -384,10 +375,14 @@ fn mode_tabs(ui: &mut egui::Ui, mode: &mut NetMode, steam_ok: bool) {
 }
 
 fn host_screen(ui: &mut egui::Ui, menu: &mut MenuState, steam_ok: bool, action: &mut Option<Action>) {
-    ui.heading(match menu.mode {
-        GameMode::Versus => "Host a match",
-        GameMode::Sandbox => "Host a world",
-    });
+    ui.label(theme::title(
+        match menu.mode {
+            GameMode::Versus => "HOST A MATCH",
+            GameMode::Sandbox => "HOST A WORLD",
+        },
+        16.0,
+        GOLD,
+    ));
     mode_tabs(ui, &mut menu.host_mode, steam_ok);
     ui.add_space(12.0);
     egui::Grid::new("host")
@@ -437,10 +432,14 @@ fn join_screen(
     steam: Option<&SteamClient>,
     action: &mut Option<Action>,
 ) {
-    ui.heading(match menu.mode {
-        GameMode::Versus => "Join a match",
-        GameMode::Sandbox => "Join a world",
-    });
+    ui.label(theme::title(
+        match menu.mode {
+            GameMode::Versus => "JOIN A MATCH",
+            GameMode::Sandbox => "JOIN A WORLD",
+        },
+        16.0,
+        GOLD,
+    ));
     mode_tabs(ui, &mut menu.join_mode, steam.is_some());
     ui.add_space(12.0);
 
@@ -750,13 +749,14 @@ pub fn connecting_ui(
                     _ => "Waiting for host…".to_string(),
                 },
             };
-            ui.label(egui::RichText::new(text).size(22.0));
+            ui.label(theme::title(&text.to_uppercase(), 16.0, GOLD));
             if let Some(s) = &session
                 && s.total_chunks() > 0
             {
                 let p = s.chunks_received as f32 / s.total_chunks() as f32;
                 ui.add(egui::ProgressBar::new(p).desired_width(300.0));
             }
+
             ui.add_space(16.0);
             if big_button(ui, "Cancel") {
                 commands.insert_resource(EndSession(None));

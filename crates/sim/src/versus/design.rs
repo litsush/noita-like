@@ -23,8 +23,11 @@ use crate::rng::Rng;
 pub const START_POINTS: u32 = 40;
 /// Points gained after every round.
 pub const ROUND_POINTS: u32 = 14;
+/// Drawn and collided bodies are this much bigger than the size the stats
+/// are balanced around, so fights read clearly on screen.
+pub const BODY_SCALE: f32 = 1.4;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Upgrade {
     // Body
     Size,
@@ -32,6 +35,8 @@ pub enum Upgrade {
     Regeneration,
     Armor,
     Spines,
+    Metabolism,
+    Diet,
     // Movement
     Legs,
     LongLegs,
@@ -45,6 +50,7 @@ pub enum Upgrade {
     NightVision,
     Echolocation,
     Feelers,
+    Nose,
     // Weapons
     Teeth,
     Claws,
@@ -103,12 +109,14 @@ impl Group {
 }
 
 impl Upgrade {
-    pub const ALL: [Upgrade; 32] = [
+    pub const ALL: [Upgrade; 35] = [
         Upgrade::Size,
         Upgrade::Vitality,
         Upgrade::Regeneration,
         Upgrade::Armor,
         Upgrade::Spines,
+        Upgrade::Metabolism,
+        Upgrade::Diet,
         Upgrade::Legs,
         Upgrade::LongLegs,
         Upgrade::Wings,
@@ -120,6 +128,7 @@ impl Upgrade {
         Upgrade::NightVision,
         Upgrade::Echolocation,
         Upgrade::Feelers,
+        Upgrade::Nose,
         Upgrade::Teeth,
         Upgrade::Claws,
         Upgrade::Arms,
@@ -146,9 +155,9 @@ impl Upgrade {
     pub fn group(self) -> Group {
         use Upgrade::*;
         match self {
-            Size | Vitality | Regeneration | Armor | Spines => Group::Body,
+            Size | Vitality | Regeneration | Armor | Spines | Metabolism | Diet => Group::Body,
             Legs | LongLegs | Wings | Leap | Burrow | Climb | Swim => Group::Movement,
-            Eyes | NightVision | Echolocation | Feelers => Group::Senses,
+            Eyes | NightVision | Echolocation | Feelers | Nose => Group::Senses,
             Teeth | Claws | Arms | Tail | Horns | Venom | Spit | Tentacles => Group::Weapons,
             Camouflage | Ink | ToxicFlesh => Group::Defence,
             Intelligence | Aggression | Caution | PackMind => Group::Mind,
@@ -164,6 +173,8 @@ impl Upgrade {
             Regeneration => "Regeneration",
             Armor => "Armour plating",
             Spines => "Spines",
+            Metabolism => "Slow metabolism",
+            Diet => "Diet",
             Legs => "Legs",
             LongLegs => "Long legs",
             Wings => "Wings",
@@ -175,6 +186,7 @@ impl Upgrade {
             NightVision => "Big eyes",
             Echolocation => "Echolocation",
             Feelers => "Feelers",
+            Nose => "Nose",
             Teeth => "Teeth",
             Claws => "Claws",
             Arms => "Arms",
@@ -203,11 +215,17 @@ impl Upgrade {
             Regeneration => "Wounds close over time. Lost limbs never regrow.",
             Armor => "A shell over the back and body. Blocks damage there, not on the head or limbs.",
             Spines => "Anything that bites or punches you gets hurt back.",
+            Metabolism => "Burns energy slower. Weapons, size and aggression all cost energy to run.",
+            Diet => {
+                "Carnivores feed on what they kill. Herbivores graze fruit and burn less energy. Omnivores do both, less well."
+            }
             Legs => {
                 "No legs slithers. Two run upright, four run fastest, six and eight are stable and climb well."
             }
             LongLegs => "Faster and higher-jumping, but easier to knock over.",
-            Wings => "Insect wings hover, membrane wings turn tight, feathers are fastest.",
+            Wings => {
+                "Flight burns stamina; land to recover. Insect wings only lift small bodies, membranes mid-sized ones, feathers anything."
+            }
             Leap => "Pounces across gaps and onto enemies.",
             Burrow => "Tunnels through soil. Level 2 swims through sand without a trace.",
             Climb => "Clings to walls and ceilings.",
@@ -216,6 +234,7 @@ impl Upgrade {
             NightVision => "Large eyes see in the dark.",
             Echolocation => "Senses enemies through walls and camouflage, up close.",
             Feelers => "Feels footsteps through the ground, even when burrowed.",
+            Nose => "Smells fruit, carcasses and enemies from afar, even through walls.",
             Teeth => {
                 "Bristles rake fast, flat teeth grind, a beak pierces armour, mandibles hold, canines and shark teeth tear."
             }
@@ -235,7 +254,9 @@ impl Upgrade {
             Aggression => "How readily it attacks rather than circling.",
             Caution => "Retreats and recovers when badly hurt.",
             PackMind => "Individuals coordinate: flank and focus the same target.",
-            Individuals => "More of you. Each one is a little smaller.",
+            Individuals => {
+                "More of you, each a little smaller. The price grows with everything else you've bought."
+            }
         }
     }
 
@@ -248,43 +269,59 @@ impl Upgrade {
     fn prices(self) -> &'static [u32] {
         use Upgrade::*;
         match self {
-            Size => &[0, 4, 8, 12, 16],
+            Size => &[0, 5, 10, 15, 20],
             Vitality => &[0, 3, 6, 9, 12],
             Regeneration => &[0, 4, 8, 12],
             Armor => &[0, 4, 8, 12],
             Spines => &[0, 3, 6],
+            Metabolism => &[0, 3, 6, 9],
+            Diet => &[0, 2, 4],
             Legs => &[0, 3, 5, 7, 9],
             LongLegs => &[0, 2, 4, 6],
-            Wings => &[0, 5, 6, 7],
+            Wings => &[0, 7, 9, 11],
             Leap => &[0, 3, 6],
             Burrow => &[0, 4, 8],
             Climb => &[0, 3],
-            Swim => &[0, 2, 4],
+            Swim => &[0, 3, 6],
             Eyes => &[0, 1, 2, 3, 4, 6],
             NightVision => &[0, 3, 6],
             Echolocation => &[0, 6],
             Feelers => &[0, 3],
+            Nose => &[0, 2, 4, 6],
             Teeth => &[0, 2, 3, 4, 4, 5, 6],
             Claws => &[0, 3, 6, 9],
             Arms => &[0, 4, 8],
             Tail => &[0, 2, 4, 5, 6],
             Horns => &[0, 3, 6],
             Venom => &[0, 4, 8],
-            Spit => &[0, 4, 5, 6, 7],
+            Spit => &[0, 4, 6, 9, 11],
             Tentacles => &[0, 4, 8],
-            Camouflage => &[0, 4, 8],
+            Camouflage => &[0, 3, 6],
             Ink => &[0, 3],
-            ToxicFlesh => &[0, 4],
-            Intelligence => &[0, 3, 6, 9, 12],
+            ToxicFlesh => &[0, 5],
+            Intelligence => &[0, 2, 4, 6, 8],
             Aggression => &[0, 1, 2, 3, 4],
             Caution => &[0, 1, 2, 3],
             PackMind => &[0, 3, 6],
-            Individuals => &[0, 6, 13, 21, 30, 40],
+            Individuals => &[0, 5, 11, 18, 26, 35],
         }
     }
 
+    /// Base price of a level. Individuals also charge a share of everything
+    /// else on the sheet; see [`Design::price`].
     pub fn price(self, level: u8) -> u32 {
         self.prices()[(level as usize).min(self.prices().len() - 1)]
+    }
+
+    /// Whether this body is too heavy for its wings (insect wings lift
+    /// only small bodies, membranes mid-sized ones).
+    pub fn wings_lift(wings: u8, size: u8) -> bool {
+        match wings {
+            0 => false,
+            1 => size <= 1,
+            2 => size <= 3,
+            _ => true,
+        }
     }
 
     /// Names for each level when the upgrade is a choice rather than a
@@ -294,6 +331,7 @@ impl Upgrade {
         match self {
             Legs => Some(&["None", "Two", "Four", "Six", "Eight"]),
             Wings => Some(&["None", "Insect", "Membrane", "Feather"]),
+            Diet => Some(&["Carnivore", "Herbivore", "Omnivore"]),
             Eyes => Some(&["0", "1", "2", "3", "4", "6"]),
             Teeth => Some(&[
                 "None",
@@ -321,6 +359,9 @@ impl Upgrade {
             }
             PackMind if d.level(Individuals) == 0 => Some("needs more than one individual"),
             NightVision if d.level(Eyes) == 0 => Some("needs eyes"),
+            Wings if d.level(Wings) > 0 && !Upgrade::wings_lift(d.level(Wings), d.level(Size)) => {
+                Some("too heavy for these wings")
+            }
             _ => None,
         }
     }
@@ -364,7 +405,32 @@ impl Design {
 
     /// Total points spent.
     pub fn cost(&self) -> u32 {
-        Upgrade::ALL.iter().map(|&u| u.price(self.level(u))).sum()
+        let others: u32 = Upgrade::ALL
+            .iter()
+            .filter(|&&u| u != Upgrade::Individuals)
+            .map(|&u| u.price(self.level(u)))
+            .sum();
+        others + Self::individuals_price(self.level(Upgrade::Individuals), others)
+    }
+
+    /// What extra individuals cost on top of `others` points of upgrades:
+    /// every copy of the body carries a share of what went into it.
+    pub fn individuals_price(level: u8, others: u32) -> u32 {
+        let base = Upgrade::Individuals.price(level);
+        let share = (others as f32 * 0.14 * level as f32).round() as u32;
+        base + share
+    }
+
+    /// Points this sheet would cost with `u` at `level`.
+    pub fn cost_with(&self, u: Upgrade, level: u8) -> u32 {
+        let mut d = self.clone();
+        d.set(u, level);
+        d.cost()
+    }
+
+    /// Change in cost from moving `u` to `level`.
+    pub fn delta(&self, u: Upgrade, level: u8) -> i64 {
+        self.cost_with(u, level) as i64 - self.cost() as i64
     }
 
     /// Valid for the wire: every level in range.
@@ -432,6 +498,12 @@ impl Design {
         if self.level(Claws) >= 2 {
             features.push("Talon");
         }
+        if self.level(Diet) == 1 {
+            features.push("Grazing");
+        }
+        if self.level(Nose) >= 2 {
+            features.push("Snouted");
+        }
         let feature = if features.is_empty() {
             ""
         } else {
@@ -476,7 +548,7 @@ impl Design {
         }
         let total = budget + base.map_or(0, |b| b.cost());
         // Weighted wishes: a build theme plus a few extras.
-        let themes: [&[Upgrade]; 6] = [
+        let themes: [&[Upgrade]; 8] = [
             &[
                 Upgrade::Teeth,
                 Upgrade::Size,
@@ -519,6 +591,23 @@ impl Design {
                 Upgrade::Tail,
                 Upgrade::Spines,
             ],
+            // Foragers: outlast the predator rather than fight it.
+            &[
+                Upgrade::Diet,
+                Upgrade::Nose,
+                Upgrade::Camouflage,
+                Upgrade::Metabolism,
+                Upgrade::Caution,
+                Upgrade::Eyes,
+                Upgrade::LongLegs,
+            ],
+            &[
+                Upgrade::Individuals,
+                Upgrade::Spit,
+                Upgrade::Eyes,
+                Upgrade::Caution,
+                Upgrade::Nose,
+            ],
         ];
         let theme = themes[rng.int(0, themes.len() as i32 - 1) as usize];
         let mut tries = 0;
@@ -539,8 +628,7 @@ impl Design {
             } else {
                 l + 1
             };
-            let delta = u.price(next) - u.price(l);
-            if d.cost() + delta <= total {
+            if d.cost_with(u, next) <= total {
                 d.set(u, next);
             }
         }
@@ -584,6 +672,30 @@ impl WeaponKind {
             WeaponKind::Tail => "tail",
             WeaponKind::Horn => "gore",
             WeaponKind::Tentacle => "grab",
+        }
+    }
+}
+
+/// What a species eats to keep its energy up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Diet {
+    Carnivore,
+    Herbivore,
+    Omnivore,
+}
+
+impl Diet {
+    pub fn eats_fruit(self) -> bool {
+        self != Diet::Carnivore
+    }
+    pub fn eats_meat(self) -> bool {
+        self != Diet::Herbivore
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Diet::Carnivore => "carnivore",
+            Diet::Herbivore => "herbivore",
+            Diet::Omnivore => "omnivore",
         }
     }
 }
@@ -639,6 +751,13 @@ pub struct Loadout {
     pub leap: f32,
     /// Legs standing on, for stability.
     pub legs: usize,
+    pub diet: Diet,
+    /// Energy burnt per second at rest (1.0 is a full tank).
+    pub metabolism: f32,
+    /// Smell range in cells, 0 for none.
+    pub nose: f32,
+    /// Seconds of flight before the wings give out.
+    pub stamina: f32,
 }
 
 impl Loadout {
@@ -694,15 +813,23 @@ pub fn build_species(d: &Design, team: usize, biome: Option<&Biome>) -> (Species
     let mut rng = Rng::new(d.look_seed ^ 0x5EED);
     let lv = |u: Upgrade| d.level(u) as f32;
     let count = d.count();
-    // More mouths, each a little smaller.
-    let s = (2.8 + lv(Size) * 1.1) * (1.0 - 0.06 * lv(Individuals));
+    // More mouths, each a little smaller. `q` is the size the numbers are
+    // balanced around; `s` is how big the body actually is.
+    let q = (2.8 + lv(Size) * 1.1) * (1.0 - 0.04 * lv(Individuals));
+    let s = q * BODY_SCALE;
     let legs_choice = d.level(Legs) as usize;
     let leg_count = [0usize, 2, 4, 6, 8][legs_choice];
     let wings = d.level(Wings);
+    let lifts = Upgrade::wings_lift(wings, d.level(Size));
     let (mouth, teeth) = mouth_for(d.level(Teeth));
+    let diet = match d.level(Diet) {
+        1 => self::Diet::Herbivore,
+        2 => self::Diet::Omnivore,
+        _ => self::Diet::Carnivore,
+    };
 
     let mut t = Traits {
-        fly: wings > 0,
+        fly: wings > 0 && lifts,
         dig: d.level(Burrow) > 0,
         sand_swim: d.level(Burrow) >= 2,
         climb: d.level(Climb) > 0 || leg_count >= 6 && rng.prob(0.5),
@@ -721,7 +848,7 @@ pub fn build_species(d: &Design, team: usize, biome: Option<&Biome>) -> (Species
             4 => Some(SpitKind::Fire),
             _ => None,
         },
-        armor: lv(Armor) * 0.18,
+        armor: lv(Armor) * 0.22,
         spines: d.level(Spines) > 0,
         toxic: d.level(ToxicFlesh) > 0,
         ink: d.level(Ink) > 0,
@@ -733,7 +860,7 @@ pub fn build_species(d: &Design, team: usize, biome: Option<&Biome>) -> (Species
     };
 
     let loco = if leg_count == 0 {
-        if wings > 0 {
+        if t.fly {
             Locomotion::Fly
         } else if t.dig {
             Locomotion::Burrow
@@ -770,14 +897,15 @@ pub fn build_species(d: &Design, team: usize, biome: Option<&Biome>) -> (Species
         6 => 30.0,
         _ => 27.0,
     };
+    // Bigger bodies lumber; long legs and a light build make up for it.
     let mut speed =
-        base_speed * (1.0 + 0.15 * lv(LongLegs)) * (1.0 - 0.06 * lv(Armor)) * (s / 4.0).powf(0.25);
-    if wings > 0 {
+        base_speed * (1.0 + 0.15 * lv(LongLegs)) * (1.0 - 0.04 * lv(Armor)) * (q / 4.0).powf(-0.2);
+    if t.fly {
         speed = speed.max(36.0 + 4.0 * wings as f32);
     }
     let g = 300.0;
     let jump_h = (s * 2.2 + 5.0) * (1.0 + 0.25 * lv(LongLegs)) * (1.0 + 0.35 * lv(Leap));
-    let max_health = 10.0 * s.powf(1.5) * 1.22f32.powf(lv(Vitality));
+    let max_health = 11.0 * q.powf(1.2) * 1.22f32.powf(lv(Vitality));
     let eyes = [0usize, 1, 2, 3, 4, 6][d.level(Eyes) as usize];
     let sight = (28.0 + eyes as f32 * 22.0).min(150.0) * (1.0 + 0.2 * lv(NightVision));
     let stats = Stats {
@@ -788,7 +916,7 @@ pub fn build_species(d: &Design, team: usize, biome: Option<&Biome>) -> (Species
         jump: (2.0 * g * jump_h).sqrt(),
         sight,
         hearing: 40.0 + 20.0 * lv(Feelers),
-        damage: 4.0 * s.powf(1.2),
+        damage: 4.0 * q.powf(1.2),
         attack_cooldown: 0.8,
         reach: s * 0.8 + 2.0,
         metabolism: 0.0,
@@ -796,13 +924,15 @@ pub fn build_species(d: &Design, team: usize, biome: Option<&Biome>) -> (Species
         maturity: 1.0,
         litter: (0, 0),
         gestation: 1.0e9,
-        spit_range: 55.0 + 10.0 * lv(Eyes),
+        spit_range: 45.0 + 8.0 * lv(Eyes),
         flee_distance: 40.0,
     };
 
     // Weapons.
     let mut weapons = Vec::new();
-    let dmg = s.powf(1.15);
+    let dmg = q.powf(0.85);
+    // Quick thinkers strike sooner.
+    let quick = 1.0 - 0.05 * lv(Intelligence);
     let teeth_lv = d.level(Teeth);
     if teeth_lv > 0 {
         let (mult, cd, pierce, grab) = match teeth_lv {
@@ -889,8 +1019,8 @@ pub fn build_species(d: &Design, team: usize, biome: Option<&Biome>) -> (Species
     if d.level(Tentacles) > 0 {
         weapons.push(Weapon {
             kind: WeaponKind::Tentacle,
-            damage: dmg * 0.6 * lv(Tentacles),
-            cooldown: 1.4,
+            damage: dmg * (0.5 + 0.6 * lv(Tentacles)),
+            cooldown: 1.3,
             reach: s * 2.4 + 4.0,
             knockback: 0.3,
             pierce: 0.0,
@@ -901,24 +1031,58 @@ pub fn build_species(d: &Design, team: usize, biome: Option<&Biome>) -> (Species
     }
 
     let spit_dmg = match t.spit {
-        Some(SpitKind::Web) => dmg * 0.3,
-        Some(SpitKind::Venom) => dmg * 0.8,
-        Some(SpitKind::Acid) => dmg * 1.0,
-        Some(SpitKind::Fire) => dmg * 0.9,
+        Some(SpitKind::Web) => dmg * 0.4,
+        Some(SpitKind::Venom) => dmg * 0.9,
+        Some(SpitKind::Acid) => dmg * 1.1,
+        Some(SpitKind::Fire) => dmg * 0.8,
         None => 0.0,
     };
 
+    // Energy: a full tank lasts about 80 s for a plain animal. Hunting gear
+    // is expensive to run; grazing and sitting still are cheap.
+    let predatory = (d.level(Teeth) > 0) as u8
+        + d.level(Claws)
+        + d.level(Arms)
+        + (d.level(Tail) > 0) as u8
+        + d.level(Horns)
+        + d.level(Venom)
+        + (d.level(Spit) > 0) as u8
+        + d.level(Tentacles);
+    let mut burn = 1.0 + 0.09 * predatory as f32 + 0.12 * lv(Size) + 0.06 * lv(Aggression);
+
+    burn -= 0.06 * lv(Camouflage) + 0.04 * lv(Caution);
+    if diet == self::Diet::Herbivore {
+        burn -= 0.2;
+    }
+    burn *= 1.0 - 0.2 * lv(Metabolism);
+    let metabolism = burn.max(0.35) / 80.0;
+    let stamina = if t.fly {
+        (match wings {
+            1 => 7.0,
+            2 => 10.0,
+            _ => 14.0,
+        }) * (1.0 - 0.1 * lv(Size)).max(0.5)
+    } else {
+        0.0
+    };
+
+    for w in weapons.iter_mut() {
+        w.cooldown *= quick;
+    }
     let loadout = Loadout {
         count,
         size: s,
-        regen: lv(Regeneration) * 0.012,
+        regen: lv(Regeneration) * 0.015,
         armor: t.armor,
-        spines: lv(Spines) * 0.35,
+        spines: lv(Spines) * 0.5,
+
         weapons,
+
         venom: lv(Venom),
         spit: t.spit,
         spit_damage: spit_dmg,
-        spit_cooldown: 2.2,
+        spit_cooldown: 2.0,
+
         spit_range: stats.spit_range,
         intelligence: lv(Intelligence) / 4.0,
         aggression: 0.15 + lv(Aggression) * 0.2,
@@ -937,6 +1101,14 @@ pub fn build_species(d: &Design, team: usize, biome: Option<&Biome>) -> (Species
         swim: t.swim,
         leap: lv(Leap),
         legs: leg_count,
+        diet,
+        metabolism,
+        nose: if d.level(Nose) > 0 {
+            50.0 + 35.0 * lv(Nose)
+        } else {
+            0.0
+        },
+        stamina,
     };
 
     let personality = Personality {
@@ -1173,8 +1345,14 @@ fn build_body(
             ));
         }
     }
-    // Stockier with vitality; a throat pouch for spitters.
-    let stock = 1.0 + 0.07 * lv(Vitality);
+    // Stockier with vitality, leaner with a slow metabolism, a round gut on
+    // grazers; a throat pouch for spitters.
+    let gut = match d.level(Diet) {
+        1 => 1.12,
+        2 => 1.06,
+        _ => 1.0,
+    };
+    let stock = (1.0 + 0.07 * lv(Vitality)) * (1.0 - 0.04 * lv(Metabolism)) * gut;
     for sg in b.segs.iter_mut() {
         sg.r *= 1.0 + 0.03 * lv(Vitality);
         sg.ry *= stock;
@@ -1218,12 +1396,13 @@ fn build_body(
             size: big * rng.range(0.9, 1.15),
         });
     }
-    // The head grows with the brain.
+    // The head grows with the brain and stretches into a snout with a nose.
     let brain = 1.0 + 0.16 * lv(Intelligence);
-    b.head_r *= brain;
+    let snout = 1.0 + 0.14 * lv(Nose);
+    b.head_r *= brain * snout;
     b.head_ry *= brain;
-    if b.head_r == 0.0 && d.level(Intelligence) > 0 {
-        b.head_r = s * 0.5 * brain;
+    if b.head_r == 0.0 && (d.level(Intelligence) > 0 || d.level(Nose) > 0) {
+        b.head_r = s * 0.5 * brain * snout;
         b.head_ry = s * 0.45 * brain;
     }
     // Crest and horns.
@@ -1403,7 +1582,11 @@ fn describe(d: &Design, sp: &Species, l: &Loadout) -> Vec<String> {
     if l.swim {
         how.push("swims".into());
     }
-    let mut out = vec![format!("A {size}, {legs} creature that {}.", how.join(", "))];
+    let mut out = vec![format!(
+        "A {size}, {legs} {} that {}.",
+        l.diet.label(),
+        how.join(", ")
+    )];
     let weapons: Vec<String> = l.weapons.iter().map(|w| w.kind.label().to_string()).collect();
     let mut fight = if weapons.is_empty() {
         "It has no natural weapons".to_string()
@@ -1439,9 +1622,21 @@ fn describe(d: &Design, sp: &Species, l: &Loadout) -> Vec<String> {
     if l.toxic {
         extra.push("toxic to bite");
     }
+    if l.nose > 0.0 {
+        extra.push("keen nose");
+    }
     if !extra.is_empty() {
         out.push(format!("{}.", extra.join(", ")));
     }
+    out.push(format!(
+        "Runs {:.0} s on a full stomach{}.",
+        1.0 / l.metabolism,
+        if l.stamina > 0.0 {
+            format!(", flies {:.0} s at a stretch", l.stamina)
+        } else {
+            String::new()
+        }
+    ));
     out
 }
 
@@ -1454,6 +1649,50 @@ mod tests {
         let d = Design::new(5);
         assert!(d.cost() <= START_POINTS, "{}", d.cost());
         assert!(!d.name.is_empty());
+    }
+
+    #[test]
+    fn individuals_get_dearer_with_investment() {
+        let mut plain = Design::new(1);
+        for u in Upgrade::ALL {
+            plain.set(u, 0);
+        }
+        let cheap = plain.delta(Upgrade::Individuals, 1);
+        plain.set(Upgrade::Size, 4);
+        plain.set(Upgrade::Teeth, 6);
+        plain.set(Upgrade::Armor, 3);
+        let dear = plain.delta(Upgrade::Individuals, 1);
+        assert!(dear > cheap, "{dear} should exceed {cheap}");
+    }
+
+    #[test]
+    fn heavy_bodies_need_better_wings() {
+        let mut d = Design::new(1);
+        d.set(Upgrade::Wings, 1);
+        d.set(Upgrade::Size, 3);
+        assert!(Upgrade::Wings.requires(&d).is_some());
+        let (sp, lo) = build_species(&d, 0, None);
+        assert!(!lo.fly && !sp.traits.fly);
+        d.set(Upgrade::Wings, 3);
+        assert!(Upgrade::Wings.requires(&d).is_none());
+        let (_, lo) = build_species(&d, 0, None);
+        assert!(lo.fly && lo.stamina > 0.0);
+    }
+
+    #[test]
+    fn grazers_burn_less_than_hunters() {
+        let mut grazer = Design::new(1);
+        grazer.set(Upgrade::Teeth, 0);
+        grazer.set(Upgrade::Diet, 1);
+        grazer.set(Upgrade::Metabolism, 2);
+        let mut hunter = Design::new(1);
+        hunter.set(Upgrade::Teeth, 6);
+        hunter.set(Upgrade::Claws, 2);
+        hunter.set(Upgrade::Size, 3);
+        let (_, g) = build_species(&grazer, 0, None);
+        let (_, h) = build_species(&hunter, 0, None);
+        assert!(g.metabolism < h.metabolism * 0.6);
+        assert!(g.diet.eats_fruit() && !g.diet.eats_meat());
     }
 
     #[test]

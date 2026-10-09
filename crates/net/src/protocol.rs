@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::PeerId;
 
 /// Bump whenever a message layout changes so mismatched builds refuse to connect.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Which game a session is running. Hosts and joiners must agree.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,17 +83,33 @@ pub enum VersusClientMsg {
     Unready,
 }
 
+/// Match settings the host owns.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MatchSettings {
+    /// Rounds in the match; the most wins after that many takes it.
+    pub rounds: u8,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub enum VersusHostMsg {
     Welcome {
         your_id: PeerId,
         round: u32,
         points: u32,
+        settings: MatchSettings,
+        /// A returning player's sheet, locked as it was last submitted,
+        /// and how many rounds they had won.
+        design: Option<Design>,
+        wins: u8,
     },
     Reject {
         reason: String,
     },
+    Settings(MatchSettings),
     Roster(Vec<RosterEntry>),
+    /// Nothing new; keeps the connection known to be alive between rounds.
+    Ping,
+
     /// A round begins: everyone builds the same arena from `seed` and the
     /// designs, in team order.
     RoundStart {

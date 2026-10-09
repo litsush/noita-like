@@ -197,15 +197,13 @@ pub fn camera(
         let (target, zoom) = match mirror.bounds() {
             Some((lo, hi)) => {
                 let mut centre = Vec2::new((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0 - 6.0);
-                let bw = (hi.x - lo.x) + 90.0;
-                let bh = (hi.y - lo.y) + 70.0;
-                let mut zoom = (ww / bw).min(wh / bh).clamp(1.6, 5.5);
+                let bw = (hi.x - lo.x) + 110.0;
+                let bh = (hi.y - lo.y) + 80.0;
+
+                let mut zoom = (ww / bw).min(wh / bh).clamp(1.6, 5.0);
                 if let Some((p, _)) = mirror.focus {
                     centre = centre.lerp(Vec2::new(p.x, p.y), 0.65);
                     zoom *= 1.35;
-                }
-                if mirror.replaying {
-                    zoom *= 1.25;
                 }
                 (centre, zoom)
             }
