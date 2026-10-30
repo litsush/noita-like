@@ -45,6 +45,86 @@ pub struct Anim {
     pub surface: V2,
     /// A limb instance to aim at a world point (striking with an arm or tail).
     pub reach: Option<(usize, V2)>,
+    /// A strike being posed: wind-up, then the blow.
+    pub swing: Option<Swing>,
+}
+
+/// How a strike moves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SwingKind {
+    Bite,
+    Claw,
+    Punch,
+    Tail,
+    Horn,
+    Tentacle,
+}
+
+impl SwingKind {
+    pub const ALL: [SwingKind; 6] = [
+        SwingKind::Bite,
+        SwingKind::Claw,
+        SwingKind::Punch,
+        SwingKind::Tail,
+        SwingKind::Horn,
+        SwingKind::Tentacle,
+    ];
+}
+
+/// A strike's timeline in seconds: `windup` of drawing back, then `dur` of blow.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Swing {
+    pub kind: SwingKind,
+    pub t: f32,
+    pub windup: f32,
+    pub dur: f32,
+}
+
+impl Swing {
+    pub fn total(&self) -> f32 {
+        self.windup + self.dur
+    }
+
+    /// Wind-up progress, 0..1; 1 once the blow has started.
+    pub fn cock(&self) -> f32 {
+        if self.windup <= 0.0 {
+            1.0
+        } else {
+            (self.t / self.windup).clamp(0.0, 1.0)
+        }
+    }
+
+    /// Blow progress, 0..1; 0 while still winding up.
+    pub fn blow(&self) -> f32 {
+        ((self.t - self.windup) / self.dur.max(1e-3)).clamp(0.0, 1.0)
+    }
+
+    /// Nose-up body lean in radians: rear back while winding up, then
+    /// throw the weight forward into the blow and settle.
+    pub fn lean(&self) -> f32 {
+        let (back, fwd) = match self.kind {
+            SwingKind::Bite => (0.32, 0.22),
+            SwingKind::Claw | SwingKind::Punch => (0.2, 0.16),
+            SwingKind::Horn => (-0.3, 0.12),
+            SwingKind::Tail => (-0.12, 0.1),
+            SwingKind::Tentacle => (0.12, 0.08),
+        };
+        let c = ease_out(self.cock());
+        let b = self.blow();
+        if b <= 0.0 {
+            back * c
+        } else {
+            // Snap through to the forward lean in the first third, then relax.
+            let into = (b / 0.3).min(1.0);
+            let settle = ((b - 0.3) / 0.7).clamp(0.0, 1.0);
+            let peak = back + (-fwd - back) * ease_out(into);
+            peak * (1.0 - settle)
+        }
+    }
+}
+
+pub fn ease_out(t: f32) -> f32 {
+    1.0 - (1.0 - t) * (1.0 - t)
 }
 
 /// What a creature has noticed this think.

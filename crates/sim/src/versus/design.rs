@@ -10,6 +10,7 @@ use std::f32::consts::{FRAC_PI_2, PI};
 use serde::{Deserialize, Serialize};
 
 use crate::eco::biome::Biome;
+use crate::eco::creature::SwingKind;
 use crate::eco::genome::{
     Activity, BodyPlan, Colors, Crest, Eye, FleeStyle, Habitat, HuntStyle, LimbKind, LimbTip, Locomotion,
     Mouth, Pattern, Personality, Role, Species, SpitKind, Stats, Teeth, Traits, WingKind, add_legs,
@@ -672,6 +673,43 @@ impl WeaponKind {
             WeaponKind::Tail => "tail",
             WeaponKind::Horn => "gore",
             WeaponKind::Tentacle => "grab",
+        }
+    }
+
+    /// Seconds spent drawing back before the blow; a horn already at full
+    /// charge barely needs to lower its head.
+    pub fn windup(self, charging: bool) -> f32 {
+        match self {
+            WeaponKind::Bite => 0.14,
+            WeaponKind::Claw => 0.12,
+            WeaponKind::Punch => 0.15,
+            WeaponKind::Tail => 0.18,
+            WeaponKind::Horn if charging => 0.05,
+            WeaponKind::Horn => 0.16,
+            WeaponKind::Tentacle => 0.16,
+        }
+    }
+
+    /// Seconds the blow itself takes; it lands a little before halfway.
+    pub fn blow_time(self) -> f32 {
+        match self {
+            WeaponKind::Bite => 0.26,
+            WeaponKind::Claw => 0.3,
+            WeaponKind::Punch => 0.32,
+            WeaponKind::Tail => 0.42,
+            WeaponKind::Horn => 0.2,
+            WeaponKind::Tentacle => 0.45,
+        }
+    }
+
+    pub fn swing(self) -> SwingKind {
+        match self {
+            WeaponKind::Bite => SwingKind::Bite,
+            WeaponKind::Claw => SwingKind::Claw,
+            WeaponKind::Punch => SwingKind::Punch,
+            WeaponKind::Tail => SwingKind::Tail,
+            WeaponKind::Horn => SwingKind::Horn,
+            WeaponKind::Tentacle => SwingKind::Tentacle,
         }
     }
 }

@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::eco::biome::{self, Biome, HEIGHT, WIDTH};
 use crate::eco::body;
 use crate::eco::brain::{self, Intent};
-use crate::eco::creature::{Creature, limb_instances};
+use crate::eco::creature::{Creature, Swing, SwingKind, limb_instances};
 use crate::eco::flora::{self, FloraSpecies, GrowthForm, Plant, Substrate};
 use crate::eco::genome::{Habitat, LimbKind, LimbTip, Locomotion, Species, SpitKind};
 use crate::eco::math::{V2, mix, v2};
@@ -46,6 +46,8 @@ pub const STANDOFF_SECS: f32 = 40.0;
 pub const DEFAULT_ROUNDS: u8 = 3;
 /// Snapshots per simulated second.
 pub const SNAPSHOT_HZ: f32 = 20.0;
+/// Resolution of strike timings on the wire, in seconds.
+pub const SWING_TICK: f32 = 1.0 / 200.0;
 /// Energy from one fruit.
 pub const FRUIT_ENERGY: f32 = 0.22;
 /// Plants the arena aims to have.
@@ -63,8 +65,14 @@ pub struct Team {
 #[derive(Clone, Copy, Debug)]
 pub struct Strike {
     pub weapon: WeaponKind,
+    /// Seconds since the strike began: `windup` of drawing back, then `dur`
+    /// of blow.
     pub t: f32,
+    pub windup: f32,
     pub dur: f32,
+    /// Where the aimed-at part (or the target, if none) stood when the aim
+    /// was taken; the aim follows it through the wind-up.
+    pub target_at: V2,
     pub target: u32,
     pub aim: V2,
     /// The part aimed at, if the brain picked one.
@@ -208,6 +216,12 @@ pub struct CreatureNet {
     pub reach_limb: u8,
     pub reach_x: f32,
     pub reach_y: f32,
+    /// The strike being posed (index into [`SwingKind::ALL`], 255 none) and
+    /// its elapsed, wind-up and blow times in units of [`SWING_TICK`].
+    pub swing: u8,
+    pub swing_t: u8,
+    pub swing_windup: u8,
+    pub swing_dur: u8,
     pub angle: f32,
     /// 0..255 of a full tank, and of full flight stamina.
     pub energy: u8,
@@ -1059,37 +1073,34 @@ impl Arena {
                             })
                             .unwrap_or((f.c.pos + v2(f.c.facing * 8.0, 0.0), None));
                         f.cooldowns[kind as usize] = w.cooldown;
-                        let dur = match kind {
-                            WeaponKind::Bite => 0.26,
-                            WeaponKind::Claw => 0.3,
-                            WeaponKind::Punch => 0.32,
-                            WeaponKind::Tail => 0.42,
-                            WeaponKind::Horn => 0.2,
-                            WeaponKind::Tentacle => 0.45,
-                        };
+                        let windup = kind.windup(f.charging);
+                        let dur = kind.blow_time();
+                        let target_at = snaps
+                            .iter()
+                            .find(|s| s.id == target)
+                            .map_or(aim, |t| aimed_spot(t, aim_part));
                         let limb = strike_limb(&f.c, sp, kind);
                         f.strike = Some(Strike {
                             weapon: kind,
                             t: 0.0,
+                            windup,
                             dur,
+                            target_at,
                             target,
                             aim,
                             aim_part,
                             resolved: false,
                             limb,
                         });
-                        f.c.anim.attack = dur;
+                        f.c.anim.attack = windup + dur;
                         if let Some(k) = limb {
                             f.c.anim.reach = Some((k, aim));
                         }
-                        // Lunge.
+                        // Draw back from the target before the lunge.
                         let d = (aim - f.c.pos).norm();
-                        let lunge = match kind {
-                            WeaponKind::Bite => 30.0,
-                            WeaponKind::Horn => 10.0,
-                            _ => 12.0,
-                        };
-                        f.c.vel += d * lunge;
+                        if windup > 0.08 {
+                            f.c.vel -= d * 8.0;
+                        }
                         if d.x.abs() > 0.2 {
                             f.c.facing = d.x.signum();
                         }
@@ -1130,18 +1141,54 @@ impl Arena {
             }
             // Strikes in progress.
             if let Some(mut st) = f.strike {
+                let was_winding = st.t < st.windup;
                 st.t += DT;
-                if !st.resolved && st.t >= st.dur * 0.45 {
+                if was_winding && st.t >= st.windup {
+                    // The blow: re-aim where the target has got to, then lunge.
+                    if let Some(t) = snaps.iter().find(|s| s.id == st.target) {
+                        let now = aimed_spot(t, st.aim_part);
+                        st.aim += now - st.target_at;
+                        st.target_at = now;
+                    }
+                    if let Some(k) = st.limb {
+                        f.c.anim.reach = Some((k, st.aim));
+                    }
+                    let d = (st.aim - f.c.pos).norm();
+                    let lunge = match st.weapon {
+                        WeaponKind::Bite => 30.0,
+                        WeaponKind::Horn => 10.0,
+                        _ => 12.0,
+                    };
+                    f.c.vel += d * lunge;
+                    if d.x.abs() > 0.2 {
+                        f.c.facing = d.x.signum();
+                    }
+                }
+                if !st.resolved && st.t >= st.windup + st.dur * 0.45 {
                     st.resolved = true;
                     pending.push(Pending::Strike { attacker: fi });
                 }
-                if st.t >= st.dur {
+                if st.t >= st.windup + st.dur {
                     f.strike = None;
                     f.c.anim.reach = None;
                 } else {
                     f.strike = Some(st);
                 }
             }
+            if let Some(st) = f.strike {
+                // Square up to the target for the whole strike, even while
+                // drawing back away from it.
+                let dx = st.aim.x - f.c.pos.x;
+                if dx.abs() > 1.0 {
+                    f.c.facing = dx.signum();
+                }
+            }
+            f.c.anim.swing = f.strike.map(|st| Swing {
+                kind: st.weapon.swing(),
+                t: st.t,
+                windup: st.windup,
+                dur: st.dur,
+            });
         }
         for (p, col) in dust {
             self.dust(p, col, 2, 0.6);
@@ -2040,6 +2087,7 @@ impl Arena {
             f.c.status.grabbed_by = None;
             f.strike = None;
             f.c.anim.reach = None;
+            f.c.anim.swing = None;
         }
     }
 
@@ -2110,6 +2158,12 @@ impl Arena {
                         reach_limb: c.anim.reach.map_or(255, |(k, _)| k.min(254) as u8),
                         reach_x: c.anim.reach.map_or(0.0, |(_, p)| p.x),
                         reach_y: c.anim.reach.map_or(0.0, |(_, p)| p.y),
+                        swing: c.anim.swing.map_or(255, |sw| {
+                            SwingKind::ALL.iter().position(|k| *k == sw.kind).unwrap_or(0) as u8
+                        }),
+                        swing_t: c.anim.swing.map_or(0, |sw| swing_ticks(sw.t)),
+                        swing_windup: c.anim.swing.map_or(0, |sw| swing_ticks(sw.windup)),
+                        swing_dur: c.anim.swing.map_or(0, |sw| swing_ticks(sw.dur)),
                         angle: c.anim.angle,
                         energy: (c.energy.clamp(0.0, 1.0) * 255.0) as u8,
                         stamina: {
@@ -2195,6 +2249,16 @@ fn update_timers(f: &mut Fighter, lo: &Loadout, sp: &Species, rng: &mut Rng) {
 }
 
 /// Where a weapon starts from: the mouth, or the root of the limb it uses.
+/// Where an aimed-at part of a target is now, or the target itself.
+fn aimed_spot(t: &EnemySnap, part: Option<u8>) -> V2 {
+    part.and_then(|k| t.parts.iter().find(|p| p.3 == k))
+        .map_or(t.pos, |p| p.0)
+}
+
+fn swing_ticks(t: f32) -> u8 {
+    (t / SWING_TICK).round().clamp(0.0, 255.0) as u8
+}
+
 fn weapon_origin(c: &Creature, sp: &Species, kind: WeaponKind) -> V2 {
     match kind {
         WeaponKind::Bite | WeaponKind::Horn => body::mouth_world(c, sp),

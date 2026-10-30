@@ -7,7 +7,7 @@
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
-use super::creature::{Creature, limb_instances};
+use super::creature::{Creature, Swing, SwingKind, ease_out, limb_instances};
 use super::genome::{Crest, LimbKind, LimbTip, Locomotion, Mouth, Species, Teeth, WingKind};
 use super::math::{V2, angle_diff, v2};
 use crate::world::World;
@@ -80,7 +80,7 @@ impl Frame {
 fn frame(c: &Creature) -> Frame {
     Frame {
         origin: c.pos,
-        angle: c.anim.angle,
+        angle: c.anim.angle - c.facing * c.anim.swing.map_or(0.0, |sw| sw.lean()),
         facing: c.facing,
     }
 }
@@ -212,6 +212,12 @@ pub fn animate(c: &mut Creature, sp: &Species, world: &World, dt: f32, flying: b
     a.attack = (a.attack - dt).max(0.0);
     a.eat = (a.eat - dt).max(0.0);
     a.hurt = (a.hurt - dt).max(0.0);
+    if let Some(sw) = &mut a.swing {
+        sw.t += dt;
+        if sw.t >= sw.total() {
+            a.swing = None;
+        }
+    }
     a.blink -= dt;
     if a.blink < -0.15 {
         a.blink = 2.0 + (c.id % 7) as f32 * 0.4;
@@ -305,6 +311,7 @@ pub fn animate(c: &mut Creature, sp: &Species, world: &World, dt: f32, flying: b
         .filter(|((li, _), f)| f.t < 1.0 && b.limbs[*li].kind == LimbKind::Leg)
         .count();
     let reach = c.anim.reach;
+    let swing = c.anim.swing;
     for (k, &(li, far)) in insts.iter().enumerate() {
         if !c.has_limb(k) {
             continue;
@@ -399,15 +406,40 @@ pub fn animate(c: &mut Creature, sp: &Species, world: &World, dt: f32, flying: b
                 {
                     base_dir = base_dir.lerp(-c.vel.norm(), 0.5).norm();
                 }
+                // A posed strike drives the limb outright: turned off the line
+                // to the target (towards the up side) and curled along its length.
+                let posed = aimed
+                    .zip(swing)
+                    .filter(|_| l.kind != LimbKind::Antenna)
+                    .map(|(_, sw)| {
+                        let up = if base_dir.x.abs() > 0.1 {
+                            -base_dir.x.signum()
+                        } else {
+                            -c.facing
+                        };
+                        (sw, up)
+                    });
                 chain[0] = root;
                 let mut dir = base_dir;
                 for i in 1..joints {
                     let t = i as f32 / (joints - 1) as f32;
-                    let wave = (c.anim.t * freq + l.phase * TAU + i as f32 * 0.8).sin() * amp * t;
-                    dir = dir.rot(wave * 0.6);
-                    dir = dir.lerp(v2(0.0, 1.0), droop * t).norm();
+                    if let Some((sw, up)) = posed {
+                        let (turn, curl) = swing_bend(&sw, t);
+                        dir = base_dir.rot(up * (turn + curl * t * 2.0));
+                    } else {
+                        let wave = (c.anim.t * freq + l.phase * TAU + i as f32 * 0.8).sin() * amp * t;
+                        dir = dir.rot(wave * 0.6);
+                        dir = dir.lerp(v2(0.0, 1.0), droop * t).norm();
+                    }
                     let ideal = chain[i - 1] + dir * seg_len;
-                    let mut p = chain[i].lerp(ideal, if aimed.is_some() { 0.8 } else { 0.45 });
+                    let follow = if posed.is_some() {
+                        0.9
+                    } else if aimed.is_some() {
+                        0.8
+                    } else {
+                        0.45
+                    };
+                    let mut p = chain[i].lerp(ideal, follow);
                     let d = p - chain[i - 1];
                     p = chain[i - 1] + d.norm() * seg_len;
                     if solid(world, climb, p) {
@@ -416,6 +448,55 @@ pub fn animate(c: &mut Creature, sp: &Species, world: &World, dt: f32, flying: b
                     chain[i] = p;
                 }
             }
+        }
+    }
+}
+
+/// How far a striking limb is turned off the line to its target (radians,
+/// positive towards the up side) and how hard it curls, at position `u`
+/// (0 root, 1 tip) along it.
+fn swing_bend(sw: &Swing, u: f32) -> (f32, f32) {
+    let c = ease_out(sw.cock());
+    let b = sw.blow();
+    match sw.kind {
+        // Jaws and horns have no limb to pose.
+        SwingKind::Bite | SwingKind::Horn => (0.0, 0.0),
+        // Raised overhead, then raked down through the target.
+        SwingKind::Claw => {
+            if b <= 0.0 {
+                (1.9 * c, 0.12 * c)
+            } else {
+                (1.9 - 2.4 * ease_out((b / 0.75).min(1.0)), 0.12 * (1.0 - b))
+            }
+        }
+        // Drawn back to the shoulder, then thrown out straight.
+        SwingKind::Punch => {
+            let k = if b <= 0.0 {
+                0.0
+            } else {
+                ease_out((b / 0.3).min(1.0))
+            };
+            let c = if b <= 0.0 { c } else { 1.0 };
+            (2.3 * c * (1.0 - k), -0.5 * c * (1.0 - k))
+        }
+        // Cocked to the far side, then whipped through: the tip trails the
+        // root, overshoots the target and settles back.
+        SwingKind::Tail | SwingKind::Tentacle => {
+            let (cocked, curl, over) = if sw.kind == SwingKind::Tail {
+                (2.2, 0.1, 0.9)
+            } else {
+                (1.3, 0.9, 0.5)
+            };
+            if b <= 0.0 {
+                return (cocked * c, curl * c);
+            }
+            let bu = ((b - u * 0.2) / 0.8).clamp(0.0, 1.0);
+            let turn = if bu < 0.55 {
+                cocked - (cocked + over) * ease_out(bu / 0.55)
+            } else {
+                -over * (1.0 - (bu - 0.55) / 0.45)
+            };
+            (turn, curl * (1.0 - ease_out(bu)))
         }
     }
 }
@@ -667,10 +748,17 @@ pub fn pose(c: &Creature, sp: &Species) -> Vec<Prim> {
         });
         let fwd = f.dir(0.15);
         let mouth_at = h + fwd * (b.head_r * s * 0.9);
-        let open = if c.anim.attack > 0.0 || c.anim.eat > 0.0 {
-            1.0
-        } else {
-            0.0
+        let open = match c.anim.swing {
+            // Jaws gape through the wind-up and snap shut on the blow.
+            Some(sw) if sw.kind == SwingKind::Bite => {
+                if sw.blow() <= 0.0 {
+                    1.5 * ease_out(sw.cock())
+                } else {
+                    (1.5 * (1.0 - sw.blow() / 0.4)).max(0.0)
+                }
+            }
+            _ if c.anim.attack > 0.0 || c.anim.eat > 0.0 => 1.0,
+            _ => 0.0,
         };
         match b.mouth {
             Mouth::Mandibles => {

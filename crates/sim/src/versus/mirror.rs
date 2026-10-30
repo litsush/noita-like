@@ -5,7 +5,7 @@
 
 use crate::eco::biome::{self, Biome};
 use crate::eco::body::{self, Paint, Prim};
-use crate::eco::creature::{Creature, init_anim, limb_instances};
+use crate::eco::creature::{Creature, Swing, SwingKind, init_anim, limb_instances};
 use crate::eco::flora::{FloraSpecies, Plant};
 use crate::eco::genome::{LimbKind, Species, SpitKind};
 use crate::eco::math::{Rgb, V2, mix, scale, v2};
@@ -19,7 +19,7 @@ use crate::world::{DecodeError, World};
 use super::combat::Tactic;
 use super::design::{Design, Loadout, build_teams};
 use super::parts::{self, PartDef};
-use super::{FightEvent, Snapshot, grow_plants};
+use super::{FightEvent, SWING_TICK, Snapshot, grow_plants};
 
 pub struct WatchedTeam {
     pub player: String,
@@ -57,6 +57,20 @@ pub struct Callout {
 /// A sound the watcher should play: its name and a volume.
 pub type SoundCue = (&'static str, f32);
 
+/// How long a point of a swing trail lingers, in seconds.
+const TRAIL_LIFE: f32 = 0.11;
+
+/// The streak a weapon tip leaves through the air during a blow.
+struct Trail {
+    creature: u32,
+    kind: SwingKind,
+    colour: Rgb,
+    /// Tip positions, oldest first, with their age in seconds.
+    points: Vec<(V2, f32)>,
+    /// Still being drawn by its strike.
+    live: bool,
+}
+
 pub struct Mirror {
     pub seed: u64,
     pub biome: Biome,
@@ -80,6 +94,7 @@ pub struct Mirror {
     pub projectiles: Vec<Projectile>,
     pub particles: Vec<Particle>,
     pub gibs: Vec<Gib>,
+    trails: Vec<Trail>,
     pub extras: Vec<(Prim, Rgb, bool)>,
     pub callouts: Vec<Callout>,
     pub sounds: Vec<SoundCue>,
@@ -140,6 +155,7 @@ impl Mirror {
             projectiles: Vec::new(),
             particles: Vec::new(),
             gibs: Vec::new(),
+            trails: Vec::new(),
             extras: Vec::new(),
             callouts: Vec::new(),
             sounds: Vec::new(),
@@ -235,6 +251,20 @@ impl Mirror {
                 None
             } else {
                 Some((n.reach_limb as usize, v2(n.reach_x, n.reach_y)))
+            };
+            // Strikes run on locally between snapshots; only resync when the
+            // host's clock has drifted from ours.
+            let host = SwingKind::ALL.get(n.swing as usize).map(|&kind| Swing {
+                kind,
+                t: n.swing_t as f32 * SWING_TICK,
+                windup: n.swing_windup as f32 * SWING_TICK,
+                dur: n.swing_dur as f32 * SWING_TICK,
+            });
+            c.anim.swing = match (c.anim.swing, host) {
+                (Some(ours), Some(h)) if ours.kind == h.kind && (ours.t - h.t).abs() < 0.06 => Some(ours),
+                // Already played out here; don't replay the tail.
+                (None, Some(h)) if h.total() - h.t < 0.06 => None,
+                _ => host,
             };
             self.health[idx] = n.health as f32 / 255.0;
             self.parts[idx] = n.parts.clone();
@@ -672,6 +702,134 @@ impl Mirror {
                     },
                     col,
                     false,
+                ));
+            }
+        }
+        self.update_trails(dt);
+        self.draw_trails();
+    }
+
+    /// Where the business end of a strike is right now.
+    fn weapon_tip(c: &Creature, sp: &Species, kind: SwingKind) -> Option<V2> {
+        match kind {
+            SwingKind::Bite => Some(body::mouth_world(c, sp)),
+            SwingKind::Horn => {
+                let r = sp.body.head_r.max(sp.body.segs[0].r) * c.scale(sp);
+                Some(body::head_world(c, sp) + body::forward(c) * (r * 1.4 + 1.5))
+            }
+            _ => c
+                .anim
+                .reach
+                .and_then(|(k, _)| c.anim.chains.get(k))
+                .and_then(|chain| chain.last().copied()),
+        }
+    }
+
+    /// Ages the trails and extends the ones whose strikes are mid-blow.
+    fn update_trails(&mut self, dt: f32) {
+        for t in self.trails.iter_mut() {
+            for p in t.points.iter_mut() {
+                p.1 += dt;
+            }
+            t.points.retain(|p| p.1 < TRAIL_LIFE);
+            t.live = false;
+        }
+        for c in &self.creatures {
+            let Some(sw) = c.anim.swing else { continue };
+            let b = sw.blow();
+            if b <= 0.0 || b > 0.8 || !c.alive() {
+                continue;
+            }
+            let sp = &self.species[c.species];
+            let Some(tip) = Self::weapon_tip(c, sp, sw.kind) else {
+                continue;
+            };
+            let found = self
+                .trails
+                .iter()
+                .position(|t| t.creature == c.id && t.kind == sw.kind && !t.points.is_empty());
+            let i = match found {
+                Some(i) => i,
+                None => {
+                    self.trails.push(Trail {
+                        creature: c.id,
+                        kind: sw.kind,
+                        colour: mix(sp.colors.accent, [255, 255, 255], 0.55),
+                        points: Vec::new(),
+                        live: true,
+                    });
+                    self.trails.len() - 1
+                }
+            };
+            let t = &mut self.trails[i];
+            t.live = true;
+            if t.points.last().is_none_or(|p| p.0.dist(tip) > 0.4) {
+                t.points.push((tip, 0.0));
+            }
+        }
+        self.trails.retain(|t| t.live || !t.points.is_empty());
+    }
+
+    /// Trails as bright tapering streaks: three raking lines for claws, a
+    /// broad arc for tails, a thin one for everything else; plus the jaws'
+    /// snap where a bite closes.
+    fn draw_trails(&mut self) {
+        for t in &self.trails {
+            let (lines, width): (&[f32], f32) = match t.kind {
+                SwingKind::Claw => (&[-1.3, 0.0, 1.3], 0.9),
+                SwingKind::Tail => (&[0.0], 2.2),
+                SwingKind::Tentacle => (&[0.0], 1.6),
+                SwingKind::Punch | SwingKind::Horn => (&[0.0], 1.4),
+                SwingKind::Bite => (&[0.0], 1.0),
+            };
+            for w in t.points.windows(2) {
+                let ((a, age_a), (b, age_b)) = (w[0], w[1]);
+                let side = (b - a).norm().perp();
+                let fresh = |age: f32| 1.0 - age / TRAIL_LIFE;
+                let (fa, fb) = (fresh(age_a), fresh(age_b));
+                let col = mix(t.colour, [255, 255, 255], fb * 0.6);
+                for off in lines {
+                    // Outer rake lines are shorter than the middle one.
+                    let k = if *off == 0.0 { 1.0 } else { 0.75 };
+                    self.extras.push((
+                        Prim::Line {
+                            a: a + side * (off * fa),
+                            b: b + side * (off * fb),
+                            w0: (width * fa * k).max(0.4),
+                            w1: (width * fb * k).max(0.5),
+                            paint: Paint::Fixed(col),
+                        },
+                        col,
+                        true,
+                    ));
+                }
+            }
+        }
+        for c in &self.creatures {
+            let Some(sw) = c.anim.swing else { continue };
+            let b = sw.blow();
+            if sw.kind != SwingKind::Bite || !(0.3..0.65).contains(&b) || !c.alive() {
+                continue;
+            }
+            let sp = &self.species[c.species];
+            let mouth = body::mouth_world(c, sp);
+            let fwd = body::forward(c);
+            let up = v2(fwd.y, -fwd.x) * c.facing;
+            let r = (sp.body.head_r.max(1.5) * c.scale(sp)).clamp(2.0, 6.0);
+            let col = [255, 250, 235];
+            let tip = mouth + fwd * (r * 0.9);
+            for side in [-1.0, 1.0] {
+                let from = mouth + up * (side * r) + fwd * (r * 0.2);
+                self.extras.push((
+                    Prim::Line {
+                        a: from,
+                        b: tip,
+                        w0: 0.8,
+                        w1: 0.5,
+                        paint: Paint::Fixed(col),
+                    },
+                    col,
+                    true,
                 ));
             }
         }

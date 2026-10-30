@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::PeerId;
 
 /// Bump whenever a message layout changes so mismatched builds refuse to connect.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Which game a session is running. Hosts and joiners must agree.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]

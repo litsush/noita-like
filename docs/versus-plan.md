@@ -73,6 +73,13 @@ with no weapons can still win by hiding, foraging and outlasting.
   plain so the fight stays legible.
 - The host pings between rounds. Clients used to time out on the results
   screen and rejoin as strangers, which reset their stats.
+- Every strike has a wind-up (0.12–0.18 s; 0.05 s for a horn already at full
+  charge): the attacker squares up, draws back and lines up the blow, then
+  lunges. The aim follows the target through the wind-up, so the delay
+  reads clearly without costing accuracy. Each weapon has its own swing
+  (claws rake down from overhead, punches thrust, tails and tentacles whip
+  with the tip trailing), and the mirror draws fading streaks along the
+  weapon tip and a snap where jaws close.
 - Balance targets come from the archetype matrix: ten hand-built styles
   (brute, tank, pack, spitters, flier, grazer, burrower, brain, serpent,
   swarm) each win 38–65% of a round-robin, with the hard counters (fliers
@@ -103,5 +110,6 @@ with no weapons can still win by hiding, foraging and outlasting.
 - [x] Pixel theme and fonts, per-upgrade icons, evolution log
 - [x] Generated chiptune effects and music
 - [x] Headless balance sweeps and a first tuning pass
+- [x] Strike wind-ups, per-weapon swing poses, swing trails
 - [ ] Balance pass with real players
 - [ ] Spectator chat / emotes
