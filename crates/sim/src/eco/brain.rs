@@ -93,6 +93,9 @@ pub struct Intent {
     pub fly: bool,
     pub dig: bool,
     pub sneak: bool,
+    /// Already in something deadly: wade through more of it to get out
+    /// rather than refusing to step into it.
+    pub escape: bool,
     pub action: Action,
 }
 
@@ -1689,7 +1692,7 @@ pub fn steer(
             Some(m) if m.kind() == Kind::Liquid => !sp.swims_in(m),
             Some(m) => !m.blocks_creature(sp.traits.climb) && m != Material::Web,
         };
-        if deadly && !planned_drop && !(gap && sp.traits.leap) {
+        if deadly && !planned_drop && !(gap && sp.traits.leap) && !it.escape {
             cmd.dir.x = 0.0;
             cmd.jump = above;
         } else {

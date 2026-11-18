@@ -755,12 +755,23 @@ fn draw_creature(t: &mut Target, c: &Creature, sp: &Species) {
     let far = scale(colors.base, 0.74);
     let limb = mix(colors.base, colors.accent, 0.35);
     let poisoned = c.status.poison > 0.0;
+    // A fresh wound flickers white and red; the dead go grey.
+    let flash: Rgb = if (c.anim.hurt * 30.0) as i32 % 2 == 0 {
+        [255, 255, 255]
+    } else {
+        [255, 40, 40]
+    };
+    let dead = c.dead.is_some();
     let adjust = |rgb: Rgb| -> Rgb {
         let mut rgb = rgb;
         if poisoned {
             rgb = mix(rgb, [120, 200, 80], 0.25);
         }
-        if hurt { mix(rgb, [255, 255, 255], 0.6) } else { rgb }
+        if dead {
+            let g = ((rgb[0] as u32 + rgb[1] as u32 + rgb[2] as u32) / 3) as u8;
+            rgb = scale(mix(rgb, [g, g, g], 0.6), 0.7);
+        }
+        if hurt { mix(rgb, flash, 0.6) } else { rgb }
     };
     let resolve = |p: Paint| -> (Rgb, bool) {
         match p {

@@ -274,7 +274,7 @@ mod tests {
             if t % 120 == 0 {
                 for f in &arena.fighters {
                     println!(
-                        "  t{:3} id{} ({:4.0},{:4.0}) hp {:5.1} en {:.2} st {:.1} {:?} '{}' tgt {:?} seen {} fly {} ground {} stuck {:.0}",
+                        "  t{:3} id{} ({:4.0},{:4.0}) hp {:5.1} en {:.2} st {:.1} {:?} '{}' tgt {:?} seen {} fly {} ground {} burrowed {} under {:?} stuck {:.0}",
                         t / 60,
                         f.c.id,
                         f.c.pos.x,
@@ -290,6 +290,8 @@ mod tests {
                             .map_or("-".to_string(), |(p, _)| format!("({:.0},{:.0})", p.x, p.y)),
                         f.c.flying,
                         f.c.on_ground,
+                        f.c.burrowed,
+                        arena.world.material(f.c.pos.x as i32, f.c.pos.y as i32 + 8),
                         f.c.brain.stuck
                     );
                 }

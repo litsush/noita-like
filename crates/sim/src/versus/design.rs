@@ -349,6 +349,12 @@ impl Upgrade {
         }
     }
 
+    /// Whether evolution may take this back down. Legs and eyes are a body
+    /// plan rather than an investment, so a species can trade them away.
+    pub fn reducible(self) -> bool {
+        matches!(self, Upgrade::Legs | Upgrade::Eyes)
+    }
+
     /// Why the upgrade does nothing with this design, if so.
     pub fn requires(self, d: &Design) -> Option<&'static str> {
         use Upgrade::*;
@@ -375,7 +381,41 @@ pub struct Design {
     /// Decides colours and the small shape choices that aren't upgrades.
     pub look_seed: u64,
     pub levels: Vec<u8>,
+    /// The player's own body colour; `None` lets the look seed pick.
+    #[serde(default)]
+    pub colour: Option<[u8; 3]>,
+    /// Body shape, an index into [`MORPHS`]. Cosmetic.
+    #[serde(default)]
+    pub morph: u8,
 }
+
+/// Body shapes the designer cycles through. Purely a look: they reshape the
+/// body around the same stats.
+pub const MORPHS: [&str; 7] = [
+    "Natural",
+    "Stocky",
+    "Lanky",
+    "Long-bodied",
+    "Big-headed",
+    "Sleek",
+    "Crested",
+];
+
+/// Colours offered as quick picks in the designer.
+pub const SWATCHES: [[u8; 3]; 12] = [
+    [214, 64, 58],
+    [235, 132, 40],
+    [236, 204, 64],
+    [140, 200, 70],
+    [52, 160, 92],
+    [48, 180, 170],
+    [60, 140, 230],
+    [96, 92, 220],
+    [160, 80, 210],
+    [226, 92, 170],
+    [235, 230, 220],
+    [70, 64, 70],
+];
 
 impl Design {
     pub fn new(look_seed: u64) -> Design {
@@ -383,6 +423,8 @@ impl Design {
             name: String::new(),
             look_seed,
             levels: vec![0; Upgrade::COUNT],
+            colour: None,
+            morph: 0,
         };
         // A plain starting animal: four legs, two eyes, flat teeth.
         d.set(Upgrade::Legs, 2);
@@ -443,15 +485,34 @@ impl Design {
             let l = self.level(u).min(u.max());
             self.levels[u.index()] = l;
         }
+        self.morph = self.morph.min(MORPHS.len() as u8 - 1);
         self.name = self.name.chars().filter(|c| !c.is_control()).take(28).collect();
         if self.name.trim().is_empty() {
             self.name = self.auto_name();
         }
     }
 
-    /// Whether `other` only adds to this design (evolution never takes away).
+    /// Whether `other` only adds to this design (evolution never takes
+    /// away, except legs and eyes, which can be reshaped).
     pub fn evolves_from(&self, base: &Design) -> bool {
-        Upgrade::ALL.iter().all(|&u| self.level(u) >= base.level(u))
+        Upgrade::ALL
+            .iter()
+            .all(|&u| u.reducible() || self.level(u) >= base.level(u))
+    }
+
+    /// The lowest level `u` may be set to, given the sheet it evolves from.
+    pub fn floor(u: Upgrade, base: Option<&Design>) -> u8 {
+        if u.reducible() {
+            0
+        } else {
+            base.map_or(0, |b| b.level(u))
+        }
+    }
+
+    /// Steps the body shape forwards or backwards.
+    pub fn cycle_morph(&mut self, step: i32) {
+        let n = MORPHS.len() as i32;
+        self.morph = (self.morph as i32 + step).rem_euclid(n) as u8;
     }
 
     pub fn count(&self) -> usize {
@@ -642,6 +703,9 @@ impl Design {
 
 /// Base hue for naming and colouring, from the look seed.
 fn look_colour(d: &Design) -> Rgb {
+    if let Some(c) = d.colour {
+        return c;
+    }
     let mut rng = Rng::new(d.look_seed ^ 0xC01);
     let warning = d.level(Upgrade::Venom) > 0 || d.level(Upgrade::ToxicFlesh) > 0;
     if warning {
@@ -811,20 +875,25 @@ pub fn build_teams(designs: &[(String, Design)], biome: Option<&Biome>) -> Vec<(
     for (i, (_, d)) in designs.iter().enumerate() {
         let (mut sp, lo) = build_species(d, i, biome);
         let (h, _, _) = to_hsv(sp.colors.base);
-        let clash = out.iter().any(|(o, _)| {
+        let clash = out.iter().position(|(o, _)| {
             let (oh, _, _) = to_hsv(o.colors.base);
             let diff = (h - oh).rem_euclid(360.0);
             diff.min(360.0 - diff) < 45.0
         });
-        if clash {
+        if let Some(j) = clash {
             let shift = 150.0 + i as f32 * 40.0;
-            let rotate = |c: Rgb| {
-                let (h, s, v) = to_hsv(c);
-                hsv(h + shift, s, v)
+            let rotate = |c: &mut Colors| {
+                for col in [&mut c.base, &mut c.accent, &mut c.belly] {
+                    let (h, s, v) = to_hsv(*col);
+                    *col = hsv(h + shift, s, v);
+                }
             };
-            sp.colors.base = rotate(sp.colors.base);
-            sp.colors.accent = rotate(sp.colors.accent);
-            sp.colors.belly = rotate(sp.colors.belly);
+            // A colour someone picked on purpose wins over one left to chance.
+            if d.colour.is_some() && designs[j].1.colour.is_none() {
+                rotate(&mut out[j].0.colors);
+            } else {
+                rotate(&mut sp.colors);
+            }
         }
         out.push((sp, lo));
     }
@@ -937,7 +1006,7 @@ pub fn build_species(d: &Design, team: usize, biome: Option<&Biome>) -> (Species
     };
     // Bigger bodies lumber; long legs and a light build make up for it.
     let mut speed =
-        base_speed * (1.0 + 0.15 * lv(LongLegs)) * (1.0 - 0.04 * lv(Armor)) * (q / 4.0).powf(-0.2);
+        base_speed * 1.2 * (1.0 + 0.15 * lv(LongLegs)) * (1.0 - 0.04 * lv(Armor)) * (q / 4.0).powf(-0.2);
     if t.fly {
         speed = speed.max(36.0 + 4.0 * wings as f32);
     }
@@ -950,7 +1019,7 @@ pub fn build_species(d: &Design, team: usize, biome: Option<&Biome>) -> (Species
         size: s,
         max_health,
         speed,
-        accel: speed * 4.5,
+        accel: speed * 6.5,
         jump: (2.0 * g * jump_h).sqrt(),
         sight,
         hearing: 40.0 + 20.0 * lv(Feelers),
@@ -1131,7 +1200,7 @@ pub fn build_species(d: &Design, team: usize, biome: Option<&Biome>) -> (Species
         toxic: t.toxic,
         sight,
         night: lv(NightVision) / 2.0,
-        echo: if d.level(Echolocation) > 0 { 85.0 } else { 0.0 },
+        echo: if d.level(Echolocation) > 0 { 115.0 } else { 0.0 },
         tremor: t.tremor_sense,
         fly: t.fly,
         dig: t.dig,
@@ -1261,6 +1330,19 @@ fn build_body(
             add_legs(rng, &mut b, 4, leg_len * 1.15, leg_tip, leg_w * 0.8);
             b.head_r = s * 0.45;
             b.stance = leg_len * 0.75;
+        }
+    }
+
+    // A long body grows an extra segment behind, before the tail attaches.
+    if d.morph == 3
+        && let Some(&back) = b.segs.last()
+    {
+        let mut extra = back;
+        extra.r *= 0.85;
+        extra.ry *= 0.85;
+        b.segs.push(extra);
+        if b.spacing <= 0.0 {
+            b.spacing = s * 0.9;
         }
     }
 
@@ -1461,6 +1543,7 @@ fn build_body(
     };
     b.shell = d.level(Armor) > 0;
     t.spines = d.level(Spines) > 0;
+    morph(&mut b, d.morph, s);
 
     // Collision box: the front segment plus the head, never the trailing body.
     let s0 = b.segs[0];
@@ -1480,6 +1563,54 @@ fn build_body(
     b
 }
 
+/// Reshapes the body for the chosen morphology. Cosmetic: the collision box
+/// is measured afterwards, but every change is small.
+fn morph(b: &mut BodyPlan, kind: u8, s: f32) {
+    match kind {
+        // Stocky: short, deep and thick-necked.
+        1 => {
+            for sg in b.segs.iter_mut() {
+                sg.r *= 0.9;
+                sg.ry *= 1.22;
+            }
+            b.neck *= 0.4;
+            b.head_r *= 1.08;
+        }
+        // Lanky: stretched out on a long neck.
+        2 => {
+            for sg in b.segs.iter_mut() {
+                sg.r *= 1.12;
+                sg.ry *= 0.82;
+            }
+            b.neck = b.neck * 1.5 + s * 0.3;
+        }
+        // Big-headed.
+        4 => {
+            b.head_r = b.head_r.max(s * 0.45) * 1.3;
+            b.head_ry = b.head_ry.max(s * 0.4) * 1.25;
+            b.neck *= 0.6;
+        }
+        // Sleek: flat and streamlined.
+        5 => {
+            for sg in b.segs.iter_mut() {
+                sg.r *= 1.06;
+                sg.ry *= 0.74;
+            }
+            b.head_ry *= 0.85;
+            if b.crest != Crest::Spines && b.crest != Crest::Horns {
+                b.crest = Crest::None;
+            }
+        }
+        // Crested: a sail down the back if nothing else grows there.
+        6 => {
+            if matches!(b.crest, Crest::None | Crest::Crest) {
+                b.crest = Crest::Sail;
+            }
+        }
+        _ => {}
+    }
+}
+
 fn make_colors(d: &Design, rng: &mut Rng, biome: Option<&Biome>, habitat: Habitat, t: &Traits) -> Colors {
     let look = look_colour(d);
     let warning = t.toxic || t.venom;
@@ -1489,11 +1620,15 @@ fn make_colors(d: &Design, rng: &mut Rng, biome: Option<&Biome>, habitat: Habita
             None => [110, 100, 70],
         };
         let (eh, es, ev) = to_hsv(env);
-        let base = hsv(
+        let mut base = hsv(
             eh + rng.range(-12.0, 12.0),
             (es + rng.range(-0.1, 0.1)).clamp(0.15, 0.9),
             (ev + rng.range(0.0, 0.12)).clamp(0.4, 0.9),
         );
+        // A chosen colour still shows through the camouflage.
+        if let Some(c) = d.colour {
+            base = mix(base, c, 0.55);
+        }
         (
             base,
             scale(base, 0.75),

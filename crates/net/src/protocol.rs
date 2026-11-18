@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::PeerId;
 
 /// Bump whenever a message layout changes so mismatched builds refuse to connect.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Which game a session is running. Hosts and joiners must agree.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,6 +81,8 @@ pub enum VersusClientMsg {
     /// Ready with this design.
     Ready(Design),
     Unready,
+    /// Votes for (or withdraws from) running the fight at double speed.
+    FastVote(bool),
 }
 
 /// Match settings the host owns.
@@ -109,6 +111,11 @@ pub enum VersusHostMsg {
     Roster(Vec<RosterEntry>),
     /// Nothing new; keeps the connection known to be alive between rounds.
     Ping,
+    /// Who wants double speed, and whether everyone does (so it's on).
+    Speed {
+        votes: Vec<PeerId>,
+        fast: bool,
+    },
 
     /// A round begins: everyone builds the same arena from `seed` and the
     /// designs, in team order.

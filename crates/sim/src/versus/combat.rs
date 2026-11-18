@@ -1,12 +1,14 @@
-//! The fighting mind. Each individual sees what its senses allow, picks a
+﻿//! The fighting mind. Each individual sees what its senses allow, picks a
 //! tactic, and keeps score of how every tactic has gone for it so far. The
 //! smarter the species, the more that record steers its choices, and the
 //! more it notices things like "biting that shell does nothing".
 
 use crate::eco::brain::Intent;
 use crate::eco::creature::Creature;
+use crate::eco::genome::Species;
 use crate::eco::math::{V2, v2};
 use crate::eco::nav::line_of_sight;
+use crate::eco::physics::Bounds;
 use crate::material::Material;
 use crate::rng::Rng;
 use crate::world::World;
@@ -103,6 +105,8 @@ pub enum CombatAction {
     Ink,
     /// Eat the food source with this id (a plant, or a fallen fighter).
     Eat(u32),
+    /// A burst of speed along the ground towards something.
+    Dash(V2),
 }
 
 /// Something to eat, as the arena lists it for hungry brains.
@@ -147,6 +151,12 @@ pub struct CombatBrain {
     pub lost_at: f32,
     /// The food we're heading for.
     pub food: Option<Food>,
+    /// Found its target by echolocation this think: the arena shows a ping.
+    pub pinged: bool,
+    /// Just broke out of the ground under its target.
+    pub burst: bool,
+    /// Tried to dig in and hit rock: no undermining until then.
+    pub dig_blocked_until: f32,
 }
 
 impl CombatBrain {
@@ -174,6 +184,9 @@ impl CombatBrain {
             surprise_until: 0.0,
             lost_at: 0.0,
             food: None,
+            pinged: false,
+            burst: false,
+            dig_blocked_until: 0.0,
         }
     }
 
@@ -273,6 +286,9 @@ pub struct Ctx<'a> {
     /// towards it, so two animals never spend a whole round apart.
     pub enemy_hint: Option<V2>,
     pub food: &'a [Food],
+    /// This creature's species and body, for sensing what it is standing in.
+    pub sp: &'a Species,
+    pub body: Bounds,
 }
 
 fn away_from(c: &Creature, from: V2, dist: f32) -> V2 {
@@ -391,6 +407,10 @@ pub fn think(
             // Caught them unawares: the first blow is an ambush. Sharp eyes
             // earn this far more often than dull ones.
             let fresh = brain.target != Some(id) || now - brain.lost_at > 3.0;
+            let unseen = e.burrowed || e.camouflage > 0.3 || !line_of_sight(ctx.world, c.pos, e.pos);
+            if fresh && lo.echo > 0.0 && eff.ears_ok && unseen && e.pos.dist(c.pos) < lo.echo {
+                brain.pinged = true;
+            }
             if fresh && e.aware != Some(c.id) && !frenzy {
                 brain.surprise = true;
                 brain.surprise_until = now + 6.0;
@@ -548,6 +568,9 @@ pub fn think(
         let faster = lo.sight > 0.0 && (my_speed > t.speed * 1.1 || lo.leap > 0.0 || lo.fly);
         add(Tactic::Harass, if faster { 0.5 + lo.caution * 0.4 } else { 0.15 });
         let allies_alive = !allies.is_empty();
+        // Echolocators know where the enemy is without being seen: they
+        // come at it from the side or wait around the corner.
+        let echo = lo.echo > 0.0 && eff.ears_ok;
         add(
             Tactic::Flank,
             if allies_alive {
@@ -556,8 +579,12 @@ pub fn think(
                 0.35
             } else {
                 0.1
-            },
+            } + if echo { 0.35 } else { 0.0 },
         );
+        let hidden_from_us = !line_of_sight(ctx.world, c.pos, t.pos);
+        if echo && unseen_by_them && hidden_from_us && !frenzy && lo.camouflage <= 0.0 {
+            add(Tactic::Ambush, 0.85 + intel * 0.3);
+        }
         add(
             Tactic::Hold,
             0.25 + lo.armor * 1.2 + lo.spines * 0.8 - aggression * 0.3,
@@ -568,15 +595,22 @@ pub fn think(
         if lo.fly && eff.can_fly {
             add(Tactic::Dive, 0.6 + aggression * 0.3);
         }
-        if lo.dig && t.on_ground && !t.flying {
-            add(Tactic::Undermine, 0.6 + lo.camouflage * 0.3);
+        let tunnel = c.burrowed || soil_between(ctx.world, c.pos, t.pos + v2(0.0, 10.0));
+        if lo.dig && t.on_ground && !t.flying && tunnel && now > brain.dig_blocked_until {
+            // Coming up from below dodges spit and lands as an ambush.
+            add(
+                Tactic::Undermine,
+                1.0 + lo.camouflage * 0.3
+                    + if t.ranged { 0.4 } else { 0.0 }
+                    + if lo.tremor { 0.2 } else { 0.0 },
+            );
         }
     }
     if lo.spit.is_some() {
         let ranged_edge = if t.ranged { 0.5 } else { 0.9 };
         add(
             Tactic::Kite,
-            ranged_edge + lo.caution * 0.4 + if has_melee { 0.0 } else { 1.0 },
+            ranged_edge + lo.caution * 0.8 + if has_melee { 0.0 } else { 1.0 },
         );
     }
     if scores.is_empty() {
@@ -643,7 +677,14 @@ pub fn act(
                     let arrived = c.brain.spot.is_none_or(|sp| sp.dist(c.pos) < 10.0);
                     if arrived || c.brain.timer > 10.0 || c.brain.stuck >= 3.0 {
                         let lost_for = ctx.time - brain.lost_at;
-                        let instinct = ((lost_for - 8.0) / 30.0).clamp(0.0, 1.0);
+                        // Echolocators hear roughly where the enemy is and home
+                        // in far sooner.
+                        let (delay, ramp) = if lo.echo > 0.0 && eff.ears_ok {
+                            (1.0, 12.0)
+                        } else {
+                            (8.0, 30.0)
+                        };
+                        let instinct = ((lost_for - delay) / ramp).clamp(0.0, 1.0);
                         let toward = ctx.enemy_hint.unwrap_or(ctx.enemy_side);
                         let mut spot = search_spot(ctx.world, rng, c.pos, toward.x > c.pos.x, lo);
                         if let Some(h) = ctx.enemy_hint {
@@ -660,9 +701,9 @@ pub fn act(
                     c.brain.spot.unwrap()
                 }
             };
-            let mut it = intent(Some(goal), 0.85);
+            let mut it = intent(Some(goal), 1.0);
             it.fly = lo.fly && eff.can_fly;
-            it.dig = lo.dig && c.burrowed;
+            it.dig = lo.dig;
             it.sneak = lo.camouflage > 0.0 && brain.last_seen.is_some();
             it
         }
@@ -777,6 +818,23 @@ pub fn act(
             if lo.ink && d < 30.0 && c.ink_cd <= 0.0 {
                 brain.action = CombatAction::Ink;
             }
+            // Diggers vanish into the ground and lie low there.
+            if lo.dig {
+                let (x, y) = c.pos.cell();
+                let below = ctx.world.material(x, y + ctx.body.bottom as i32 + 2);
+                if c.burrowed || below.is_diggable() {
+                    brain.label = "burrowing to safety";
+                    let goal = if c.burrowed {
+                        away_from(c, from, 16.0) + v2(0.0, 6.0)
+                    } else {
+                        c.pos + v2(0.0, 14.0)
+                    };
+                    let mut it = intent(Some(goal), if c.burrowed { 0.6 } else { 1.2 });
+                    it.dig = true;
+                    it.direct = true;
+                    return it;
+                }
+            }
             // Break line of sight if we can.
             if c.brain
                 .spot
@@ -842,23 +900,34 @@ pub fn act(
 
 /// Out of a liquid or fire: the nearest dry, open spot to stand on.
 fn escape_hazard(c: &Creature, lo: &Loadout, eff: &Effects, ctx: &Ctx) -> Option<Intent> {
+    use crate::material::Kind;
     let world = ctx.world;
-    // The body centre and the feet: a shallow pool burns from below.
-    let feet = c.pos + v2(0.0, lo.size * 0.9);
-    let bad = |m: Material| {
-        m == Material::Lava
-            || m == Material::Acid
-            || (matches!(m.kind(), crate::material::Kind::Liquid) && !lo.swim)
-    };
-    let harmful = [c.pos, feet, feet - v2(0.0, 1.0)]
-        .iter()
-        .any(|p| bad(world.material(p.x as i32, p.y as i32)));
+    let b = &ctx.body;
+    // Acid and lava hurt unless the species is proofed against them;
+    // any other liquid is only trouble for a non-swimmer.
+    let bad = |m: Material| m.kind() == Kind::Liquid && (!ctx.sp.liquid_ok(m) || !lo.swim);
+    // The same points the environment damages, plus the soles of the feet:
+    // a shallow pool lapping at one side still burns.
+    let (hw, bottom, top) = (b.hw - 0.5, b.bottom - 0.5, b.top - 0.5);
+    let harmful = [
+        c.pos,
+        c.pos + v2(0.0, bottom),
+        c.pos - v2(0.0, top),
+        c.pos + v2(hw, 0.0),
+        c.pos - v2(hw, 0.0),
+        c.pos + v2(hw, bottom),
+        c.pos + v2(-hw, bottom),
+        c.pos + v2(0.0, bottom + 1.0),
+    ]
+    .iter()
+    .any(|p| bad(world.material(p.x as i32, p.y as i32)));
     let drowning = c.in_liquid && c.breath < 0.7 && !lo.swim;
 
     if !(harmful || drowning || c.status.burning > 0.0) {
         return None;
     }
     let (cx, cy) = c.pos.cell();
+    let reach = b.hw.ceil() as i32 + 1;
     let mut best: Option<(V2, i32)> = None;
     for dy in -70..=10 {
         for dx in -70..=70 {
@@ -869,10 +938,14 @@ fn escape_hazard(c: &Creature, lo: &Loadout, eff: &Effects, ctx: &Ctx) -> Option
             let dry = world.material(x, y) == Material::Empty
                 && world.material(x, y - 3) == Material::Empty
                 && world.material(x, y + 1).blocks_creature(lo.climb);
+            // Wide enough that no part of the body still hangs in the pool.
+            let clear = || {
+                (-reach..=reach).all(|k| !bad(world.material(x + k, y)) && !bad(world.material(x + k, y + 1)))
+            };
             if dry {
                 // Prefer up and out over sideways.
                 let d = dx * dx + dy * dy * if dy < 0 { 1 } else { 4 };
-                if best.is_none_or(|b| d < b.1) {
+                if best.is_none_or(|b| d < b.1) && clear() {
                     best = Some((v2(x as f32 + 0.5, y as f32 - 1.0), d));
                 }
             }
@@ -882,7 +955,20 @@ fn escape_hazard(c: &Creature, lo: &Loadout, eff: &Effects, ctx: &Ctx) -> Option
     let mut it = intent(Some(goal), 1.2);
     it.fly = lo.fly && eff.can_fly;
     it.direct = c.in_liquid;
+    it.escape = harmful;
     Some(it)
+}
+
+/// Whether a tunnel from `a` to `b` would run through soil for much of it.
+fn soil_between(world: &World, a: V2, b: V2) -> bool {
+    let n = (a.dist(b) / 3.0).ceil().max(1.0) as i32;
+    let soil = (0..=n)
+        .filter(|&k| {
+            let p = a.lerp(b, k as f32 / n as f32);
+            world.material(p.x as i32, p.y as i32).is_diggable()
+        })
+        .count();
+    soil * 3 >= n as usize
 }
 
 /// A random open spot across the arena this body can reach: on the ground
@@ -1056,6 +1142,12 @@ fn fight(
             false
         }
     };
+    // Closing the last stretch in a burst.
+    let dash_now = |brain: &mut CombatBrain, c: &Creature| {
+        if brain.action == CombatAction::None && c.on_ground && d > longest * 1.4 && d < 70.0 {
+            brain.action = CombatAction::Dash((t.pos - c.pos).norm());
+        }
+    };
     let leap_now = |brain: &mut CombatBrain, c: &Creature| {
         if lo.leap > 0.0
             && c.on_ground
@@ -1072,14 +1164,22 @@ fn fight(
     match brain.tactic {
         Tactic::Rush => {
             brain.label = "charging in";
-            let mut it = intent(Some(lead), 1.2);
+            let mut it = intent(Some(lead), 1.35);
             it.fly = can_fly && (t.flying || d > 20.0);
             it.dig = lo.dig && c.burrowed;
+            // A digger that can't find a way round goes through the wall.
+            if lo.dig && !it.fly && (c.brain.stuck >= 1.0 || c.burrowed) {
+                it.dig = true;
+                it.direct = true;
+            }
             let charging = lo.weapon(WeaponKind::Horn).is_some() && c.vel.len() > 25.0;
             if !melee_now(brain, charging) {
                 leap_now(brain, c);
                 if brain.action == CombatAction::None && d > longest * 1.5 {
                     spit_now(brain);
+                }
+                if !it.fly {
+                    dash_now(brain, c);
                 }
             }
             if in_range {
@@ -1092,13 +1192,16 @@ fn fight(
             // Stage 0: close in and strike; stage 1: back off for a moment.
             if brain.stage == 0 {
                 brain.label = "darting in";
-                let mut it = intent(Some(lead), 1.3);
+                let mut it = intent(Some(lead), 1.45);
                 it.fly = can_fly;
                 if melee_now(brain, false) {
                     brain.stage = 1;
                     brain.stage_t = 0.0;
                 } else {
                     leap_now(brain, c);
+                    if !it.fly {
+                        dash_now(brain, c);
+                    }
                 }
                 it
             } else {
@@ -1130,7 +1233,7 @@ fn fight(
                 -1.0
             };
             let behind = t.pos + v2(side * (longest * 0.8 + 6.0), -2.0);
-            let mut it = intent(Some(if d < longest * 1.6 { lead } else { behind }), 1.15);
+            let mut it = intent(Some(if d < longest * 1.6 { lead } else { behind }), 1.3);
             it.fly = can_fly;
             if !melee_now(brain, false) {
                 leap_now(brain, c);
@@ -1139,18 +1242,26 @@ fn fight(
         }
         Tactic::Kite => {
             brain.label = "keeping its distance";
-            let near = lo.spit_range * 0.4;
-            let far = lo.spit_range * 0.85;
-            let goal = if d < near {
-                away_from(c, t.pos, 30.0)
+            // The more cautious, the further back it spits from.
+            let near = lo.spit_range * (0.4 + 0.35 * lo.caution);
+            let far = lo.spit_range * (0.85 + 0.1 * lo.caution);
+            let backing = d < near;
+            let goal = if backing {
+                away_from(c, t.pos, 30.0 + 30.0 * lo.caution)
             } else if d > far || !line_of_sight(ctx.world, c.pos, t.pos) {
                 lead
             } else {
                 c.pos
             };
-            let mut it = intent(Some(goal), 1.0);
+            let mut it = intent(Some(goal), if backing { 1.2 + 0.2 * lo.caution } else { 1.0 });
             it.fly = can_fly;
-            if !spit_now(brain) && d < longest {
+            if (c.facing > 0.0) != (t.pos.x > c.pos.x) && !backing {
+                c.facing = (t.pos.x - c.pos.x).signum();
+            }
+            // Cornered or careless: bite back. A cautious spitter only does
+            // when there's nowhere left to back into.
+            let cornered = backing && c.brain.stuck > 1.0;
+            if !spit_now(brain) && d < longest && (lo.caution < 0.5 || cornered) {
                 melee_now(brain, false);
             }
             it
@@ -1203,25 +1314,45 @@ fn fight(
         Tactic::Undermine => {
             let under = t.pos + v2(0.0, 10.0);
             if brain.stage == 0 {
-                brain.label = "tunnelling underneath";
-                let mut it = intent(Some(under), 1.0);
+                // Dig in where we stand, then tunnel straight for the spot
+                // under its feet: underground, nothing sees us coming.
+                brain.label = if c.burrowed {
+                    "tunnelling underneath"
+                } else {
+                    "digging in"
+                };
+                let mut it = intent(Some(under), 1.2);
                 it.dig = true;
-                it.sneak = true;
-                if under.dist(c.pos) < 9.0 || (c.burrowed && d < 12.0) {
+                it.direct = true;
+                if under.dist(c.pos) < 12.0 || d < 16.0 {
+                    brain.stage = 1;
+                    brain.stage_t = 0.0;
+                    brain.burst = c.burrowed;
+                    brain.surprise = c.burrowed && t.aware != Some(c.id);
+                    brain.surprise_until = ctx.time + 2.0;
+                } else if !c.burrowed && brain.stage_t > 4.0 {
+                    // Rock underfoot: go in over the top instead.
+                    brain.dig_blocked_until = ctx.time + 12.0;
+                    brain.set_tactic(Tactic::Rush, ctx.time);
+                } else if brain.stage_t > 10.0 {
                     brain.stage = 1;
                     brain.stage_t = 0.0;
                 }
                 it
             } else {
                 brain.label = "bursting out";
-                let mut it = intent(Some(t.pos), 1.4);
+                let mut it = intent(Some(t.pos), 1.5);
                 it.dig = true;
-                if brain.action == CombatAction::None && c.leap_cd <= 0.0 && brain.stage_t < 0.3 {
-                    brain.action = CombatAction::Leap((t.pos - c.pos).norm() + v2(0.0, -0.3));
+                it.direct = d < 20.0;
+                if brain.action == CombatAction::None && c.leap_cd <= 0.0 && brain.stage_t < 0.4 {
+                    brain.action = CombatAction::Leap(((t.pos - c.pos).norm() + v2(0.0, -0.5)).norm());
                 }
-                melee_now(brain, false);
-                if brain.stage_t > 2.0 {
+                if !melee_now(brain, false) && brain.stage_t > 0.4 {
+                    dash_now(brain, c);
+                }
+                if brain.stage_t > 2.5 {
                     brain.stage = 0;
+                    brain.stage_t = 0.0;
                 }
                 it
             }

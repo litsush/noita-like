@@ -52,7 +52,31 @@ pub struct Callout {
     pub max_life: f32,
     pub colour: Rgb,
     pub big: bool,
+    /// Text size relative to an ordinary callout.
+    pub scale: f32,
 }
+
+/// A splash of blood left on the ground.
+#[derive(Clone, Copy, Debug)]
+pub struct Stain {
+    pub pos: V2,
+    pub colour: Rgb,
+    pub r: f32,
+    pub life: f32,
+}
+
+/// The moment a creature fell, for the marker drawn over its body.
+#[derive(Clone, Copy, Debug)]
+pub struct Death {
+    pub id: u32,
+    pub team: usize,
+    pub pos: V2,
+    /// Real seconds since it fell.
+    pub age: f32,
+}
+
+/// Blood stains kept at once.
+const MAX_STAINS: usize = 500;
 
 /// A sound the watcher should play: its name and a volume.
 pub type SoundCue = (&'static str, f32);
@@ -97,6 +121,10 @@ pub struct Mirror {
     trails: Vec<Trail>,
     pub extras: Vec<(Prim, Rgb, bool)>,
     pub callouts: Vec<Callout>,
+    pub stains: Vec<Stain>,
+    pub deaths: Vec<Death>,
+    /// Per creature, seconds since it was last hit (for flashing health bars).
+    pub hit_age: Vec<f32>,
     pub sounds: Vec<SoundCue>,
     pub time: f32,
     pub clock: f32,
@@ -107,6 +135,10 @@ pub struct Mirror {
     pub flash: f32,
     pub focus: Option<(V2, f32)>,
     pub finished: bool,
+    /// Set when the round ends: the winning team, or `None` for a draw.
+    pub winner: Option<Option<u8>>,
+    /// Real seconds since the round ended.
+    pub over_t: f32,
     fresh: bool,
     rng: Rng,
     nav_timer: f32,
@@ -158,6 +190,9 @@ impl Mirror {
             trails: Vec::new(),
             extras: Vec::new(),
             callouts: Vec::new(),
+            stains: Vec::new(),
+            deaths: Vec::new(),
+            hit_age: Vec::new(),
             sounds: Vec::new(),
             time: 0.0,
             clock: 0.0,
@@ -167,6 +202,8 @@ impl Mirror {
             flash: 0.0,
             focus: None,
             finished: false,
+            winner: None,
+            over_t: 0.0,
             fresh: true,
             rng: Rng::new(seed ^ 0x717),
             nav_timer: 0.0,
@@ -218,6 +255,7 @@ impl Mirror {
                     self.tactics.push(Tactic::Search);
                     self.energy.push(1.0);
                     self.stamina.push(1.0);
+                    self.hit_age.push(99.0);
                     self.targets.push((v2(n.x, n.y), V2::ZERO));
                     self.creatures.len() - 1
                 }
@@ -344,21 +382,41 @@ impl Mirror {
             } => {
                 let at = v2(*x, *y);
                 let colour = self.blood_of(*victim);
-                let n = (*damage / 2.0).clamp(3.0, 12.0) as usize;
+                let n = (*damage * 0.9).clamp(6.0, 26.0) as usize;
                 let dir = v2(*dx, *dy);
+                if let Some(i) = self.creature_index(*victim) {
+                    self.hit_age[i] = 0.0;
+                    // Flinch away from the blow.
+                    self.creatures[i].anim.hurt = self.creatures[i].anim.hurt.max(0.25);
+                    self.creatures[i].pos += dir.norm() * (*damage * 0.12).clamp(0.4, 2.5);
+                }
                 if *blocked {
-                    self.spark(at, 5, [255, 240, 200]);
-                    self.callout("blocked", Some(at), [220, 220, 230], false, 0.7);
+                    self.spark(at, 8, [255, 240, 200]);
+                    self.callout_sized("BLOCKED", Some(at), [210, 220, 240], 0.8, 0.9);
                     self.sound("blocked", 0.7);
                 } else {
-                    self.burst(at, dir, n, colour, 0.6);
+                    self.burst(at, dir, n, colour, 0.8);
+                    self.spray(at, dir, n / 2, colour);
+                    if *heavy {
+                        self.shake = self.shake.max(0.3);
+                    }
                     self.sound(if *heavy { "hit_heavy" } else { "hit" }, 0.8);
                 }
                 if *surprise {
-                    self.callout("AMBUSH", Some(at), [255, 230, 120], false, 1.1);
+                    self.callout_sized("AMBUSH!", Some(at - v2(0.0, 6.0)), [255, 230, 120], 1.1, 1.4);
                     self.sound("surprise", 0.9);
-                } else if *heavy {
-                    self.callout(&format!("{:.0}", damage), Some(at), [255, 230, 120], false, 0.9);
+                }
+                if !*blocked && *damage >= 1.0 {
+                    // Bigger, hotter numbers for bigger hits.
+                    let heat = (*damage / 25.0).clamp(0.0, 1.0);
+                    let col = mix([255, 240, 200], [255, 60, 40], heat);
+                    let text = if *heavy {
+                        format!("{:.0}!", damage)
+                    } else {
+                        format!("{:.0}", damage)
+                    };
+                    let size = if *heavy { 1.5 } else { 1.0 + heat * 0.4 };
+                    self.callout_sized(&text, Some(at), col, 0.9, size);
                 }
             }
             FightEvent::Clip { x, y } => {
@@ -373,7 +431,7 @@ impl Mirror {
             FightEvent::Clash { x, y } => {
                 let at = v2(*x, *y);
                 self.spark(at, 14, [255, 250, 220]);
-                self.callout("clash", Some(at), [255, 240, 200], false, 0.9);
+                self.callout_sized("CLASH", Some(at), [255, 240, 200], 0.9, 1.2);
                 self.sound("clash", 0.8);
             }
             FightEvent::Sever {
@@ -391,9 +449,17 @@ impl Mirror {
                         *ok = false;
                     }
                     let colour = self.blood_of(*victim);
-                    self.burst(at, v2(0.0, -1.0), 10, colour, 0.8);
+                    self.burst(at, v2(0.0, -1.0), 22, colour, 1.0);
+                    self.spray(at, v2(0.0, -1.0), 14, colour);
+                    self.shake = self.shake.max(0.35);
                 }
-                self.callout(&format!("{name} torn off"), Some(at), [255, 160, 140], false, 1.0);
+                self.callout_sized(
+                    &format!("{} TORN OFF", name.to_uppercase()),
+                    Some(at),
+                    [255, 140, 120],
+                    1.4,
+                    1.35,
+                );
                 self.sound("sever", 0.7);
             }
             FightEvent::Kill {
@@ -406,6 +472,28 @@ impl Mirror {
             } => {
                 let at = v2(*x, *y);
                 let colour = self.blood_of(*victim);
+                if let Some(i) = self.creature_index(*victim) {
+                    self.deaths.push(Death {
+                        id: *victim,
+                        team: self.creatures[i].species,
+                        pos: at,
+                        age: 0.0,
+                    });
+                    self.hit_age[i] = 0.0;
+                }
+                // The spirit leaves: pale motes drifting up.
+                for _ in 0..14 {
+                    self.particles.push(Particle {
+                        pos: at + v2(self.rng.range(-3.0, 3.0), self.rng.range(-3.0, 3.0)),
+                        vel: v2(self.rng.range(-8.0, 8.0), self.rng.range(-40.0, -15.0)),
+                        life: 1.4,
+                        max_life: 1.4,
+                        color: [235, 235, 255],
+                        glow: true,
+                        gravity: -20.0,
+                    });
+                }
+                self.spray(at, v2(0.0, -1.0), 24, colour);
                 if *last {
                     // The one moment that gets the works.
                     self.burst(at, v2(0.0, -1.0), 36, colour, 1.3);
@@ -416,14 +504,15 @@ impl Mirror {
                     self.sound("finish", 1.0);
                     self.finished = true;
                 } else {
-                    self.burst(at, v2(0.0, -1.0), 14, colour, 0.9);
-                    let text = if cause.starts_with("felled") {
-                        "down".to_string()
-                    } else {
-                        cause.clone()
-                    };
-                    self.callout(&text, Some(at), [255, 150, 120], false, 1.2);
-                    self.sound("down", 0.8);
+                    self.burst(at, v2(0.0, -1.0), 30, colour, 1.1);
+                    self.shake = self.shake.max(0.55);
+                    self.flash = self.flash.max(0.15);
+                    self.callout_sized("KILLED", Some(at - v2(0.0, 8.0)), [255, 70, 60], 2.0, 2.0);
+                    if !cause.starts_with("felled") {
+                        let cause = cause.clone();
+                        self.callout_sized(&cause, Some(at + v2(0.0, 4.0)), [255, 170, 140], 1.8, 1.0);
+                    }
+                    self.sound("down", 0.9);
                 }
             }
             FightEvent::Slam { x, y, damage } => {
@@ -431,7 +520,7 @@ impl Mirror {
                 self.spark(at, 6, [230, 220, 200]);
                 self.burst(at, v2(0.0, -1.0), 6, [120, 100, 80], 0.5);
                 if *damage > 8.0 {
-                    self.callout("slam", Some(at), [255, 230, 160], false, 0.8);
+                    self.callout_sized("SLAM", Some(at), [255, 230, 160], 0.9, 1.3);
                 }
                 self.sound("slam", 0.7);
             }
@@ -439,7 +528,7 @@ impl Mirror {
                 self.sound("spit", 0.5);
             }
             FightEvent::Grab { x, y } => {
-                self.callout("grabbed", Some(v2(*x, *y)), [220, 200, 255], false, 0.9);
+                self.callout_sized("GRABBED", Some(v2(*x, *y)), [220, 200, 255], 0.9, 1.1);
                 self.sound("grab", 0.6);
             }
             FightEvent::Ink { x, y } => {
@@ -449,7 +538,7 @@ impl Mirror {
             FightEvent::Poisoned { victim } => {
                 if let Some(i) = self.creature_index(*victim) {
                     let p = self.creatures[i].pos;
-                    self.callout("poisoned", Some(p), [150, 230, 100], false, 0.9);
+                    self.callout_sized("POISONED", Some(p), [150, 230, 100], 1.0, 1.1);
                     self.sound("poison", 0.5);
                 }
             }
@@ -478,11 +567,39 @@ impl Mirror {
                     self.sound("starving", 0.6);
                 }
             }
+            FightEvent::Echo { x, y } => {
+                // A ring of sound rolling outwards.
+                let at = v2(*x, *y);
+                for k in 0..32 {
+                    let a = k as f32 / 32.0 * std::f32::consts::TAU;
+                    self.particles.push(Particle {
+                        pos: at,
+                        vel: V2::from_angle(a) * 95.0,
+                        life: 0.7,
+                        max_life: 0.7,
+                        color: [140, 220, 255],
+                        glow: true,
+                        gravity: 0.0,
+                    });
+                }
+                self.callout_sized("PING", Some(at - v2(0.0, 6.0)), [140, 220, 255], 0.9, 1.1);
+                self.sound("surprise", 0.4);
+            }
+            FightEvent::Burst { x, y } => {
+                let at = v2(*x, *y);
+                self.burst(at, v2(0.0, -1.0), 24, [140, 110, 80], 0.9);
+                self.shake = self.shake.max(0.4);
+                self.callout_sized("FROM BELOW!", Some(at - v2(0.0, 6.0)), [255, 200, 120], 1.2, 1.4);
+                self.sound("slam", 0.8);
+            }
             FightEvent::Frenzy => {
                 self.callout("FRENZY", None, [255, 200, 60], true, 2.0);
                 self.sound("frenzy", 0.9);
             }
-            FightEvent::RoundOver { .. } => {}
+            FightEvent::RoundOver { winner } => {
+                self.winner = Some(*winner);
+                self.over_t = 0.0;
+            }
         }
     }
 
@@ -496,6 +613,14 @@ impl Mirror {
     }
 
     fn callout(&mut self, text: &str, pos: Option<V2>, colour: Rgb, big: bool, life: f32) {
+        self.push_callout(text, pos, colour, big, life, 1.0);
+    }
+
+    fn callout_sized(&mut self, text: &str, pos: Option<V2>, colour: Rgb, life: f32, scale: f32) {
+        self.push_callout(text, pos, colour, false, life, scale);
+    }
+
+    fn push_callout(&mut self, text: &str, pos: Option<V2>, colour: Rgb, big: bool, life: f32, scale: f32) {
         if big && self.callouts.iter().any(|c| c.big && c.text == text) {
             return;
         }
@@ -509,6 +634,7 @@ impl Mirror {
             c.life = life;
             c.max_life = life;
             c.pos = Some(p);
+            c.scale = c.scale.max(scale);
             return;
         }
         self.callouts.push(Callout {
@@ -518,7 +644,11 @@ impl Mirror {
             max_life: life,
             colour,
             big,
+            scale,
         });
+        if self.callouts.len() > 40 {
+            self.callouts.remove(0);
+        }
     }
 
     fn burst(&mut self, at: V2, dir: V2, n: usize, colour: Rgb, life: f32) {
@@ -533,6 +663,23 @@ impl Mirror {
                 color: colour,
                 glow: false,
                 gravity: 220.0,
+            });
+        }
+    }
+
+    /// Heavy droplets that fly further and stain where they land.
+    fn spray(&mut self, at: V2, dir: V2, n: usize, colour: Rgb) {
+        for _ in 0..n {
+            let spread = v2(self.rng.range(-1.0, 1.0), self.rng.range(-1.2, 0.4));
+            let v = (dir * 1.2 + spread).norm() * self.rng.range(40.0, 110.0);
+            self.particles.push(Particle {
+                pos: at,
+                vel: v,
+                life: 1.6,
+                max_life: 1.6,
+                color: scale(colour, 0.85),
+                glow: false,
+                gravity: 260.0,
             });
         }
     }
@@ -628,6 +775,31 @@ impl Mirror {
         for p in self.plants.iter_mut() {
             p.bitten = (p.bitten - dt).max(0.0);
         }
+        // The badly hurt bleed as they move.
+        for i in 0..self.creatures.len() {
+            self.hit_age[i] += real_dt;
+            let c = &self.creatures[i];
+            let h = self.health[i];
+            if c.alive() && h < 0.6 && self.rng.range(0.0, 1.0) < ((0.6 - h) * 14.0 * dt).min(1.0) {
+                let at = c.pos + v2(self.rng.range(-2.0, 2.0), self.rng.range(-1.0, 2.0));
+                let colour = self.blood_of(c.id);
+                self.particles.push(Particle {
+                    pos: at,
+                    vel: v2(self.rng.range(-6.0, 6.0), self.rng.range(-4.0, 6.0)),
+                    life: 1.2,
+                    max_life: 1.2,
+                    color: scale(colour, 0.85),
+                    glow: false,
+                    gravity: 260.0,
+                });
+            }
+        }
+        for d in self.deaths.iter_mut() {
+            d.age += real_dt;
+            if let Some(c) = self.creatures.iter().find(|c| c.id == d.id) {
+                d.pos = c.pos;
+            }
+        }
         // Particles and gibs.
         for p in self.particles.iter_mut() {
             p.vel.y += p.gravity * dt;
@@ -635,6 +807,32 @@ impl Mirror {
             p.life -= dt;
         }
         let world = &self.world;
+        // Blood that hits the ground leaves a mark.
+        for p in &self.particles {
+            if p.glow || p.gravity < 200.0 || !world.in_bounds(p.pos.x as i32, p.pos.y as i32) {
+                continue;
+            }
+            if world
+                .material(p.pos.x as i32, p.pos.y as i32)
+                .is_solid_for_player()
+            {
+                let r = if p.gravity > 250.0 { 1.3 } else { 0.8 };
+                self.stains.push(Stain {
+                    pos: p.pos - p.vel.norm() * 0.8,
+                    colour: scale(p.color, 0.8),
+                    r,
+                    life: 40.0,
+                });
+            }
+        }
+        if self.stains.len() > MAX_STAINS {
+            let n = self.stains.len() - MAX_STAINS;
+            self.stains.drain(..n);
+        }
+        for st in self.stains.iter_mut() {
+            st.life -= real_dt;
+        }
+        self.stains.retain(|s| s.life > 0.0);
         self.particles.retain(|p| {
             p.life > 0.0
                 && world.in_bounds(p.pos.x as i32, p.pos.y as i32)
@@ -677,6 +875,7 @@ impl Mirror {
             }
         }
         self.callouts.retain(|c| c.life > 0.0);
+        self.over_t += real_dt;
         self.shake = (self.shake - real_dt * 2.2).max(0.0);
         self.flash = (self.flash - real_dt * 2.5).max(0.0);
         if let Some((_, t)) = &mut self.focus {
@@ -686,8 +885,21 @@ impl Mirror {
             }
         }
         self.time += dt;
-        // Extras: gibs as primitives.
+        // Extras: stains and gibs as primitives.
         self.extras.clear();
+        for st in &self.stains {
+            let fade = (st.life / 8.0).clamp(0.0, 1.0);
+            let col = scale(st.colour, 0.55 + 0.45 * fade);
+            self.extras.push((
+                Prim::Dot {
+                    p: st.pos,
+                    r: st.r,
+                    paint: Paint::Fixed(col),
+                },
+                col,
+                false,
+            ));
+        }
         for gib in &self.gibs {
             let fade = (gib.life / 3.0).clamp(0.0, 1.0);
             let col = scale(gib.colour, 0.5 + 0.5 * fade);

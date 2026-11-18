@@ -113,6 +113,9 @@ pub struct Versus {
     pub auto_ready: bool,
     /// Sounds to play, drained by the audio system.
     pub sounds: Vec<SoundCue>,
+    /// Players who want the fight at double speed, and whether all do.
+    pub fast_votes: Vec<PeerId>,
+    pub fast: bool,
     snapshot_acc: f32,
     chunk_timer: f32,
     keepalive_timer: f32,
@@ -158,6 +161,8 @@ impl Versus {
             seed_override: None,
             auto_ready: false,
             sounds: Vec::new(),
+            fast_votes: Vec::new(),
+            fast: false,
             snapshot_acc: 0.0,
             chunk_timer: 0.0,
             keepalive_timer: 0.0,
@@ -304,6 +309,70 @@ impl Versus {
         }
     }
 
+    /// Whether the local player has asked for double speed.
+    pub fn wants_fast(&self) -> bool {
+        self.fast_votes.contains(&self.local_id)
+    }
+
+    /// Players whose say counts for the speed vote: everyone fighting
+    /// who isn't the practice AI (it always agrees).
+    pub fn speed_voters(&self) -> usize {
+        self.slots.iter().filter(|s| !s.spectator && !s.ai).count()
+    }
+
+    /// Flips the local player's double-speed vote.
+    pub fn toggle_fast(&mut self) {
+        let want = !self.wants_fast();
+        let me = self.local_id;
+        if self.is_authority() {
+            self.vote_fast(me, want);
+        } else if let Role::Client { host } = self.role {
+            // Show our own vote straight away; the host confirms.
+            self.fast_votes.retain(|&p| p != me);
+            if want {
+                self.fast_votes.push(me);
+            }
+            self.send(
+                host,
+                Delivery::Reliable,
+                &protocol::encode(&VersusClientMsg::FastVote(want)),
+            );
+        }
+    }
+
+    /// Host: records a vote and switches speed once every player agrees.
+    fn vote_fast(&mut self, who: PeerId, want: bool) {
+        self.fast_votes.retain(|&p| p != who);
+        if want {
+            self.fast_votes.push(who);
+        }
+        self.update_speed();
+    }
+
+    /// Host: drops votes from people who left and tells everyone.
+    fn update_speed(&mut self) {
+        let voters: Vec<PeerId> = self
+            .slots
+            .iter()
+            .filter(|s| !s.spectator && !s.ai)
+            .map(|s| s.id)
+            .collect();
+        self.fast_votes.retain(|p| voters.contains(p));
+        let fast = !voters.is_empty() && voters.iter().all(|p| self.fast_votes.contains(p));
+        if fast != self.fast {
+            self.sound(if fast { "ready" } else { "ui_click" }, 0.7);
+        }
+        self.fast = fast;
+        if let Some(a) = &mut self.arena {
+            a.speed = if fast { 2.0 } else { 1.0 };
+        }
+        let msg = VersusHostMsg::Speed {
+            votes: self.fast_votes.clone(),
+            fast,
+        };
+        self.broadcast(&msg, Delivery::Reliable, None);
+    }
+
     /// Spends whatever points are left at random.
     pub fn auto_fill(&mut self) {
         let total = self.points;
@@ -312,6 +381,8 @@ impl Versus {
         let mut d = Design::random(&mut self.rng, spend, base.as_ref());
         d.name = self.design.name.clone();
         d.look_seed = self.design.look_seed;
+        d.colour = self.design.colour;
+        d.morph = self.design.morph;
         self.design = d;
     }
 
@@ -392,7 +463,8 @@ impl Versus {
             .seed_override
             .unwrap_or_else(|| self.rng.next_u64() % 1_000_000);
         let designs: Vec<(String, Design)> = teams.iter().map(|(_, n, d)| (n.clone(), d.clone())).collect();
-        let arena = Arena::new(seed, &designs);
+        let mut arena = Arena::new(seed, &designs);
+        arena.speed = if self.fast { 2.0 } else { 1.0 };
         let seed = arena.seed;
         info!("Round {} in {} (seed {seed})", self.round, arena.biome.name);
         self.record_evolutions(&teams);
@@ -545,6 +617,8 @@ impl Versus {
         self.ready = false;
         self.previous.clear();
         self.evolutions.clear();
+        self.fast_votes.clear();
+        self.fast = false;
         if self.is_authority() {
             for s in self.slots.iter_mut() {
                 s.wins = 0;
@@ -673,6 +747,7 @@ impl Versus {
                     self.send(from, Delivery::Reliable, &bytes);
                 }
                 self.send_roster();
+                self.update_speed();
                 self.sound("join", 0.7);
             }
             _ if !self.slots.iter().any(|s| s.id == from) => {}
@@ -695,6 +770,7 @@ impl Versus {
                 }
                 self.send_roster();
             }
+            VersusClientMsg::FastVote(want) => self.vote_fast(from, want),
         }
     }
 
@@ -727,6 +803,13 @@ impl Versus {
                 self.settings = settings;
             }
             VersusHostMsg::Ping => {}
+            VersusHostMsg::Speed { votes, fast } => {
+                if fast != self.fast {
+                    self.sound(if fast { "ready" } else { "ui_click" }, 0.7);
+                }
+                self.fast_votes = votes;
+                self.fast = fast;
+            }
             VersusHostMsg::Roster(list) => {
                 self.slots = list
                     .into_iter()
@@ -938,6 +1021,7 @@ pub fn receive(mut versus: ResMut<Versus>, time: Res<Time>, mut commands: Comman
                     }
                     versus.broadcast(&VersusHostMsg::PlayerLeft { id }, Delivery::Reliable, None);
                     versus.send_roster();
+                    versus.update_speed();
                 }
             }
             (Role::Client { .. }, NetEvent::Message(_, bytes)) => {

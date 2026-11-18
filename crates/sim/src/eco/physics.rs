@@ -114,6 +114,16 @@ fn box_has_soil(world: &World, p: V2, b: &Bounds, margin: i32) -> bool {
     (y0..=y1).any(|y| (x0..=x1).any(|x| world.material(x, y).is_diggable()))
 }
 
+/// Soil both just over the head and just under the feet.
+fn in_tunnel(world: &World, p: V2, b: &Bounds) -> bool {
+    let x0 = (p.x - b.hw).floor() as i32;
+    let x1 = (p.x + b.hw - 0.01).floor() as i32;
+    let above = (p.y - b.top).floor() as i32 - 1;
+    let below = (p.y + b.bottom - 0.01).floor() as i32 + 1;
+    let row = |y: i32| (x0..=x1).any(|x| world.material(x, y).is_diggable());
+    row(above) && row(below)
+}
+
 pub fn mode_of(c: &Creature, sp: &Species, world: &World, cmd: &MoveCmd) -> Mode {
     let b = bounds(c, sp);
     let centre = world.material(c.pos.x as i32, c.pos.y as i32);
@@ -179,7 +189,9 @@ pub fn integrate(
             c.vel.y = approach(c.vel.y, target.y * 0.85, accel * dt);
         }
         Mode::Burrow => {
-            let inside = box_has_soil(world, c.pos, &b, 0);
+            // In soil, or in a tunnel of our own with soil overhead and
+            // underfoot (digging clears the body's own box every tick).
+            let inside = box_has_soil(world, c.pos, &b, 0) || in_tunnel(world, c.pos, &b);
             c.vel.x = approach(c.vel.x, target.x * 0.6, accel * dt);
             if inside {
                 c.vel.y = approach(c.vel.y, target.y * 0.6, accel * dt);
@@ -296,7 +308,8 @@ pub fn integrate(
         c.anim.surface = c.anim.surface.lerp(v2(0.0, 1.0), 0.1).norm();
     }
     c.flying = mode == Mode::Fly;
-    c.burrowed = digging && box_has_soil(world, c.pos, &b, 0);
+    // Digging clears the body's own box, so count the soil hugging it.
+    c.burrowed = digging && box_has_soil(world, c.pos, &b, 1);
     c.in_liquid = world.material(c.pos.x as i32, c.pos.y as i32).kind() == Kind::Liquid;
 
     let (w, h) = (world.width() as f32, world.height() as f32);

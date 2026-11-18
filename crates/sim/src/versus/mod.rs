@@ -43,7 +43,7 @@ pub const NO_HIT_FRENZY: f32 = 60.0;
 pub const STANDOFF_SECS: f32 = 40.0;
 
 /// Rounds in a match unless the host picks otherwise.
-pub const DEFAULT_ROUNDS: u8 = 3;
+pub const DEFAULT_ROUNDS: u8 = 5;
 /// Snapshots per simulated second.
 pub const SNAPSHOT_HZ: f32 = 20.0;
 /// Resolution of strike timings on the wire, in seconds.
@@ -94,6 +94,8 @@ pub struct Fighter {
     pub stagger: f32,
     pub grab_t: f32,
     pub slam_cd: f32,
+    /// Until the next burst of speed.
+    pub dash_cd: f32,
     pub charging: bool,
     pub dealt: f32,
     pub taken: f32,
@@ -183,6 +185,16 @@ pub enum FightEvent {
     },
     Starving {
         victim: u32,
+    },
+    /// An echolocator's ping found something.
+    Echo {
+        x: f32,
+        y: f32,
+    },
+    /// A digger broke out of the ground.
+    Burst {
+        x: f32,
+        y: f32,
     },
     Frenzy,
     RoundOver {
@@ -283,6 +295,8 @@ pub struct Arena {
     pub tick: u64,
     pub clock: f32,
     pub time_scale: f32,
+    /// Fast-forward everyone agreed to (1 or 2). Slow motion ignores it.
+    pub speed: f32,
     pub frenzy: bool,
     pub result: Option<RoundResult>,
     /// Seconds of slow motion left and of frozen frame left.
@@ -397,6 +411,7 @@ impl Arena {
             tick: 0,
             clock: 0.0,
             time_scale: 1.0,
+            speed: 1.0,
             frenzy: false,
             result: None,
             slowmo: 0.0,
@@ -440,6 +455,7 @@ impl Arena {
                     stagger: 0.0,
                     grab_t: 0.0,
                     slam_cd: 0.0,
+                    dash_cd: 0.0,
                     charging: false,
                     dealt: 0.0,
                     taken: 0.0,
@@ -562,9 +578,9 @@ impl Arena {
             self.slowmo -= real_dt;
             0.2
         } else if self.over() {
-            0.5
+            0.5 * self.speed
         } else {
-            1.0
+            self.speed
         };
         self.acc += real_dt * self.time_scale;
         let mut n = 0;
@@ -800,6 +816,8 @@ impl Arena {
                 centre,
                 enemy_hint,
                 food: &food,
+                sp,
+                body: physics::bounds(&f.c, sp),
             };
             f.brain.think -= DT;
             if f.brain.think <= 0.0 && !over {
@@ -882,7 +900,7 @@ impl Arena {
                 cmd.dir = v2(toward, 0.3).norm();
             }
             // Never move straight into a pool (or tunnel into one) that would kill us.
-            if cmd.dir.len() > 0.1 && !cmd.fly {
+            if cmd.dir.len() > 0.1 && !cmd.fly && !it.escape {
                 let b = physics::bounds(&f.c, sp);
                 let probe = f.c.pos + cmd.dir.norm() * (b.hw.max(b.bottom) + 2.5);
                 let feet_x = (f.c.pos.x + cmd.dir.x.signum() * (b.hw + 2.0)) as i32;
@@ -1063,8 +1081,11 @@ impl Arena {
                                         }
                                     }
                                     _ => {
+                                        // Echolocation places a blow precisely, even in the dark.
+                                        let precise =
+                                            lo.intelligence.max(if lo.echo > 0.0 { 0.6 } else { 0.0 });
                                         let jitter = v2(rng.range(-1.0, 1.0), rng.range(-1.0, 1.0))
-                                            * (t.size * (1.0 - lo.intelligence) * 0.6);
+                                            * (t.size * (1.0 - precise) * 0.6);
                                         let all: Vec<&(V2, u8, f32, u8)> = t.parts.iter().collect();
                                         let (p, part) = nearest(&all).unwrap_or((t.pos, None));
                                         (p + jitter, part)
@@ -1125,6 +1146,16 @@ impl Arena {
                         f.c.burrowed = false;
                     }
                 }
+                CombatAction::Dash(dir) => {
+                    if f.dash_cd <= 0.0 && f.c.on_ground && f.strike.is_none() && f.c.status.stun <= 0.0 {
+                        f.dash_cd = 3.2 - lo.aggression * 0.8;
+                        let burst = sp.stats.speed * eff.speed * 1.45;
+                        f.c.vel.x = dir.x.signum() * burst;
+                        f.c.vel.y = f.c.vel.y.min(-sp.stats.jump * 0.22);
+                        f.c.on_ground = false;
+                        dust.push((f.c.pos + v2(0.0, 2.0), [150, 130, 100]));
+                    }
+                }
                 CombatAction::Ink => {
                     if f.c.ink_cd <= 0.0 {
                         f.c.ink_cd = 12.0;
@@ -1138,6 +1169,20 @@ impl Arena {
                         pending.push(Pending::Eat { attacker: fi, id });
                     }
                 }
+            }
+            if f.brain.pinged {
+                f.brain.pinged = false;
+                self.events.push(FightEvent::Echo {
+                    x: f.c.pos.x,
+                    y: f.c.pos.y,
+                });
+            }
+            if f.brain.burst {
+                f.brain.burst = false;
+                self.events.push(FightEvent::Burst {
+                    x: f.c.pos.x,
+                    y: f.c.pos.y,
+                });
             }
             // Strikes in progress.
             if let Some(mut st) = f.strike {
@@ -1171,6 +1216,11 @@ impl Arena {
                 if st.t >= st.windup + st.dur {
                     f.strike = None;
                     f.c.anim.reach = None;
+                    // Spring back off the blow, ready for the next one.
+                    if f.c.on_ground && f.c.status.grabbed_by.is_none() && st.weapon != WeaponKind::Horn {
+                        let back = (f.c.pos - st.aim).norm();
+                        f.c.vel += v2(back.x * 14.0, -10.0);
+                    }
                 } else {
                     f.strike = Some(st);
                 }
@@ -1541,8 +1591,8 @@ impl Arena {
         if let Some(id) = from_id {
             t.c.last_hit_by = Some(id);
         }
-        let kb = dir * (knockback * actual * (amass / tmass).sqrt() * 0.9).min(95.0);
-        t.c.vel += kb + v2(0.0, -kb.len() * 0.25);
+        let kb = dir * (knockback * actual * (amass / tmass).sqrt() * 1.3).min(120.0);
+        t.c.vel += kb + v2(0.0, -kb.len() * 0.35);
         if venom {
             let dose = if ranged { 4.0 } else { 6.0 };
             t.c.status.poison = t.c.status.poison.max(dose);
@@ -2223,6 +2273,7 @@ fn update_timers(f: &mut Fighter, lo: &Loadout, sp: &Species, rng: &mut Rng) {
     f.stagger = (f.stagger - DT).max(0.0);
     f.grab_t = (f.grab_t - DT).max(0.0);
     f.slam_cd = (f.slam_cd - DT).max(0.0);
+    f.dash_cd = (f.dash_cd - DT).max(0.0);
     c.status.stun = (c.status.stun - DT).max(0.0);
     c.hurt_timer = (c.hurt_timer - DT).max(0.0);
     c.leap_cd -= DT;

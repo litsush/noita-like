@@ -9,7 +9,7 @@ species are dropped into a generated arena, and they fight on their own while
 everyone watches. Rounds end on a wipe, the clock, or a stand-off; the host
 picks how many rounds a match has and the most wins takes it. After every
 round everyone gets more points to evolve: upgrades can be added, never
-removed.
+removed, except legs and eyes, which are a body plan and can be reshaped.
 
 Fights are also about energy. Everything burns it (hunting gear, size and
 aggression quickly; grazing, camouflage and caution slowly), carnivores
@@ -86,6 +86,33 @@ with no weapons can still win by hiding, foraging and outlasting.
   and spitters beat grazers, brutes beat packs, grazers outlast brutes)
   intact.
 
+## Trait ideas to consider
+
+Ten possible upgrades, each meant to open a play style the current sheet
+doesn't have.
+
+1. **Mimicry**: copies the colour and outline of the enemy species. Enemies
+   hesitate before attacking it, and allies of the mimic are harder to pick
+   out of a crowd.
+2. **Shedding skin**: once per round, a hit that would take off a limb or
+   kill strips a husk instead. The husk stays behind as a decoy.
+3. **Bioluminescent lure**: a glowing bulb on a stalk. In the dark, enemies
+   with eyes drift towards it, straight into an ambush.
+4. **Electric organ**: a short-range shock that stuns everything touching
+   the body, stronger in water. Clinging and grappling enemies get thrown off.
+5. **Gliding membranes**: no powered flight, but falls become long glides.
+   Cheap mobility for tall arenas that doesn't cost stamina.
+6. **Hive brood**: drops eggs that hatch into tiny weak copies partway
+   through the round. Gives the Numbers group a growth option.
+7. **Bone-crushing jaws**: slow bites that ignore armour on a hit to a
+   limb and always cripple it. A counter to shells.
+8. **Hibernation**: when starving, curl up, stop burning energy and armour
+   up until something comes near. A last resort for grazers.
+9. **Sonic roar**: a cone that knocks enemies back and breaks camouflage
+   and ambushes. Pairs with echolocation as a "loud" senses build.
+10. **Adaptive hide**: armour that thickens on whichever part was hit last,
+    so the same weak spot can't be farmed. A counter to clever focus fire.
+
 ## Progress
 
 - [x] Designer with 32 upgrades, costs, locks between rounds, auto-fill,
@@ -111,5 +138,15 @@ with no weapons can still win by hiding, foraging and outlasting.
 - [x] Generated chiptune effects and music
 - [x] Headless balance sweeps and a first tuning pass
 - [x] Strike wind-ups, per-weapon swing poses, swing trails
+- [x] Custom body colour and cyclable body shapes; legs and eyes can be
+      reduced between rounds
+- [x] Livelier movement (faster, snappier, dashes, recoil off blows,
+      stronger knockback)
+- [x] Bigger outlined combat text, health bars over every creature, blood
+      that stains, grey corpses under team-coloured crosses, a round-winner
+      banner and a clearer results screen
+- [x] Double speed by unanimous vote
+- [x] Cautious spitters kite from further back; diggers undermine and
+      burrow to safety; echolocators ping, flank and ambush around corners
 - [ ] Balance pass with real players
 - [ ] Spectator chat / emotes

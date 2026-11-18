@@ -6,8 +6,7 @@ use bevy_egui::{EguiContexts, egui};
 use sbct_net::PeerId;
 use sbct_sim::eco::math::v2;
 use sbct_sim::versus::ROUND_TIME;
-use sbct_sim::versus::combat::Tactic;
-use sbct_sim::versus::design::{Design, Group, Upgrade, build_species};
+use sbct_sim::versus::design::{Design, Group, MORPHS, SWATCHES, Upgrade, build_species};
 
 use crate::AppState;
 use crate::audio::UiSfx;
@@ -100,7 +99,11 @@ pub fn ui(
             &mut sfx,
             portraits.first().and_then(|p| p.1),
         ),
-        Phase::Fight => fight_hud(ctx, &versus, cam, cam_tf, time.elapsed_secs()),
+        Phase::Fight => {
+            fight_hud(ctx, &versus, cam, cam_tf, time.elapsed_secs());
+            winner_banner(ctx, &versus);
+            speed_vote(ctx, &mut versus, &mut sfx);
+        }
         Phase::Results => {
             fight_hud(ctx, &versus, cam, cam_tf, time.elapsed_secs());
             results_ui(ctx, &mut versus, &mut sfx, &portraits);
@@ -204,6 +207,8 @@ fn lobby_ui(
                         versus.design.name = versus.design.auto_name();
                     }
                 });
+                ui.add_space(4.0);
+                look_controls(ui, versus, sfx);
             });
             ui.add_space(6.0);
             egui::Frame::new()
@@ -386,7 +391,7 @@ fn lobby_ui(
             ui.label(theme::title("HOW IT WORKS", 10.0, GOLD));
             ui.label(
                 egui::RichText::new(
-                    "Spend points on your species. Both are dropped into a random arena and fight on their own. Everything burns energy: eat fruit or prey, or starve. After each round everyone gets more points to evolve; nothing can be taken away.",
+                    "Spend points on your species. Both are dropped into a random arena and fight on their own. Everything burns energy: eat fruit or prey, or starve. After each round everyone gets more points to evolve. Upgrades stay for good, except legs and eyes, which can be reshaped.",
                 )
                 .small()
                 .color(egui::Color32::from_gray(185)),
@@ -413,6 +418,149 @@ fn lobby_ui(
                 });
         });
     });
+}
+
+/// Body shape and colour pickers.
+fn look_controls(ui: &mut egui::Ui, versus: &mut Versus, sfx: &mut UiSfx) {
+    ui.horizontal(|ui| {
+        ui.add_sized(
+            [52.0, 22.0],
+            egui::Label::new(egui::RichText::new("Shape").small().color(DIM)),
+        );
+        if ui.button(" < ").on_hover_text("Previous body shape").clicked() {
+            sfx.0.push("ui_click");
+            versus.design.cycle_morph(-1);
+        }
+        let name = MORPHS[(versus.design.morph as usize).min(MORPHS.len() - 1)];
+        ui.add_sized(
+            [120.0, 22.0],
+            egui::Label::new(egui::RichText::new(name).color(INK)),
+        );
+        if ui.button(" > ").on_hover_text("Next body shape").clicked() {
+            sfx.0.push("ui_click");
+            versus.design.cycle_morph(1);
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.add_sized(
+            [52.0, 22.0],
+            egui::Label::new(egui::RichText::new("Colour").small().color(DIM)),
+        );
+        let auto = versus.design.colour.is_none();
+        if ui
+            .selectable_label(auto, "Auto")
+            .on_hover_text("Let the species' look pick its colour")
+            .clicked()
+            && !auto
+        {
+            sfx.0.push("ui_click");
+            recolour(&mut versus.design, None);
+        }
+        let mut pick = versus.design.colour.unwrap_or_else(|| {
+            let (sp, _) = build_species(&versus.design, 0, None);
+            sp.colors.base
+        });
+        if egui::color_picker::color_edit_button_srgb(ui, &mut pick)
+            .on_hover_text("Any colour")
+            .changed()
+        {
+            versus.design.colour = Some(pick);
+        }
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(3.0, 3.0);
+        ui.add_space(55.0);
+        for c in SWATCHES {
+            let (rect, resp) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
+            let on = versus.design.colour == Some(c);
+            ui.painter().rect_filled(rect, 0.0, c32(c));
+            let stroke = if on {
+                egui::Stroke::new(2.0, GOLD)
+            } else if resp.hovered() {
+                egui::Stroke::new(1.0, INK)
+            } else {
+                egui::Stroke::new(1.0, theme::BORDER)
+            };
+            ui.painter()
+                .rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Inside);
+            if resp.clicked() {
+                sfx.0.push("ui_click");
+                recolour(&mut versus.design, Some(c));
+            }
+        }
+    });
+}
+
+/// Sets the colour, renaming the species only if it still has the
+/// automatic name (which mentions its colour).
+fn recolour(d: &mut Design, colour: Option<[u8; 3]>) {
+    let auto = d.name == d.auto_name();
+    d.colour = colour;
+    if auto {
+        d.name = d.auto_name();
+    }
+}
+
+/// Text with a dark outline, readable over any arena.
+fn outlined(
+    painter: &egui::Painter,
+    pos: egui::Pos2,
+    align: egui::Align2,
+    text: &str,
+    font: egui::FontId,
+    colour: egui::Color32,
+) {
+    let shadow = egui::Color32::from_black_alpha(colour.a());
+    let w = (font.size / 12.0).clamp(1.0, 4.0);
+    for (dx, dy) in [(-w, 0.0), (w, 0.0), (0.0, -w), (0.0, w), (w, w)] {
+        painter.text(pos + egui::vec2(dx, dy), align, text, font.clone(), shadow);
+    }
+    painter.text(pos, align, text, font, colour);
+}
+
+/// The double-speed button: everyone playing has to press it.
+fn speed_vote(ctx: &egui::Context, versus: &mut Versus, sfx: &mut UiSfx) {
+    let voters = versus.speed_voters().max(1);
+    let votes = versus.fast_votes.len().min(voters);
+    let mine = versus.wants_fast();
+    let fast = versus.fast;
+    egui::Area::new(egui::Id::new("versus_speed"))
+        .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -14.0])
+        .show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                let (label, fill) = if fast {
+                    ("2x SPEED ON".to_string(), egui::Color32::from_rgb(46, 110, 60))
+                } else if mine {
+                    (
+                        format!("2x SPEED  {votes}/{voters}"),
+                        egui::Color32::from_rgb(110, 90, 30),
+                    )
+                } else {
+                    (format!("2x SPEED  {votes}/{voters}"), RAISED)
+                };
+                let hint = if fast {
+                    "Running at double speed. Press to go back to normal."
+                } else if mine {
+                    "Waiting for everyone else to press it too. Press again to withdraw."
+                } else {
+                    "Double speed starts once every player has pressed this."
+                };
+                if theme::big_button(ui, &label, egui::vec2(200.0, 34.0), fill)
+                    .on_hover_text(hint)
+                    .clicked()
+                {
+                    sfx.0.push("ui_click");
+                    versus.toggle_fast();
+                }
+                if !fast && votes > 0 && !mine {
+                    ui.label(
+                        egui::RichText::new("Your opponent wants double speed")
+                            .small()
+                            .color(GOLD),
+                    );
+                }
+            });
+        });
 }
 
 /// One species' gains: "+Wings: Membrane · Size 1→2".
@@ -443,7 +591,7 @@ fn stat(ui: &mut egui::Ui, label: &str, v: f32, max: f32, colour: egui::Color32)
 
 fn upgrade_row(ui: &mut egui::Ui, versus: &mut Versus, sfx: &mut UiSfx, u: Upgrade, left: u32) {
     let level = versus.design.level(u);
-    let floor = versus.base.as_ref().map_or(0, |b| b.level(u));
+    let floor = Design::floor(u, versus.base.as_ref());
     let blocked = u.requires(&versus.design);
     let row_colour = if blocked.is_some() {
         BLOOD.gamma_multiply(0.8)
@@ -701,31 +849,37 @@ fn fight_hud(ctx: &egui::Context, versus: &Versus, cam: &Camera, cam_tf: &Global
             c.colour[2],
             (alpha * 255.0) as u8,
         );
+        // Pop in big, then settle.
+        let age = c.max_life - c.life;
+        let pop = 1.0 + 0.7 * (-age * 9.0).exp();
         match c.pos {
             Some(p) => {
                 let Ok(sp) = cam.world_to_viewport(cam_tf, Vec3::new(p.x, -p.y, 0.0)) else {
                     continue;
                 };
-                painter.text(
-                    egui::pos2(sp.x, sp.y - 10.0),
+                let size = (22.0 * c.scale * pop).round();
+                outlined(
+                    &painter,
+                    egui::pos2(sp.x, sp.y - 12.0),
                     egui::Align2::CENTER_BOTTOM,
                     &c.text,
-                    theme::silk(16.0),
+                    theme::pixel(size),
                     colour,
                 );
             }
             None => {
                 let pop = 1.0 + (1.0 - t).powi(3) * 0.4;
-                let size = (32.0 * pop / 8.0).round() * 8.0;
+                let size = (48.0 * pop / 8.0).round() * 8.0;
                 let pos = egui::pos2(screen.center().x, screen.center().y - screen.height() * 0.22);
                 painter.text(
-                    pos + egui::vec2(4.0, 4.0),
+                    pos + egui::vec2(5.0, 5.0),
                     egui::Align2::CENTER_CENTER,
                     &c.text,
                     theme::pixel(size),
                     egui::Color32::from_black_alpha((alpha * 220.0) as u8),
                 );
-                painter.text(
+                outlined(
+                    &painter,
                     pos,
                     egui::Align2::CENTER_CENTER,
                     &c.text,
@@ -735,8 +889,31 @@ fn fight_hud(ctx: &egui::Context, versus: &Versus, cam: &Camera, cam_tf: &Global
             }
         }
     }
-    // What each creature is doing, floating above it.
-    let font = theme::silk(12.0);
+    // Markers over the fallen: a cross in their team colour.
+    for d in &mirror.deaths {
+        let Ok(p) = cam.world_to_viewport(cam_tf, Vec3::new(d.pos.x, -d.pos.y, 0.0)) else {
+            continue;
+        };
+        let fresh = (-d.age * 2.0).exp();
+        let r = 9.0 + 10.0 * fresh;
+        let a = (0.55 + 0.45 * fresh).min(1.0);
+        let centre = egui::pos2(p.x, p.y - 24.0);
+        let team = c32(mirror.team_colour_of(d.team)).gamma_multiply(a);
+        for (w, col) in [
+            (7.0, egui::Color32::from_black_alpha((a * 230.0) as u8)),
+            (3.5, team),
+        ] {
+            fx.line_segment(
+                [centre + egui::vec2(-r, -r), centre + egui::vec2(r, r)],
+                egui::Stroke::new(w, col),
+            );
+            fx.line_segment(
+                [centre + egui::vec2(-r, r), centre + egui::vec2(r, -r)],
+                egui::Stroke::new(w, col),
+            );
+        }
+    }
+    // Health and what each creature is doing, floating above it.
     for (i, c) in mirror.creatures.iter().enumerate() {
         if !c.alive() {
             continue;
@@ -747,20 +924,105 @@ fn fight_hud(ctx: &egui::Context, versus: &Versus, cam: &Camera, cam_tf: &Global
         let Ok(p) = cam.world_to_viewport(cam_tf, Vec3::new(top.x, -top.y, 0.0)) else {
             continue;
         };
-        let colour = c32(mirror.team_colour_of(c.species)).gamma_multiply(0.9);
+        let team = c32(mirror.team_colour_of(c.species));
+        let health = mirror.health.get(i).copied().unwrap_or(1.0).clamp(0.0, 1.0);
+        let hit = mirror.hit_age.get(i).copied().unwrap_or(99.0);
+        // Health bar: flashes when struck, turns red when nearly gone.
+        let w = 44.0;
+        let bar = egui::Rect::from_center_size(egui::pos2(p.x, p.y - 4.0), egui::vec2(w, 7.0));
+        fx.rect_filled(bar.expand(2.0), 0.0, egui::Color32::from_black_alpha(200));
+        let fill = if hit < 0.15 {
+            egui::Color32::WHITE
+        } else if health < 0.3 {
+            BLOOD
+        } else {
+            team
+        };
+        let filled = egui::Rect::from_min_size(bar.min, egui::vec2(w * health, bar.height()));
+        fx.rect_filled(filled, 0.0, fill);
         let starving = mirror.energy.get(i).is_some_and(|e| *e <= 0.0);
-        let text = if starving { "starving" } else { t.label() };
-        painter.text(
-            egui::pos2(p.x, p.y),
+        let text = if starving {
+            "starving"
+        } else if health < 0.3 {
+            "badly hurt"
+        } else {
+            t.label()
+        };
+        let colour = if starving || health < 0.3 { BLOOD } else { team };
+        outlined(
+            &painter,
+            egui::pos2(p.x, p.y - 12.0),
             egui::Align2::CENTER_BOTTOM,
             text,
-            font.clone(),
-            if starving { BLOOD } else { colour },
+            theme::silk(14.0),
+            colour,
         );
-        if *t == Tactic::Forage || *t == Tactic::Hide {
-            continue;
-        }
     }
+}
+
+/// Across the screen when a round ends: who took it.
+fn winner_banner(ctx: &egui::Context, versus: &Versus) {
+    let Some(mirror) = &versus.mirror else { return };
+    let Some(winner) = mirror.winner else { return };
+    let screen = ctx.content_rect();
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::new("versus_banner"),
+    ));
+    let t = mirror.over_t;
+    let grow = (t * 4.0).clamp(0.0, 1.0);
+    let (colour, title, sub) = match winner.and_then(|w| versus.teams.get(w as usize).map(|team| (w, team))) {
+        Some((w, (pid, player, design))) => {
+            let colour = c32(mirror.team_colour_of(w as usize));
+            let title = if *pid == versus.local_id {
+                "YOU WIN THE ROUND".to_string()
+            } else {
+                format!("{} WINS THE ROUND", player.to_uppercase())
+            };
+            (colour, title, design.name.to_uppercase())
+        }
+        None => (GOLD, "DRAW".to_string(), "NOBODY TAKES IT".to_string()),
+    };
+    let h = 130.0 * grow;
+    let centre = screen.center().y - screen.height() * 0.05;
+    let band = egui::Rect::from_center_size(
+        egui::pos2(screen.center().x, centre),
+        egui::vec2(screen.width(), h),
+    );
+    painter.rect_filled(band, 0.0, egui::Color32::from_black_alpha(200));
+    painter.rect_filled(
+        egui::Rect::from_min_size(band.min, egui::vec2(band.width(), 6.0)),
+        0.0,
+        colour,
+    );
+    painter.rect_filled(
+        egui::Rect::from_min_size(
+            egui::pos2(band.min.x, band.max.y - 6.0),
+            egui::vec2(band.width(), 6.0),
+        ),
+        0.0,
+        colour,
+    );
+    if grow < 1.0 {
+        return;
+    }
+    let pulse = 1.0 + 0.06 * (t * 6.0).sin().abs() * (-t * 0.8).exp();
+    outlined(
+        &painter,
+        egui::pos2(screen.center().x, centre - 16.0),
+        egui::Align2::CENTER_CENTER,
+        &title,
+        theme::pixel((40.0 * pulse).round()),
+        colour,
+    );
+    outlined(
+        &painter,
+        egui::pos2(screen.center().x, centre + 34.0),
+        egui::Align2::CENTER_CENTER,
+        &sub,
+        theme::pixel(16.0),
+        INK,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -793,22 +1055,24 @@ fn results_ui(
         .show(ctx, |ui| {
             ui.set_width(560.0);
             ui.vertical_centered(|ui| {
-                let headline = match result.winner.and_then(|w| teams.get(w as usize)) {
-                    Some((pid, _, d)) => {
+                let (headline, sub) = match result.winner.and_then(|w| teams.get(w as usize)) {
+                    Some((pid, player, d)) => {
                         let who = if *pid == versus.local_id {
-                            "YOU WIN THE ROUND"
+                            "YOU WIN THE ROUND".to_string()
                         } else {
-                            "ROUND LOST"
+                            format!("{} WINS THE ROUND", player.to_uppercase())
                         };
-                        format!("{who}: {}", d.name.to_uppercase())
+                        (who, d.name.to_uppercase())
                     }
-                    None => "DRAW".to_string(),
+                    None => ("DRAW".to_string(), "NOBODY TAKES IT".to_string()),
                 };
                 let colour = result
                     .winner
                     .and_then(|w| versus.mirror.as_ref().map(|m| c32(m.team_colour_of(w as usize))))
                     .unwrap_or(GOLD);
-                ui.label(theme::title(&headline, 16.0, colour));
+                ui.label(theme::title(&headline, 24.0, colour));
+                ui.add_space(4.0);
+                ui.label(theme::title(&sub, 12.0, INK));
                 ui.label(
                     egui::RichText::new(format!(
                         "Round {} of {} · {:.0}s",
@@ -820,8 +1084,30 @@ fn results_ui(
                 ui.horizontal(|ui| {
                     let w = ui.available_width() / teams.len().max(1) as f32;
                     for (i, (pid, player, design)) in teams.iter().enumerate() {
-                        ui.allocate_ui(egui::vec2(w, 200.0), |ui| {
+                        let won = result.winner == Some(i as u8);
+                        let lost = result.winner.is_some() && !won;
+                        let tc = versus.mirror.as_ref().map_or(GOLD, |m| c32(m.team_colour_of(i)));
+                        let frame = egui::Frame::new()
+                            .stroke(egui::Stroke::new(
+                                if won { 4.0 } else { 1.0 },
+                                if won { GOLD } else { theme::BORDER },
+                            ))
+                            .fill(if won {
+                                tc.gamma_multiply(0.18)
+                            } else {
+                                egui::Color32::TRANSPARENT
+                            })
+                            .inner_margin(6);
+                        frame.show(ui, |ui| {
+                            ui.set_width(w - 18.0);
                             ui.vertical_centered(|ui| {
+                                if won {
+                                    ui.label(theme::title("WINNER", 16.0, GOLD));
+                                } else if lost {
+                                    ui.label(theme::title("DEFEATED", 12.0, DIM));
+                                } else {
+                                    ui.label(theme::title("DRAW", 12.0, DIM));
+                                }
                                 if let Some((_, Some((id, size)))) =
                                     portraits.iter().find(|(k, _)| *k == pid.wrapping_add(1))
                                 {
@@ -831,8 +1117,11 @@ fn results_ui(
                                             .texture_options(egui::TextureOptions::NEAREST),
                                     );
                                 }
-                                let tc = versus.mirror.as_ref().map_or(GOLD, |m| c32(m.team_colour_of(i)));
-                                ui.label(egui::RichText::new(&design.name).size(22.0).color(tc));
+                                ui.label(egui::RichText::new(&design.name).size(22.0).color(if lost {
+                                    tc.gamma_multiply(0.6)
+                                } else {
+                                    tc
+                                }));
                                 ui.label(egui::RichText::new(player).small().color(DIM));
                                 let wins = versus.wins.get(i).copied().unwrap_or(0);
                                 ui.label(theme::title(&"*".repeat(wins as usize), 12.0, GOLD));
